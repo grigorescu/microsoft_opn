@@ -1,0 +1,108 @@
+protocol UDP with 
+BinaryEncodingDefaults{Endian = Endian.Big},
+Documentation
+{
+    ProtocolName = "User Datagram Protocol",
+    ShortName = "UDP",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+            new Reference{Name = "RFC 768"},
+        ],
+    RevisionSummary = 
+        [
+            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "09/02/2011"}
+        ]
+};
+
+using IANA;
+using IPv4;
+using IPv6;
+using Standard;
+using Utility;
+
+annotation binary UDP.Datagram#SourceAddress;
+annotation binary UDP.Datagram#DestinationAddress;
+
+/* Host accepts datagram from IPv4 or IPv6
+ * Address1 is either SourceAddress or DestinationAddress.
+ * It depends on the comparative result of the value of ports or addresses.
+ * It's similar for other indexes.
+ */
+endpoint Host[binary Address1, binary Address2, ushort Port1, ushort Port2] accepts Datagram;
+
+message Datagram
+{
+    ushort SourcePort with Visualization{AliasName = "Port"};
+    ushort DestinationPort with Visualization{AliasName = "Port"};
+    ushort Length;
+    ushort Checksum;
+    // Specify Length here since field Length indicates the total length of
+    // the UDP Datagram in bytes
+    binary Payload with BinaryEncoding{MaxLength = (Length - 8) as uint};
+    
+    override string ToString()
+    {
+        string summary = this#IsTruncated != nothing && (this#IsTruncated as bool) ? "Truncated, " : ""; 
+        summary += "Source Port: " + (SourcePort as string) + ", Destination Port: " + (DestinationPort as string) + ", Length: " + (Length as string);
+        return summary;
+    }
+}
+
+string get Transport(this UDP.Datagram datagram)
+{
+    return "UDP: " + (datagram.SourcePort > datagram.DestinationPort
+        ? (datagram.DestinationPort as string) + " - " + (datagram.SourcePort as string)
+        : (datagram.SourcePort as string) + " - " + (datagram.DestinationPort as string));
+}
+
+int get PayloadLength(this UDP.Datagram d)
+{
+    return d.Payload.Count;
+}
+
+autostart actor UDPOverIPv4(IPv4.Node node)
+{
+    process node accepts d:IPv4.Datagram where d.Protocol == ProtocolType.UDP
+    {
+        DecodeDatagram(d.SourceAddress.FlatAddress, d.DestinationAddress.FlatAddress, d.Payload);
+    }
+}
+
+autostart actor UDPOverIPv6(IPv6.Node node)
+{
+    process node accepts d:IPv6.Datagram where d.NextProtocol == ProtocolType.UDP
+    {
+        DecodeDatagram(d.SourceAddress.FlatAddress, d.DestinationAddress.FlatAddress, d.Payload);
+    }
+}
+
+
+// Decode UDP segment and dispatch to UDP layer
+void DecodeDatagram(binary sourceAddress, binary destinationAddress, binary payload)
+{
+    switch (payload)
+    {
+        case d:Datagram from BinaryDecoder<Datagram> =>
+            // Future Reference: Temporarily disable Checksum check for CTP
+            // ValidationCheck(Utility.ValidateTCPUDPChecksum(sourceAddress, destinationAddress, 17, payload, d.Checksum), d, "Validation Error. UDP Checksum is invalid.");
+            d#SourceAddress = sourceAddress;
+            d#DestinationAddress = destinationAddress;
+        
+            if ((d.SourcePort < d.DestinationPort) || (d.SourcePort == d.DestinationPort && sourceAddress < destinationAddress))
+            {
+                dispatch endpoint Host[sourceAddress, destinationAddress, d.SourcePort, d.DestinationPort] accepts d;
+            }
+            else
+            {
+                dispatch endpoint Host[destinationAddress, sourceAddress, d.DestinationPort, d.SourcePort] accepts d;
+            }
+        default => 
+            ThrowDecodingException("UDP", "Datagram");
+    }
+}
+

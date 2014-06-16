@@ -1,0 +1,168 @@
+protocol GSSAPIKRB5 with 
+BinaryEncodingDefaults{Endian = Endian.Big},
+Documentation
+{
+    ProtocolName = "The Kerberos Version 5 Generic Security Service Application Program Interface (GSS-API) Mechanism",
+    ShortName = "Gssapikrb5",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References =
+        [
+            new Reference{Name = "RFC 1964"},
+            new Reference{Name = "RFC 4121"},
+        ],
+    RevisionSummary =
+        [
+            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "2/28/2012"}
+        ]
+};
+
+using Standard;
+using Utility;
+using KerberosV5;
+
+pattern GssapiKrb5Message = KerberosTokenType;
+
+// [RFC 1964    1.2.1. & 1.2.2. and RFC 4121    4.2.6.1. & 4.2.6.2.]
+type KerberosTokenType
+{
+    ushort TokID;
+    optional ([|TokID == 0x0101|] MicToken       |
+        [|TokID == 0x0201|] WrapToken            |
+        [|TokID == 0x0102|] ContextDeletionToken |
+        [|TokID == 0x0404|] MicTokenV2           |
+        [|TokID == 0x0504|] WrapTokenV2          |
+        [|TokID == 0x0400|] TGTReq               |
+        [|TokID == 0x0401|] TGTRep               |
+        [|TokID in {0x0100, 0x0200, 0x0300}|] Krb5Type) Token;
+}
+
+optional GssapiKrb5Message GssapiKrb5Decoder(stream s)
+{
+    GSSAPIKRB5.GssapiKrb5Message gssapiKrb5Token = new GSSAPIKRB5.GssapiKrb5Message{};
+    stream tmpS = s.PeekBytes(s.BitPosition) as stream;
+    gssapiKrb5Token.TokID = (BinaryDecoder<Ushort>(tmpS) as Ushort).Value;
+    switch (gssapiKrb5Token.TokID)
+    {
+        case 0x0101 =>
+            gssapiKrb5Token.Token = BinaryDecoder<GSSAPIKRB5.MicToken>(tmpS);
+        case 0x0201 =>
+            gssapiKrb5Token.Token = BinaryDecoder<GSSAPIKRB5.WrapToken>(tmpS);
+        case 0x0102 =>
+            gssapiKrb5Token.Token = BinaryDecoder<GSSAPIKRB5.ContextDeletionToken>(tmpS);
+        case 0x0404 =>
+            gssapiKrb5Token.Token = BinaryDecoder<GSSAPIKRB5.MicTokenV2>(tmpS);
+        case 0x0504 =>
+            gssapiKrb5Token.Token = BinaryDecoder<GSSAPIKRB5.WrapTokenV2>(tmpS);
+        case 0x0100 =>
+            gssapiKrb5Token.Token = Asn1BerDecoder<Krb5Type>(tmpS);
+        case 0x0200 =>
+            gssapiKrb5Token.Token = Asn1BerDecoder<Krb5Type>(tmpS);
+        case 0x0300 =>
+            gssapiKrb5Token.Token = Asn1BerDecoder<Krb5Type>(tmpS);
+        case 0x0400 =>
+            gssapiKrb5Token.Token = Asn1BerDecoder<TGTReq>(tmpS);
+        case 0x0401 =>
+            gssapiKrb5Token.Token = Asn1BerDecoder<TGTRep>(tmpS);
+        default =>
+            gssapiKrb5Token.Token = nothing;
+    }
+    if (gssapiKrb5Token.Token != nothing)
+    {
+        // consume bytes of original stream
+        BinaryDecoder<Blob[tmpS.BytePosition as uint]>(s);
+        return gssapiKrb5Token;
+    }
+    else
+    {
+        return nothing;
+    }
+}
+
+// [RFC 1964    1.2.1. Per-message Tokens - MIC]
+type MicToken
+{
+    SgnAlgType SgnAlg;
+    uint Filler where ValidationCheck(value == 0xFFFFFFFF, null, "GSSAPIKRB5: The Filler in type MicToken should contain four octets of hex value 0xFF, not " + value.ToString() + ".");
+    ulong SndSeq;
+    ulong SgnCheckSum;
+}
+
+pattern SgnAlgType = enum ushort
+{
+    DesMacMd5 = 0x0000,
+    Md25      = 0x0100,
+    DesMac    = 0x0200,
+    ...
+};
+
+// [RFC 1964    1.2.2. Per-message Tokens - Wrap]
+type WrapToken
+{
+    SgnAlgType SgnAlg;
+    SealAlgType SealAlg;
+    ushort Filler where ValidationCheck(value == 0xFFFF, null, "GSSAPIKRB5: The Filler in type WrapToken should contain two octets of hex value 0xFF, not " + value.ToString() + ".");
+    ulong SndSeq;
+    ulong SgnCheckSum;
+    binary Data;
+}
+
+pattern SealAlgType = enum ushort
+{
+    None = 0xFFFF,
+    Des  = 0x0000,
+    ...
+};
+
+// [RFC 1964    1.2.3. Context deletion token]
+type ContextDeletionToken
+{
+    SgnAlgType SgnAlg;
+    uint Filler where ValidationCheck(value == 0xFFFFFFFF, null, "GSSAPIKRB5: The Filler in type ContextDeletionToken should contain four octets of hex value 0xFF, not " + value.ToString() + ".");
+    ulong SndSeq;
+    ulong SgnCheckSum;
+}
+
+// [RFC 4121    4.2.6.1.  MIC Tokens]
+type MicTokenV2
+{
+    FlagsType Flags;
+    binary Filler where ValidationCheck(value == $[FFFFFFFFFF], null, "GSSAPIKRB5: The Filler in type MicTokenV2 should contain five octets of hex value 0xFF, not " + value.ToString() + ".") with BinaryEncoding{Length = 5};
+    ulong SndSeq;
+    binary SgnCheckSum;
+}
+
+type FlagsType
+{
+    byte Reserved       with BinaryEncoding{Width = 5};
+    bool SentByAcceptor with BinaryEncoding{Width = 1};
+    bool Sealed         with BinaryEncoding{Width = 1};
+    bool AcceptorSubkey with BinaryEncoding{Width = 1};
+}
+
+// [RFC 4121    4.2.6.2.  Wrap Tokens]
+type WrapTokenV2
+{
+    FlagsType Flags;
+    byte Filler where ValidationCheck(value == 0xFF, null, "GSSAPIKRB5: The Filler in type WrapTokenV2 should contain the hex value 0xFF, not " + value.ToString() + ".");
+    ushort ExtraCount;
+    ushort RightRotationCount;
+    ulong SndSeq;
+    // ref : gssapikrb5.npl for ldap.opn
+    optional [|Flags.Sealed|] binary Data;
+    optional [|!Flags.Sealed|] binary Checksum with BinaryEncoding{Length = ExtraCount};
+}
+
+// for GssapiKrb5 decoder usage
+type Krb5Type
+{
+    (APReq | APRep | KrbError) Krb5;
+} with Asn1Encoding{Flags = Asn1EncodingFlags.TagLengthSkipped};
+
+type Ushort
+{
+    ushort Value;
+}

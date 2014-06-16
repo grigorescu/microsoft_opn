@@ -1,0 +1,367 @@
+protocol Truncation with
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+        ],
+    RevisionSummary = 
+        [
+            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "04/10/2013"}
+        ]
+};
+
+using Etw;
+using EtwEvent;
+using NdisEtwProvider;
+using Ethernet;
+using IPv4;
+using IPv6;
+using ESP;
+using AH;
+using IKE;
+using AuthIP;
+using GRE;
+using TCP;
+using UDP;
+using HTTP;
+using IANA;
+using Standard;
+using Utility;
+
+endpoint TruncationEndpoint accepts any message;
+
+autostart actor TruncationDecoderActor(NdisEtwProvider.NdisEtwNode ndis)
+{
+    process ndis accepts m:NdisEtwVirtualDataMessage
+       where (m#IsNdisEtwMetaData == nothing || !(m#IsNdisEtwMetaData as bool))
+            && (m#EtwKeywords != nothing && ((m#EtwKeywords as ulong) & (NdisMedium.NdisMedium802_3 | NdisMedium.NdisMediumWan)) != 0)
+            && m.IsSessionTruncated
+    {
+        binary payload = m.Payload;
+        TruncationProtocolType nextProtocol = TruncationProtocolType.Ethernet;
+        any message resultMsg= m;
+        
+        (IPv4Address | IPv6Address) sourceAddr = null;
+        (IPv4Address | IPv6Address) destinationAddr = null;
+        
+        while (nextProtocol != TruncationProtocolType.None)
+        {
+            switch (nextProtocol)
+            {
+                case TruncationProtocolType.Ethernet =>
+                    switch (payload)
+                    {
+                        case f:Ethernet.Frame from BinaryDecoder<Ethernet.Frame[true]> =>
+                            f#IsTruncated = true;
+                            f.Origins = [resultMsg];
+                            resultMsg = f;
+                            payload = f.MacClientData;
+                            nextProtocol = GetNextProtocolOfEthernet(f.LengthOrType);
+                        default => 
+                            nextProtocol = TruncationProtocolType.None;
+                    }
+                case TruncationProtocolType.IPv4 =>
+                    switch (payload)
+                    {
+                        case d:IPv4.Datagram from BinaryDecoder =>
+                            d#IsTruncated = true;
+                            d.Origins = [resultMsg];
+                            resultMsg = d;
+                            payload = d.Payload;
+                            nextProtocol = GetNextProtocolOfIP(d.Protocol);
+                            sourceAddr = d.SourceAddress;
+                            destinationAddr = d.DestinationAddress;
+                        default => 
+                            nextProtocol = TruncationProtocolType.None;
+                    }
+                case TruncationProtocolType.IPv6 =>
+                    switch (payload)
+                    {
+                        case d:IPv6.Datagram from IPv6Decoder =>
+                            d#IsTruncated = true;
+                            d.Origins = [resultMsg];
+                            resultMsg = d;
+                            payload = d.Payload;
+                            nextProtocol = GetNextProtocolOfIP(d.NextProtocol);
+                            sourceAddr = d.SourceAddress;
+                            destinationAddr = d.DestinationAddress;
+                        default => 
+                            nextProtocol = TruncationProtocolType.None;
+                    }
+                case TruncationProtocolType.TCP =>
+                    switch (payload)
+                    {
+                        case s:TCP.Segment from BinaryDecoder =>
+                            s#IsTruncated = true;
+                            s.Origins = [resultMsg];
+                            resultMsg = s;
+                            payload = s.Payload;
+                            set<ushort> ports = {s.SourcePort, s.DestinationPort};
+                            nextProtocol = GetNextProtocolOfTCPorUDP(ref ports, payload);
+                        default => 
+                            nextProtocol = TruncationProtocolType.None;
+                    }
+                case TruncationProtocolType.UDP =>
+                    switch (payload)
+                    {
+                        case d:UDP.Datagram from BinaryDecoder =>
+                            d#IsTruncated = true;
+                            d.Origins = [resultMsg];
+                            resultMsg = d;
+                            payload = d.Payload;
+                            set<ushort> ports = {d.SourcePort, d.DestinationPort};
+                            nextProtocol = GetNextProtocolOfTCPorUDP(ref ports, payload);
+                        default => 
+                            nextProtocol = TruncationProtocolType.None;
+                    }
+                case TruncationProtocolType.ESP =>
+                    var p = ESPDecoder(payload);
+                    if (p == null)
+                    {
+                        nextProtocol = TruncationProtocolType.None;
+                    }
+                    else if (p is ESP.EncryptedPacket)
+                    {
+                        var ep = p as ESP.EncryptedPacket;
+                        ep#IsTruncated = true;
+                        ep.Origins = [resultMsg];
+                        resultMsg = ep;
+                        nextProtocol = TruncationProtocolType.None;
+                    }
+                    else
+                    {
+                        var mm = p as ESP.Packet;
+                        mm#IsTruncated = true;
+                        mm.Origins = [resultMsg];
+                        resultMsg = mm;
+                        payload = mm.Payload;
+                        nextProtocol = GetNextProtocolOfIP(mm.Trailer.NextHeader);
+                    }
+                case TruncationProtocolType.AH =>
+                    switch (payload)
+                    {
+                        case d:AH.Msg from BinaryDecoder =>
+                            d#IsTruncated = true;
+                            d.Origins = [resultMsg];
+                            resultMsg = d;
+                            payload = d.Payload;
+                            nextProtocol = GetNextProtocolOfIP(d.NextHeader);
+                        default => 
+                            nextProtocol = TruncationProtocolType.None;; 
+                    }
+                case TruncationProtocolType.GRE =>
+                    switch (payload)
+                    {
+                        case p:GRE.Packet from BinaryDecoder =>
+                            p#IsTruncated = true;
+                            p.Origins = [resultMsg];
+                            resultMsg = p;
+                            payload = p.Payload;
+                            nextProtocol = GetNextProtocolOfGRE(p.ProtocolType);
+                        default => 
+                            nextProtocol = TruncationProtocolType.None;
+                    }
+                case TruncationProtocolType.HTTP => 
+                    switch (payload)
+                    {
+                        case req:HttpContract.Request from HTTPRequestDecoder =>
+                            req#IsTruncated = true;
+                            req.Origins = [resultMsg];
+                            req.SourceData = payload;
+                            resultMsg = req;
+                            nextProtocol = TruncationProtocolType.None;
+                            payload = null;
+                            req#SourceAddress = sourceAddr;
+                            req#DestinationAddress = destinationAddr;
+                        case res:HttpContract.Response from HTTPResponseDecoder =>
+                            res#IsTruncated = true;
+                            res.Origins = [resultMsg];
+                            res.SourceData = payload;
+                            resultMsg = res;
+                            nextProtocol = TruncationProtocolType.None;
+                            payload = null;
+                            res#SourceAddress = sourceAddr;
+                            res#DestinationAddress = destinationAddr;
+                        default => 
+                            nextProtocol = TruncationProtocolType.None;
+                    }
+                case TruncationProtocolType.IKE =>
+                    switch (payload)
+                    {
+                        case p:IKEDatagram from IKEDecoder =>
+                            p#IsTruncated = true;
+                            p.Origins = [resultMsg];
+                            resultMsg = p;
+                            payload = null;
+                            nextProtocol = TruncationProtocolType.None;
+                        default => 
+                            nextProtocol = TruncationProtocolType.None;
+                    }
+                case TruncationProtocolType.AuthIP =>
+                    switch (payload)
+                    {
+                        case p:IsakmpMessage from AuthIPDecoder =>
+                            p#IsTruncated = true;
+                            p.Origins = [resultMsg];
+                            resultMsg = p;
+                            payload = null;
+                            nextProtocol = TruncationProtocolType.None;
+                        default => 
+                            nextProtocol = TruncationProtocolType.None;
+                    }
+                default =>
+                    nextProtocol = TruncationProtocolType.None;
+            }
+        }
+        dispatch endpoint TruncationEndpoint accepts resultMsg;
+    }
+}
+
+// The range of IP's ProtocolType is 0~255, it's type of byte.
+// Redefine another enum pattern listing all truncation related protocol, 
+// it shares entry with IP's ProtocolType.
+pattern TruncationProtocolType = enum ushort
+{
+    TCP         = 6,
+    IPv4        = 4,
+    UDP         = 17,
+    IPv6        = 41,
+    GRE         = 47,
+    ESP         = 50,
+    AH          = 51,
+    Ethernet    = 0xFF01,
+    IKE         = 0xFF02,
+    HTTP        = 0xFF03,
+    AuthIP      = 0xFF04,
+    None        = 0xFFFF,
+};
+
+//   -------------------------------------------------------------
+// Bellow methods are defined to convert next protocol's indication to unified presentation.
+
+TruncationProtocolType GetNextProtocolOfEthernet(ushort etherType)
+{
+    switch (etherType)
+    {
+        case 0x0800 //EtherType.IPv4 
+            => return TruncationProtocolType.IPv4;
+        case 0x86DD //EtherType.IPv6
+            => return TruncationProtocolType.IPv6;
+        default
+            => return TruncationProtocolType.None;
+    }
+}
+
+TruncationProtocolType GetNextProtocolOfIP(ushort protocolType)
+{
+    if (protocolType is TruncationProtocolType)
+    {
+        return protocolType as TruncationProtocolType;
+    }
+    else
+    {
+        return TruncationProtocolType.None;
+    }
+}
+
+TruncationProtocolType GetNextProtocolOfGRE(ushort greProtocolType)
+{
+    switch (greProtocolType)
+    {
+        case GREProtocolType.TransparentEthernetBridging 
+            => return TruncationProtocolType.Ethernet;
+        case GREProtocolType.IP
+            => return TruncationProtocolType.IPv4;
+        case GREProtocolType.IPv6
+            => return TruncationProtocolType.IPv6;
+        case GREProtocolType.TCP 
+            => return TruncationProtocolType.TCP;
+        case GREProtocolType.UDP
+            => return TruncationProtocolType.UDP;
+        case GREProtocolType.AH
+            => return TruncationProtocolType.AH;
+        case GREProtocolType.ESP
+            => return TruncationProtocolType.ESP;
+        default
+            => return TruncationProtocolType.None;
+    }
+}
+
+TruncationProtocolType GetNextProtocolOfTCPorUDP(ref set<ushort> ports, binary payload)
+{
+    if (payload.Count == 0)
+    {
+        return TruncationProtocolType.None;
+    }
+    
+    if (ports[IANA.Port.HTTP] || ports[IANA.Port.HTTPAlternate])
+    {
+        return TruncationProtocolType.HTTP;
+    }
+    else if (ports[IANA.Port.IKE] && !IsAuthIP(payload)
+        || ports[IANA.Port.NATT] && payload.Count > 12 && payload.Segment(0,4) == $[00000000])
+    {
+        return TruncationProtocolType.IKE;
+    }
+    else if ((ports[IANA.Port.IKE] || ports[IANA.Port.GDOI]) && IsAuthIP(payload))
+    {
+        return TruncationProtocolType.AuthIP;
+    }
+    else if(ports[IANA.Port.NATT] && payload.Segment(0,4) != $[00000000] && payload.Count > 12)
+    {
+        return TruncationProtocolType.ESP;
+    }
+    else
+    {
+        return TruncationProtocolType.None;
+    }
+}
+
+//   -------------------------------------------------------------
+// Re-define decoder to parse HTTP
+optional HttpContract.Request HTTPRequestDecoder(stream s)
+{
+    var reqHeader = RequestHeader(s);
+    if (reqHeader == nothing)
+    {
+        return nothing;
+    }
+    else
+    {
+        var header = reqHeader as RequestHeaderType;
+        var req = new HttpContract.Request
+            {
+                Method = header.Method,
+                Uri = header.Uri,
+                Version = header.Version,
+                Headers = header.Headers,
+                Payload = s.PeekBytes(s.BitPosition)
+            };
+        AssociateRequest(req, s.BytePosition, s.ByteLength);
+        return req;
+    }
+}
+
+optional HttpContract.Response HTTPResponseDecoder(stream s)
+{
+    var resHeader = ResponseHeader(s);
+    if (resHeader == nothing)
+    {
+        return nothing;
+    }
+    else
+    {
+        var header = resHeader as ResponseHeaderType;
+        var res = new HttpContract.Response
+            {
+                Version = header.Version,
+                StatusCode = header.StatusCode,
+                ReasonPhrase = header.ReasonPhrase,
+                Headers = header.Headers,
+                Payload = s.PeekBytes(s.BitPosition)
+            };
+        AssociateResponse(res, s.BytePosition, s.ByteLength);
+        return res;
+    }
+}

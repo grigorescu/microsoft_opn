@@ -1,0 +1,832 @@
+protocol Mount with 
+BinaryEncodingDefaults{Endian = Endian.Big, TextEncoding = TextEncoding.ASCII},
+Documentation
+{
+    ProtocolName = "Mount protocol",
+    ShortName = "Mount",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+            new Reference{Name = "RFC 1813"},
+            new Reference{Name = "RFC 1094"},
+            new Reference{Name = "RFC 2224"},
+        ],
+    RevisionSummary = 
+        [
+            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "11/29/2011"}
+        ]
+};
+
+using Utility;
+using SunRPC;
+using TCP;
+using UDP;
+using IANA;
+using XDR;
+using VirtualTransport;
+
+endpoint Server over IntermediateServer provides OperationContract;
+client endpoint Client connected to Server;
+
+endpoint IntermediateServer over SunRPC.Node provides MessageContract;
+client endpoint IntermediateClient connected to IntermediateServer;
+
+// SunRPC Over TCP actor
+autostart actor SunRPCOverTCP(VirtualTransport.Server server)
+{
+    process server accepts s:VirtualTransport.VirtualDataSegment where (s.DestinationPort == Port.Mount)
+    { 
+        dispatch (endpoint SunRPC.RecordMarking over server) accepts s;
+    }
+    
+    process server issues s:VirtualTransport.VirtualDataSegment where (s.SourcePort == Port.Mount)
+    {
+        dispatch (endpoint SunRPC.RecordMarking over server) issues s;
+    }
+    
+    // Below rules are added in case that TCP mistakes the Client for Server by port number for the trace without TCP 3-way handshake.
+    process server issues s:VirtualTransport.VirtualDataSegment where server.isMissingThreeWayHandshake && (s.DestinationPort == Port.Mount)
+    {
+        dispatch (endpoint SunRPC.RecordMarking over server) accepts s;
+    }
+    
+    process server accepts s:VirtualTransport.VirtualDataSegment where server.isMissingThreeWayHandshake && (s.SourcePort == Port.Mount)
+    { 
+        dispatch (endpoint SunRPC.RecordMarking over server) issues s;
+    }
+    
+}
+
+// SunRPC Over UDP actor
+autostart actor SunRPCOverUDP(UDP.Host host)
+{
+    process host accepts d:UDP.Datagram where (d.Payload.Count > 8 && (d.DestinationPort == Port.Mount || d.SourcePort == Port.Mount) && IsSunRPC(d.Payload))
+    {
+        dispatch (endpoint SunRPC.RecordMarking over host) accepts d;
+    }
+}
+
+const set<uint> MountVers = {1, 2, 3};
+
+autostart actor MountOverSunRPC(SunRPC.Node sunRPCNode)
+{
+    // mapProcedureByXID recodes the Procedure number, and its key is RpcMsg.Xid.
+    // Xid  -- ProcedureID
+    map<uint, uint> mapProcedureByXID = {};
+    // Xid -- Version
+    map<uint, uint> mapVersionByXID = {};
+    // Xid --- Request message
+    set<uint> requestsSet = {};
+
+    process sunRPCNode accepts r:RpcMsg where (r.MType == MsgType.Call && (r.Body as CallBody).Prog == 100005 && MountVers[(r.Body as CallBody).Vers])
+    {
+        mapVersionByXID[r.Xid] = (r.Body as CallBody).Vers;
+        mapProcedureByXID[r.Xid] = (r.Body as CallBody).Proc;
+        MountMessageProcessing(mapProcedureByXID[r.Xid], mapVersionByXID[r.Xid], r, ref requestsSet, AcceptsDispatcher);
+    }
+    // accepts Reply from UDP, reverse accept/issues direction for operation set up.
+    process sunRPCNode accepts r:RpcMsg where ((r.MType == MsgType.Reply) && (r.Xid in mapProcedureByXID) && (r.Body as ReplyBody).Stat == ReplyStat.MsgAccepted)
+    {
+        MountMessageProcessing(mapProcedureByXID[r.Xid], mapVersionByXID[r.Xid], r, ref requestsSet, IssuesDispatcher);
+    }
+    process sunRPCNode issues r:RpcMsg where ((r.MType == MsgType.Reply) && (r.Xid in mapProcedureByXID) && (r.Body as ReplyBody).Stat == ReplyStat.MsgAccepted)
+    {
+        MountMessageProcessing(mapProcedureByXID[r.Xid], mapVersionByXID[r.Xid], r, ref requestsSet, IssuesDispatcher);
+    }
+    
+    void AcceptsDispatcher(any message m)
+    {
+        dispatch (endpoint IntermediateServer over sunRPCNode) accepts m;
+    }
+    
+    void IssuesDispatcher(any message m)
+    {
+        dispatch (endpoint IntermediateServer over sunRPCNode) issues m;
+    }
+}
+
+void MountMessageProcessing(uint procedureNumber, uint version, SunRPC.RpcMsg r, ref set<uint> requests, void(any message) dispatcher)
+{
+    if (r.MType == MsgType.Call) // request
+    {
+        binary binCallVal = ((r.Body as CallBody).CallData as BinaryCallDataType).Data;
+        switch (procedureNumber)
+        {
+            case 0 =>
+                switch (binCallVal)
+                {
+                    case request:MessageContract.NullRequest from BinaryDecoder<MessageContract.NullRequest> =>
+                        dispatcher(request);
+                        requests[r.Xid] = true;
+                        
+                    default =>
+                        ThrowDecodingException("Mount", "NullRequest");
+                }
+            case 1 =>
+                switch (version)
+                {
+                    case 1 =>
+                    case 2 =>
+                        switch (binCallVal)
+                        {
+                            case request:MessageContract.AddMountEntryV1AndV2Request from BinaryDecoder<MessageContract.AddMountEntryV1AndV2Request> =>
+                                dispatcher(request);
+                               requests[r.Xid] = true;
+                               
+                            default =>
+                                ThrowDecodingException("Mount", "AddMountEntryV1AndV2Request");
+                        }
+                    case 3 =>
+                        switch (binCallVal)
+                        {
+                            case request:MessageContract.AddMountEntryV3Request from BinaryDecoder<MessageContract.AddMountEntryV3Request> =>
+                               dispatcher(request);
+                               requests[r.Xid] = true;
+                               
+                            default =>
+                                ThrowDecodingException("Mount", "AddMountEntryV3Request");
+                        }
+                }
+                
+            case 2 =>
+                switch (binCallVal)
+                {
+                    case request:MessageContract.ReturnMountEntriesRequest from BinaryDecoder<MessageContract.ReturnMountEntriesRequest> =>
+                        dispatcher(request);
+                        requests[r.Xid] = true;
+                        
+                    default =>
+                        ThrowDecodingException("Mount", "ReturnMountEntriesRequest");
+                }
+                
+            case 3 =>
+                switch (binCallVal)
+                {
+                    case request:MessageContract.RemoveMountEntryRequest from BinaryDecoder<MessageContract.RemoveMountEntryRequest> =>
+                        dispatcher(request);
+                        requests[r.Xid] = true;
+                        
+                    default =>
+                        ThrowDecodingException("Mount", "RemoveMountEntryRequest");
+                }
+                
+            case 4 =>
+                switch (binCallVal)
+                {
+                    case request:MessageContract.RemoveAllMountEntriesRequest from BinaryDecoder<MessageContract.RemoveAllMountEntriesRequest> =>
+                        dispatcher(request);
+                        requests[r.Xid] = true;
+                        
+                    default =>
+                        ThrowDecodingException("Mount", "RemoveAllMountEntriesRequest");
+                }
+                
+            case 5 =>
+                switch (binCallVal)
+                {
+                    case request:MessageContract.ReturnExportListRequest from BinaryDecoder<MessageContract.ReturnExportListRequest> =>
+                        dispatcher(request);
+                        requests[r.Xid] = true;
+                        
+                    default =>
+                        ThrowDecodingException("Mount", "ReturnExportListRequest");
+                }
+        }
+    }
+    
+    else // response
+    {
+        binary binReplyVal = ((r.Body as ReplyBody).Reply as AcceptedReply).ReplyData as binary;
+        
+        switch (procedureNumber)
+        {
+            case 0 =>
+                switch (binReplyVal)
+                {
+                    case response:MessageContract.NullResponse from BinaryDecoder<MessageContract.NullResponse> =>
+                        if (r.Xid in requests)
+                        {
+                            requests[r.Xid] = false;
+                        }
+                        dispatcher(response);
+                        
+                    default =>
+                        ThrowDecodingException("Mount", "NullResponse");
+                }
+            case 1 =>
+                switch (version)
+                {
+                    case 1 =>
+                    case 2 =>
+                        switch (binReplyVal)
+                        {
+                            case response:MessageContract.AddMountEntryV1AndV2Response from BinaryDecoder<MessageContract.AddMountEntryV1AndV2Response> =>
+                                if (r.Xid in requests)
+                                {
+                                    requests[r.Xid] = false;
+                                }
+                                dispatcher(response);
+                        
+                            default =>
+                                ThrowDecodingException("Mount", "AddMountEntryV1AndV2Response");
+                        }
+                    case 3 =>
+                        switch (binReplyVal)
+                        {
+                            case response:MessageContract.AddMountEntryV3Response from BinaryDecoder<MessageContract.AddMountEntryV3Response> =>
+                                if (r.Xid in requests)
+                                {
+                                    requests[r.Xid] = false;
+                                }
+                                dispatcher(response);
+                        
+                            default =>
+                                ThrowDecodingException("Mount", "AddMountEntryV3Response");
+                        }
+                }
+            case 2 =>
+                switch (binReplyVal)
+                {
+                    case response:MessageContract.ReturnMountEntriesResponse from BinaryDecoder<MessageContract.ReturnMountEntriesResponse> =>
+                        if (r.Xid in requests)
+                        {
+                            requests[r.Xid] = false;
+                        }
+                        dispatcher(response);
+                        
+                    default =>
+                        ThrowDecodingException("Mount", "ReturnMountEntriesResponse");
+                }
+            case 3 =>
+                switch (binReplyVal)
+                {
+                    case response:MessageContract.RemoveMountEntryResponse from BinaryDecoder<MessageContract.RemoveMountEntryResponse> =>
+                        if (r.Xid in requests)
+                        {
+                            requests[r.Xid] = false;
+                        }
+                        dispatcher(response);
+                        
+                    default =>
+                        ThrowDecodingException("Mount", "RemoveMountEntryResponse");
+                }
+            case 4 =>
+                switch (binReplyVal)
+                {
+                    case response:MessageContract.RemoveAllMountEntriesResponse from BinaryDecoder<MessageContract.RemoveAllMountEntriesResponse> =>
+                        if (r.Xid in requests)
+                        {
+                            requests[r.Xid] = false;
+                        }
+                        dispatcher(response);
+                        
+                    default =>
+                        ThrowDecodingException("Mount", "RemoveAllMountEntriesResponse");
+                }
+            case 5 =>
+                switch (binReplyVal)
+                {
+                    case response:MessageContract.ReturnExportListResponse from BinaryDecoder<MessageContract.ReturnExportListResponse> =>
+                        if (r.Xid in requests)
+                        {
+                            requests[r.Xid] = false;
+                        }
+                        dispatcher(response);
+                        
+                    default =>
+                        ThrowDecodingException("Mount", "ReturnExportListResponse");
+                }
+        }
+    }
+}
+// rfc 2224, section 7
+// Version 1 of the MOUNT protocol is described in Appendix A of RFC 1094 and version 3 in Appendix I of RFC 1813. 
+// Version 2 of the MOUNT protocol is identical to version 1 except for the addition of a procedure MOUNTPROC_PATHCONF which returns POSIX pathconf information from the server.
+contract OperationContract
+{
+    accepts operation NullOp
+    {
+        override string ToString()
+        {
+            return "Mount: Version 1/2/3, Do nothing (0)";
+        }
+    }
+    
+    accepts operation AddMountEntryV1AndV2Op
+    {
+        in XDRString Dirpath;
+        out AddMountEntryV1andV2Response MountRes12;
+        override string ToString()
+        {
+            return "Mount: Version 1/2, Add Mount Entry (1)";
+        }
+    }
+    
+    accepts operation AddMountEntryV3Op
+    {
+        in XDRString Dirpath;
+        out AddMountEntryV3Resp MountRes3;
+        override string ToString()
+        {
+            return "Mount: Version 3, Add Mount Entry (1)";
+        }
+    }
+    
+    accepts operation ReturnMountEntriesOp
+    {
+        out ReturnMountEntriesResp MountList;
+        override string ToString()
+        {
+            return "Mount: Version 1/2/3, Return Mount Entries (2)";
+        }
+    }
+    
+    accepts operation RemoveMountEntryOp
+    {
+        in XDRString Dirpath;
+        override string ToString()
+        {
+            return "Mount: Version 1/2/3, Remove Mount Entry (3)";
+        }
+    }
+    
+    accepts operation RemoveAllMountEntriesOp
+    {
+        override string ToString()
+        {
+            return "Mount: Version 1/2/3, Remove All Mount Entries (4)";
+        }
+    }
+    
+    accepts operation ReturnExportListOp
+    {
+        out ReturnExportListResp ExportList;
+        override string ToString()
+        {
+            return "Mount: Version 1/2/3, Return Export List (5)";
+        }
+    }
+}
+
+contract MessageContract
+{
+    // proc 0
+    accepts message NullRequest
+    {
+        override string ToString()
+        {
+            return "Mount: Version 1/2/3, Do nothing Request Message (0)";
+        }
+    }
+
+    issues message NullResponse
+    {
+        override string ToString()
+        {
+            return "Mount: Version 1/2/3, Do nothing Response Message (0)";
+        }
+    }
+    
+    // proc 1, v12
+    accepts message AddMountEntryV1AndV2Request
+    {
+        XDRString Dirpath;
+        override string ToString()
+        {
+            return "Mount: Version 1/2, Add Mount Entry Request Message (1)";
+        }
+    }
+    
+    issues message AddMountEntryV1AndV2Response
+    {
+        AddMountEntryV1andV2Response MountRes12;
+        override string ToString()
+        {
+            return "Mount: Version 1/2, Add Mount Entry Response Message (1)";
+        }
+    }
+    
+    // proc 1, v3
+    accepts message AddMountEntryV3Request
+    {
+        XDRString Dirpath;
+        override string ToString()
+        {
+            return "Mount: Version 3, Add Mount Entry Request Message (1)";
+        }
+    }
+    
+    issues message AddMountEntryV3Response
+    {
+        AddMountEntryV3Resp MountRes3;
+        override string ToString()
+        {
+            return "Mount: Version 3, Add Mount Entry Response Message (1)";
+        }
+    }
+    
+    // proc 2
+    accepts message ReturnMountEntriesRequest
+    {
+        override string ToString()
+        {
+            return "Mount: Version 1/2/3, Return Mount Entries Request Message (2)";
+        }
+    }
+    
+    issues message ReturnMountEntriesResponse
+    { 
+        ReturnMountEntriesResp MountList;
+        override string ToString()
+        {
+            return "Mount: Version 1/2/3, Return Mount Entries Response Message (2)";
+        }
+    }
+    
+    // proc 3
+    accepts message RemoveMountEntryRequest
+    {
+        XDRString Dirpath;
+        override string ToString()
+        {
+            return "Mount: Version 1/2/3, Remove Mount Entry Request Message (3)";
+        }
+    }
+    
+    issues message RemoveMountEntryResponse
+    {
+        override string ToString()
+        {
+            return "Mount: Version 1/2/3, Remove Mount Entry Response Message (3)";
+        }
+    }
+    
+    // proc 4
+    accepts message RemoveAllMountEntriesRequest
+    {
+        override string ToString()
+        {
+            return "Mount: Version 1/2/3, Remove All Mount Entries Request Message (4)";
+        }
+    }
+    
+    issues message RemoveAllMountEntriesResponse
+    {
+        override string ToString()
+        {
+            return "Mount: Version 1/2/3, Remove All Mount Entries Response Message (4)";
+        }
+    }
+    
+    //proc 5
+    accepts message ReturnExportListRequest
+    {
+        override string ToString()
+        {
+            return "Mount: Version 1/2/3, Return Export List Request Message (5)";
+        }
+    }
+    
+    
+    issues message ReturnExportListResponse
+    {
+        ReturnExportListResp ExportList;
+        override string ToString()
+        {
+            return "Mount: Version 1/2/3, Return Export List Response Message (5)";
+        }
+    }
+}
+
+autostart actor OperationContractActor(IntermediateServer node)
+{
+    MessageContract.NullRequest nullRequest = null;
+    MessageContract.AddMountEntryV1AndV2Request addMountEntryV1AndV2Request = null;
+    MessageContract.AddMountEntryV3Request addMountEntryV3Request = null;
+    MessageContract.ReturnMountEntriesRequest returnMountEntriesRequest = null;
+    MessageContract.RemoveMountEntryRequest removeMountEntryRequest = null;
+    MessageContract.RemoveAllMountEntriesRequest removeAllMountEntriesRequest= null;
+    MessageContract.ReturnExportListRequest returnExportListRequest = null;
+    
+    ~endpoint(IntermediateServer node)
+    {
+        if (nullRequest != null)
+        {
+            DisplayTopLevelMessage(nullRequest);
+        }
+        if (addMountEntryV1AndV2Request != null)
+        {
+            DisplayTopLevelMessage(addMountEntryV1AndV2Request);
+        }
+        if (addMountEntryV3Request != null)
+        {
+            DisplayTopLevelMessage(addMountEntryV3Request);
+        }
+        if (returnMountEntriesRequest != null)
+        {
+            DisplayTopLevelMessage(returnMountEntriesRequest);
+        }
+        if (removeMountEntryRequest != null)
+        {
+            DisplayTopLevelMessage(removeMountEntryRequest);
+        }
+        if (removeAllMountEntriesRequest != null)
+        {
+            DisplayTopLevelMessage(removeAllMountEntriesRequest);
+        }
+        if (returnExportListRequest != null)
+        {
+            DisplayTopLevelMessage(returnExportListRequest);
+        }
+    }
+    
+    // NullOp -- 0
+    process node accepts req:MessageContract.NullRequest
+    {
+        if (nullRequest != null)
+        {
+            ValidationCheck(false, nullRequest, "Incomplete null operation due to missing null response.");
+        }
+        nullRequest = req;
+    }
+    process node issues res:MessageContract.NullResponse
+    {
+        if (nullRequest == null)
+        {
+            ValidationCheck(false, res, "Incomplete null operation due to missing null request.");
+            reject;
+        }
+        else
+        {
+            var nullOp = new OperationContract.NullOp{};
+            nullOp.Origins = [nullRequest as any message, res as any message];
+            nullRequest = null;
+            dispatch (endpoint Server over node) accepts nullOp;
+        }
+    }
+    
+    // AddMountEntryV1AndV2 Request -- 1
+    process node accepts req:MessageContract.AddMountEntryV1AndV2Request
+    {
+        if (addMountEntryV1AndV2Request == null)
+        {
+            addMountEntryV1AndV2Request = req;
+        }
+        else
+        {
+            ValidationCheck(false, addMountEntryV1AndV2Request, "Mount: Incomplete AddMountEntryV1AndV2 operation due to response is missing when operation is constructed.");
+            addMountEntryV1AndV2Request = null;
+            addMountEntryV1AndV2Request = req;
+        }
+    }
+    
+    // response
+    process node issues res:MessageContract.AddMountEntryV1AndV2Response
+    {
+        if (addMountEntryV1AndV2Request == null)
+        {
+            ValidationCheck(false, res, "Mount: Incomplete AddMountEntryV1AndV2 operation due to request is missing when operation is constructed.");
+            reject;
+        }
+        else
+        {
+            var addMountEntryV1AndV2Op = new OperationContract.AddMountEntryV1AndV2Op
+            {
+                Dirpath = addMountEntryV1AndV2Request.Dirpath,
+                MountRes12 = res.MountRes12
+            };
+            addMountEntryV1AndV2Op.Origins = [addMountEntryV1AndV2Request as any message, res as any message];
+            addMountEntryV1AndV2Request = null;
+            dispatch (endpoint Server over node) accepts addMountEntryV1AndV2Op;
+        }
+    }
+    
+    // AddMountEntryV3 Request
+    process node accepts req:MessageContract.AddMountEntryV3Request
+    {
+        if (addMountEntryV3Request == null)
+        {
+            addMountEntryV3Request = req;
+        }
+        else
+        {
+            ValidationCheck(false, addMountEntryV3Request, "Mount: Incomplete AddMountEntryV3 operation due to response is missing when operation is constructed.");
+            addMountEntryV3Request = null;
+            addMountEntryV3Request = req;
+        }
+    }
+    
+    // response
+    process node issues res:MessageContract.AddMountEntryV3Response
+    {
+        if (addMountEntryV3Request == null)
+        {
+            ValidationCheck(false, res, "Mount: Incomplete AddMountEntryV3 operation due to request is missing when operation is constructed.");
+            reject;
+        }
+        else
+        {
+            var addMountEntryV3Op = new OperationContract.AddMountEntryV3Op
+            {
+                Dirpath = addMountEntryV3Request.Dirpath,
+                MountRes3 = res.MountRes3
+            };
+            addMountEntryV3Op.Origins = [addMountEntryV3Request as any message, res as any message];
+            addMountEntryV3Request = null;
+            dispatch (endpoint Server over node) accepts addMountEntryV3Op;
+        }
+    }
+    
+    //ReturnMountEntriesOp --- 2
+    process node accepts req:MessageContract.ReturnMountEntriesRequest
+    {
+        if (!(returnMountEntriesRequest == null))
+        {
+            ValidationCheck(false, returnMountEntriesRequest, "Incomplete ReturnMountEntries operation due to ReturnMountEntries response is missing.");
+        }
+        returnMountEntriesRequest = req;
+    }
+    process node issues res:MessageContract.ReturnMountEntriesResponse
+    {
+        if (returnMountEntriesRequest == null)
+        {
+            ValidationCheck(false, res, "Incomplete ReturnMountEntries operation due to ReturnMountEntries request is missing.");
+            reject;
+        }
+        else
+        {
+            var returnMountEntriesOp = new OperationContract.ReturnMountEntriesOp
+            {
+                MountList = res.MountList
+            };
+            returnMountEntriesOp.Origins = [returnMountEntriesRequest as any message, res as any message];
+            returnMountEntriesRequest = null;
+            dispatch (endpoint Server over node) accepts returnMountEntriesOp;
+        }
+    }
+    
+    //RemoveMountEntryOp -- 3
+    process node accepts req:MessageContract.RemoveMountEntryRequest
+    {
+        if (!(removeMountEntryRequest == null))
+        {
+            ValidationCheck(false, removeMountEntryRequest, "Incomplete RemoveMountEntry operation due to missing RemoveMountEntry response.");
+        }
+        removeMountEntryRequest = req;
+    }
+    process node issues res:MessageContract.RemoveMountEntryResponse
+    {
+        if (removeMountEntryRequest == null)
+        {
+            ValidationCheck(false, res, "Incomplete RemoveMountEntry operation due to missing RemoveMountEntry request.");
+            reject;
+        }
+        else
+        {
+            var removeMountEntryOp = new OperationContract.RemoveMountEntryOp
+            {
+                Dirpath = removeMountEntryRequest.Dirpath
+            };
+            removeMountEntryOp.Origins = [removeMountEntryRequest as any message, res as any message];
+            removeMountEntryRequest = null;
+            dispatch (endpoint Server over node) accepts removeMountEntryOp;
+        }
+    }
+    
+    // RemoveAllMountEntriesOp -- 4
+    process node accepts req:MessageContract.RemoveAllMountEntriesRequest
+    {
+        if (!(removeAllMountEntriesRequest == null))
+        {
+            ValidationCheck(false, removeAllMountEntriesRequest, "Incomplete RemoveAllMountEntries operation due to missing RemoveAllMountEntries response.");
+        }
+        removeAllMountEntriesRequest = req;
+    }
+    process node issues res:MessageContract.RemoveAllMountEntriesResponse
+    {
+        if (removeAllMountEntriesRequest == null)
+        {
+            ValidationCheck(false, res, "Incomplete RemoveAllMountEntries operation due to missing RemoveAllMountEntries request.");
+            reject;
+        }
+        else
+        {
+            var removeAllMountEntriesOp = new OperationContract.RemoveAllMountEntriesOp{};
+            removeAllMountEntriesOp.Origins = [removeAllMountEntriesRequest as any message, res as any message];
+            removeAllMountEntriesRequest = null;
+            dispatch (endpoint Server over node) accepts removeAllMountEntriesOp;
+        }
+    }
+    
+    // ReturnExportListOp -- 5
+    process node accepts req:MessageContract.ReturnExportListRequest
+    {
+        if (!(returnExportListRequest == null))
+        {
+            ValidationCheck(false, returnExportListRequest, "Incomplete ReturnExportList operation due to missing ReturnExportList response.");
+        }
+        returnExportListRequest = req;
+    }
+    process node issues res:MessageContract.ReturnExportListResponse
+    {
+        if (returnExportListRequest == null)
+        {
+            ValidationCheck(false, res, "Incomplete ReturnExportList operation due to missing ReturnExportList request.");
+            reject;
+        }
+        else
+        {
+            var returnExportListOp = new OperationContract.ReturnExportListOp
+            {
+                ExportList = res.ExportList
+            };
+            returnExportListOp.Origins = [nullRequest as any message, res as any message];
+            returnExportListRequest = null;
+            dispatch (endpoint Server over node) accepts returnExportListOp;
+        }
+    }
+}
+
+const uint MntPathLen = 1024;  /* Maximum bytes in a path name */
+const uint MntNamLen  = 255;   /* Maximum bytes in a name */
+const uint FhSize3    = 64;    /* Maximum bytes in a V3 file handle */
+const uint FhSize = 32;        /* The size in bytes of the opaque file handle. */  // -- rfc 1094 A.3
+
+type AddMountEntryV1andV2Response
+{
+    MountStat3 Status;
+    optional [|Status is MountStat3.MNT3OK|] MountRes1and2OK MountInfo;
+}
+
+type MountRes1and2OK
+{
+    XdrOpaqueFixed[FhSize] Fhandle;
+}
+
+// version 3
+type AddMountEntryV3Resp // 3.1
+{
+    MountStat3 Status;
+    optional [|Status is MountStat3.MNT3OK|] MountRes3OK MountInfo;
+}
+
+type MountRes3OK
+{
+    XdrOpaqueVariable Fhandle where ValidationCheck(value.Length <= FhSize3, null, "Mount: The Length in type XdrOpaqueVariable should be less than or equal to " + (FhSize3 as string) + (FhSize3 as string) + ".");
+    XdrUnsignedInt AuthFlavorsCount;
+    array<XDRInt> AuthFlavors with BinaryEncoding{Length = AuthFlavorsCount}; // int auth_flavors<>;
+}
+
+type ReturnMountEntriesResp // 3.2
+{
+    XDRBool Opted;
+    optional [|Opted == XDRBool.TRUE|] MountBody MountBody;
+}
+
+type MountBody
+{
+    XDRString HostName where ValidationCheck(value.Length <= MntNamLen, null, "Length of string should be less than TD required " + (MntNamLen as string) + ".");
+    XDRString Directory where ValidationCheck(value.Length <= MntPathLen, null, "Length of string should be less than TD required " + (MntPathLen as string) + ".");
+    XDRBool Next;
+    optional [|Next == XDRBool.TRUE|] MountBody MountBody;
+}
+
+type ReturnExportListResp // 3.5
+{
+    XDRBool Opted;
+    optional [|Opted == XDRBool.TRUE|] MountExportNode ExportNode;
+}
+
+type MountExportNode
+{
+    XDRString Dir;
+    XDRBool Groups;
+    optional [|Groups == XDRBool.TRUE|] MountGroupNode GroupNode;
+    XDRBool Next;
+    optional [|Next == XDRBool.TRUE|] MountExportNode ExportNode;
+}
+
+type MountGroupNode
+{
+    XDRString Name where ValidationCheck(value.Length <= MntNamLen, null, "Length of string should be less than TD required " + (MntNamLen as string) + ".");
+    XDRBool Next;
+    optional [|Next == XDRBool.TRUE|] MountGroupNode GroupNode;
+}
+
+pattern MountStat3 = enum uint
+{
+    MNT3OK = 0,                 /* no error */
+    MNT3ErrPERM = 1,            /* Not owner */
+    MNT3ErrNOENT = 2,           /* No such file or directory */
+    MNT3ErrIO = 5,              /* I/O error */
+    MNT3ErrACCES = 13,          /* Permission denied */
+    MNT3ErrNOTDIR = 20,         /* Not a directory */
+    MNT3ErrINVAL = 22,          /* Invalid argument */
+    MNT3ErrNAMETOOLONG = 63,    /* Filename too long */
+    MNT3ErrNOTSUPP = 10004,     /* Operation not supported */
+    MNT3ErrSERVERFAULT = 10006  /* A failure on the server */
+};

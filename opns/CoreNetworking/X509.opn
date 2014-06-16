@@ -1,0 +1,839 @@
+﻿module X509 with
+Asn1EncodingDefaults{EncodingRule = Asn1EncodingRule.BER},
+Documentation
+{
+    ProtocolName = "Public Key Infrastructure Certificate",
+    ShortName = "X509",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+            new Reference{Name = "RFC 3280"},
+            new Reference{Name = "RFC 3279"},
+            new Reference{Name = "RFC 3709"},
+        ],
+    RevisionSummary = 
+        [
+            new Revision{Class=RevisionClass.Major, Version="1.0.0", Date="1/29/2012"}
+        ]
+};
+    
+using Standard;
+using ASN1;
+
+type Attribute
+{
+    AttributeType Type;
+    set<([|Type == [2, 5, 4, 41]|] X520Name
+        | [|Type == [2, 5, 4, 3]|] X520CommonName 
+        | [|Type == [2, 5, 4, 7]|] X520LocalityName 
+        | [|Type == [2, 5, 4, 8]|] X520StateOrProvinceName 
+        | [|Type == [2, 5, 4, 10]|] X520OrganizationName 
+        | [|Type == [2, 5, 4, 11]|] X520OrganizationalUnitName 
+        | [|Type == [2, 5, 4, 12]|] X520Title 
+        | [|Type == [2, 5, 4, 46]|] X520DnQualifier 
+        | [|Type == [2, 5, 4, 6]|] X520CountryName 
+        | [|Type == [2, 5, 4, 5]|] X520SerialNumber 
+        | [|Type == [2, 5, 4, 65]|] X520Pseudonym 
+        | [|Type == [0, 9, 2342, 19200300, 100, 1, 25]|] DomainComponent 
+        | [|Type == [1, 2, 840, 113549, 1, 9, 1]|] EmailAddress
+        | DirectoryString)> Value;
+}
+
+pattern AttributeType = ObjectIdentifier;
+//pattern AttributeValue = ANY;
+
+type AttributeTypeAndValue
+{
+    AttributeType Type;
+    ([|Type == [2, 5, 4, 41]|] X520Name
+        | [|Type == [2, 5, 4, 3]|] X520CommonName 
+        | [|Type == [2, 5, 4, 7]|] X520LocalityName 
+        | [|Type == [2, 5, 4, 8]|] X520StateOrProvinceName 
+        | [|Type == [2, 5, 4, 10]|] X520OrganizationName 
+        | [|Type == [2, 5, 4, 11]|] X520OrganizationalUnitName 
+        | [|Type == [2, 5, 4, 12]|] X520Title 
+        | [|Type == [2, 5, 4, 46]|] X520DnQualifier 
+        | [|Type == [2, 5, 4, 6]|] X520CountryName 
+        | [|Type == [2, 5, 4, 5]|] X520SerialNumber 
+        | [|Type == [2, 5, 4, 65]|] X520Pseudonym 
+        | [|Type == [0, 9, 2342, 19200300, 100, 1, 25]|] DomainComponent 
+        | [|Type == [1, 2, 840, 113549, 1, 9, 1]|] EmailAddress
+        | DirectoryString) Value;
+}
+
+pattern X520Name = TeletexString | PrintableString | UniversalString | UTF8String | BMPString;
+pattern X520CommonName = TeletexString | PrintableString | UniversalString | UTF8String | BMPString;
+pattern X520LocalityName = TeletexString | PrintableString | UniversalString | UTF8String | BMPString;
+pattern X520StateOrProvinceName = TeletexString | PrintableString | UniversalString | UTF8String | BMPString;
+pattern X520OrganizationName = TeletexString | PrintableString | UniversalString | UTF8String | BMPString;
+pattern X520OrganizationalUnitName = TeletexString | PrintableString | UniversalString | UTF8String | BMPString;
+pattern X520Title = TeletexString | PrintableString | UniversalString | UTF8String | BMPString;
+pattern X520DnQualifier = PrintableString;
+pattern X520CountryName = PrintableString;
+pattern X520SerialNumber = PrintableString;
+pattern X520Pseudonym = TeletexString | PrintableString | UniversalString | UTF8String | BMPString;
+pattern DomainComponent = IA5String;
+pattern EmailAddress = IA5String;
+pattern Name = RdnSequence;
+
+pattern RdnSequence = array<RelativeDistinguishedName>;
+pattern DistinguishedName = RdnSequence;
+
+pattern RelativeDistinguishedName = set<AttributeTypeAndValue>;
+
+pattern DirectoryString = TeletexString | PrintableString | UniversalString | UTF8String | BMPString;
+
+type Certificate
+{
+    TbsCertificate TbsCertificate;
+    AlgorithmIdentifier SignatureAlgorithm;
+    BitString Signature;
+}
+
+type TbsCertificate
+{
+    optional Version Version with Asn1Encoding{TagNumber = 0, Tagging = Asn1Tagging.Explicit};
+    CertificateSerialNumber SerialNumber;
+    AlgorithmIdentifier Signature;
+    Name Issuer;
+    Validity Validity;
+    Name Subject;
+    SubjectPublicKeyInfo SubjectPublicKeyInfo;
+    optional UniqueIdentifier IssuerUniqueID with Asn1Encoding{TagNumber = 1, Tagging = Asn1Tagging.Implicit};
+    optional UniqueIdentifier SubjectUniqueID with Asn1Encoding{TagNumber = 2, Tagging = Asn1Tagging.Implicit};
+    optional Extensions Extensions with Asn1Encoding{TagNumber = 3, Tagging = Asn1Tagging.Explicit};
+}
+
+pattern Version = enum Integer {V1 = 0, V2 = 1, V3 = 2};
+pattern CertificateSerialNumber = Integer;
+
+type Validity
+{
+    Time NotBefore;
+    Time NotAfter;
+}
+
+pattern Time = UTCTime | GeneralizedTime;
+pattern UniqueIdentifier = BitString;
+
+type SubjectPublicKeyInfo
+{
+    AlgorithmIdentifier Algorithm;
+    BitString SubjectPublicKey;
+}
+
+pattern Extensions = array<Extension>;
+
+type Extension
+{
+    ObjectIdentifier ExtnID;
+    optional Boolean Critical;
+    ([|ExtnID in 
+        {
+            [2, 5, 29, 9],
+            [2, 5, 29, 14],
+            [2, 5, 29, 15],
+            [2, 5, 29, 16],
+            [2, 5, 29, 17],
+            [2, 5, 29, 18],
+            [2, 5, 29, 19],
+            [2, 5, 29, 20],
+            [2, 5, 29, 21],
+            [2, 5, 29, 23],
+            [2, 5, 29, 24],
+            [2, 5, 29, 27],
+            [2, 5, 29, 28],
+            [2, 5, 29, 29],
+            [2, 5, 29, 30],
+            [2, 5, 29, 31],
+            [2, 5, 29, 32],
+            [2, 5, 29, 33],
+            [2, 5, 29, 35],
+            [2, 5, 29, 36],
+            [2, 5, 29, 37],
+            [2, 5, 29, 46],
+            [2, 5, 29, 54],
+            [1, 3, 6, 1, 5, 5, 7, 1, 1],
+            [1, 3, 6, 1, 5, 5, 7, 1, 11],
+            [1, 3, 6, 1, 5, 5, 7, 1, 12],
+            [1, 2, 840, 113549, 1, 9, 15],
+            [1, 3, 6, 1, 4, 1, 311, 21, 7],
+            [1, 3, 6, 1, 4, 1, 311, 21, 10]
+        }|] ExtnValueExtension[ExtnID] | OctetString) ExtnValue;
+}
+
+type ExtnValueExtension[ObjectIdentifier extnID]
+{
+    ([|extnID == [2, 5, 29, 9]|] SubjectDirectoryAttributes                 |
+        [|extnID == [2, 5, 29, 14]|] SubjectKeyIdentifier                   |
+        [|extnID == [2, 5, 29, 15]|] KeyUsage                               |
+        [|extnID == [2, 5, 29, 16]|] PrivateKeyUsagePeriod                  |
+        [|extnID == [2, 5, 29, 17]|] SubjectAltName                         |
+        [|extnID == [2, 5, 29, 18]|] IssuerAltName                          |
+        [|extnID == [2, 5, 29, 19]|] BasicConstraints                       |
+        [|extnID == [2, 5, 29, 20]|] CrlNumber                              |
+        [|extnID == [2, 5, 29, 21]|] CrlReason                              |
+        [|extnID == [2, 5, 29, 23]|] HoldInstructionCode                    |
+        [|extnID == [2, 5, 29, 24]|] InvalidityDate                         |
+        [|extnID == [2, 5, 29, 27]|] BaseCrlNumber                          |
+        [|extnID == [2, 5, 29, 28]|] IssuingDistributionPoint               |
+        [|extnID == [2, 5, 29, 29]|] CertificateIssuer                      |
+        [|extnID == [2, 5, 29, 30]|] NameConstraints                        |
+        [|extnID == [2, 5, 29, 31]|] CrlDistributionPoints                  |
+        [|extnID == [2, 5, 29, 32]|] CertificatePolicies                    |
+        [|extnID == [2, 5, 29, 33]|] PolicyMappings                         |
+        [|extnID == [2, 5, 29, 35]|] AuthorityKeyIdentifier                 |
+        [|extnID == [2, 5, 29, 36]|] PolicyConstraints                      |
+        [|extnID == [2, 5, 29, 37]|] ExtKeyUsageSyntax                      |
+        [|extnID == [2, 5, 29, 46]|] FreshestCrl                            |
+        [|extnID == [2, 5, 29, 54]|] InhibitAnyPolicy                       |
+        [|extnID == [1, 3, 6, 1, 5, 5, 7, 1, 1]|] AuthorityInfoAccessSyntax |
+        [|extnID == [1, 3, 6, 1, 5, 5, 7, 1, 11]|] SubjectInfoAccessSyntax  |
+        [|extnID == [1, 3, 6, 1, 5, 5, 7, 1, 12]|] LogotypeExtn             |
+        [|extnID == [1, 2, 840, 113549, 1, 9, 15]|] SmimeCapabilities       |
+        [|extnID == [1, 3, 6, 1, 4, 1, 311, 21, 7]|] CertificateTemplate    |
+        [|extnID == [1, 3, 6, 1, 4, 1, 311, 21, 10]|] MSApplicationPolicies) ExtnValue;
+}
+
+type CertificateList
+{
+    TbsCertList TbsCertList;
+    AlgorithmIdentifier SignatureAlgorithm;
+    BitString Signature;
+}
+
+type TbsCertList
+{
+    optional Integer Version with Asn1Encoding{LowerEndValue = 1, UpperEndValue = 1};
+    AlgorithmIdentifier Signature;
+    Name Issuer;
+    Time ThisUpdate;
+    optional Time NextUpdate;
+    optional RevokedCertificates RevokedCertificates;
+    optional Extensions Extensions with Asn1Encoding{TagNumber = 0, Tagging = Asn1Tagging.Explicit};
+}
+
+pattern RevokedCertificates = array<RevokedCertificate>;
+
+type RevokedCertificate
+{
+    CertificateSerialNumber UserCertificate;
+    Time RevocationDate;
+    optional Extensions CrlEntryExtensions;
+}
+
+type AlgorithmIdentifier
+{
+    ObjectIdentifier Algorithm;
+    optional ([|Algorithm == [1, 2, 840, 113549, 1, 1, 1] || Algorithm == [1, 2, 840, 113549, 1, 1, 2] || Algorithm == [1, 2, 840, 113549, 1, 1, 4] || Algorithm == [1, 2, 840, 113549, 1, 1, 5]|] Null
+        | [|Algorithm == [1, 2, 840, 10040, 4, 1]|] DssParms
+        | [|Algorithm == [1, 2, 840, 10046, 2, 1]|] DomainParameters
+        | [|Algorithm == [2, 16, 840, 1, 101, 2, 1, 1, 22]|] KeaParmsId
+        | [|Algorithm == [1, 2, 840, 10045, 2, 1]|] EcpkParameters) Parameters;
+}
+
+type ORAddress
+{
+   BuiltInStandardAttributes BuiltInStandardAttributes;
+   optional BuiltInDomainDefinedAttributes BuiltInDomainDefinedAttributes;
+   optional ExtensionAttributes ExtensionAttributes;
+}
+
+type BuiltInStandardAttributes
+{
+    optional CountryName CountryName;
+    optional AdministrationDomainName AdministrationDomainName;
+    optional NetworkAddress NetworkAddress with Asn1Encoding{TagNumber = 0, Tagging = Asn1Tagging.Implicit};
+    optional TerminalIdentifier TerminalIdentifier with Asn1Encoding{TagNumber = 1, Tagging = Asn1Tagging.Implicit};
+    optional PrivateDomainName PrivateDomainName with Asn1Encoding{TagNumber = 2, Tagging = Asn1Tagging.Explicit};
+    optional OrganizationName OrganizationName with Asn1Encoding{TagNumber = 3, Tagging = Asn1Tagging.Implicit};
+    optional NumericUserIdentifier NumericUserIdentifier with Asn1Encoding{TagNumber = 4, Tagging = Asn1Tagging.Implicit};
+    optional PersonalName PersonalName with Asn1Encoding{TagNumber = 5, Tagging = Asn1Tagging.Implicit};
+    optional OrganizationalUnitNames OrganizationalUnitNames with Asn1Encoding{TagNumber = 6, Tagging = Asn1Tagging.Implicit};
+}
+
+pattern CountryName = (NumericString | PrintableString)
+        with Asn1Encoding{
+            TagClass = Asn1TagClass.Application,
+            TagNumber = 1,
+            Tagging = Asn1Tagging.Explicit};
+
+pattern AdministrationDomainName = (NumericString | PrintableString)
+        with Asn1Encoding{
+            TagClass = Asn1TagClass.Application,
+            TagNumber = 2,
+            Tagging = Asn1Tagging.Explicit};
+
+pattern NetworkAddress = X121Address;
+pattern X121Address = NumericString;
+pattern TerminalIdentifier = PrintableString;
+pattern PrivateDomainName = NumericString | PrintableString;
+pattern OrganizationName = PrintableString;
+pattern NumericUserIdentifier = NumericString;
+
+// WORKROUND: using type temporarily for set definition
+type PersonalName
+{
+    PrintableString SurName with Asn1Encoding{TagNumber = 0, Tagging = Asn1Tagging.Implicit};
+    optional PrintableString GivenName with Asn1Encoding{TagNumber = 1, Tagging = Asn1Tagging.Implicit};
+    optional PrintableString Initials with Asn1Encoding{TagNumber = 2, Tagging = Asn1Tagging.Implicit};
+    optional PrintableString GenerationQualifier with Asn1Encoding{TagNumber = 3, Tagging = Asn1Tagging.Implicit};
+}
+
+pattern OrganizationalUnitNames = array<OrganizationalUnitName>;
+pattern OrganizationalUnitName = PrintableString;
+pattern BuiltInDomainDefinedAttributes = array<BuiltInDomainDefinedAttribute>;
+
+type BuiltInDomainDefinedAttribute
+{
+    PrintableString Type;
+    PrintableString Value;
+}
+
+pattern ExtensionAttributes = set<ExtensionAttribute>;
+
+type ExtensionAttribute
+{
+    Integer Type with Asn1Encoding{TagNumber = 0, Tagging = Asn1Tagging.Implicit};
+    ([|Type == 1|] CommonName
+        | [|Type == 1|] CommonName
+        | [|Type == 2|] TeletexCommonName
+        | [|Type == 3|] TeletexOrganizationName
+        | [|Type == 4|] TeletexPersonalName
+        | [|Type == 5|] TeletexOrganizationalUnitNames
+        | [|Type == 6|] TeletexDomainDefinedAttributes
+        | [|Type == 7|] PdsName
+        | [|Type == 8|] PhysicalDeliveryCountryName
+        | [|Type == 9|] PostalCode
+        | [|Type == 10|] PhysicalDeliveryOfficeName
+        | [|Type == 11|] PhysicalDeliveryOfficeNumber
+        | [|Type == 12|] ExtensionORAddressComponents
+        | [|Type == 13|] PhysicalDeliveryPersonalName
+        | [|Type == 14|] PhysicalDeliveryOrganizationName
+        | [|Type == 15|] ExtensionPhysicalDeliveryAddressComponents
+        | [|Type == 16|] UnformattedPostalAddress
+        | [|Type == 17|] StreetAddress
+        | [|Type == 18|] PostOfficeBoxAddress
+        | [|Type == 19|] PosteRestanteAddress
+        | [|Type == 20|] UniquePostalName
+        | [|Type == 21|] LocalPostalAttributes
+        | [|Type == 22|] ExtendedNetworkAddress
+        | [|Type == 23|] TerminalType) Value with Asn1Encoding{TagNumber = 1, Tagging = Asn1Tagging.Explicit};
+}
+
+pattern CommonName = PrintableString;
+pattern TeletexCommonName = TeletexString;
+pattern TeletexOrganizationName = TeletexString;
+
+// WORKROUND: using type temporarily for set definition
+type TeletexPersonalName
+{
+    TeletexString SurName with Asn1Encoding{TagNumber = 0, Tagging = Asn1Tagging.Implicit};
+    optional TeletexString GivenName with Asn1Encoding{TagNumber = 1, Tagging = Asn1Tagging.Implicit};
+    optional TeletexString Initials with Asn1Encoding{TagNumber = 2, Tagging = Asn1Tagging.Implicit};
+    optional TeletexString GenerationQualifier with Asn1Encoding{TagNumber = 3, Tagging = Asn1Tagging.Implicit};
+}
+
+pattern TeletexOrganizationalUnitNames = array<TeletexOrganizationalUnitName>;
+pattern TeletexOrganizationalUnitName = TeletexString;
+pattern PdsName = PrintableString;
+pattern PhysicalDeliveryCountryName = NumericString | PrintableString;
+pattern PostalCode = NumericString | PrintableString;
+pattern PhysicalDeliveryOfficeName = PdsParameter;
+pattern PhysicalDeliveryOfficeNumber = PdsParameter;
+pattern ExtensionORAddressComponents = PdsParameter;
+pattern PhysicalDeliveryPersonalName = PdsParameter;
+pattern PhysicalDeliveryOrganizationName = PdsParameter;
+pattern ExtensionPhysicalDeliveryAddressComponents = PdsParameter;
+pattern PrintableAddresses = array<PrintableString>;
+
+// WORKROUND: using type temporarily for set definition
+type UnformattedPostalAddress
+{
+    optional PrintableAddresses PrintableAddress;
+    optional TeletexString TeletexString;
+}
+
+pattern StreetAddress = PdsParameter;
+pattern PostOfficeBoxAddress = PdsParameter;
+pattern PosteRestanteAddress = PdsParameter;
+pattern UniquePostalName = PdsParameter;
+pattern LocalPostalAttributes = PdsParameter;
+
+// WORKROUND: using type temporarily for set definition
+type PdsParameter
+{
+    optional PrintableString PrintableString;
+    optional TeletexString TeletexString;
+}
+
+pattern ExtendedNetworkAddress = E1634Address | PresentationAddressPattern;
+
+type E1634Address
+{
+    NumericString Number with Asn1Encoding{TagNumber = 0, Tagging = Asn1Tagging.Implicit};
+    optional NumericString SubAddress with Asn1Encoding{TagNumber = 1, Tagging = Asn1Tagging.Implicit};
+}
+
+pattern NAddressesSets = set<OctetString>;
+
+type PresentationAddress
+{
+    optional OctetString PSelector with Asn1Encoding{TagNumber = 0, Tagging = Asn1Tagging.Explicit};
+    optional OctetString SSelector with Asn1Encoding{TagNumber = 1, Tagging = Asn1Tagging.Explicit};
+    optional OctetString TSelector with Asn1Encoding{TagNumber = 2, Tagging = Asn1Tagging.Explicit};
+    NAddressesSets NAddresses with Asn1Encoding{TagNumber = 3, Tagging = Asn1Tagging.Explicit};
+}
+
+pattern PresentationAddressPattern = PresentationAddress with Asn1Encoding{TagNumber = 0, Tagging = Asn1Tagging.Implicit};
+
+pattern TerminalType = enum Integer
+{
+    Telex = 3,
+    Teletex = 4,
+    G3Facsimile = 5,
+    G4Facsimile = 6,
+    Ia5Terminal = 7,
+    Videotex = 8
+};
+
+pattern TeletexDomainDefinedAttributes = array<TeletexDomainDefinedAttribute>;
+
+type TeletexDomainDefinedAttribute
+{
+    TeletexString Type;
+    TeletexString Value;
+}
+
+//Implicitly Tagged Module
+pattern AuthorityKeyIdentifier = AuthorityKeyIdentifierType;
+
+type AuthorityKeyIdentifierType
+{
+    optional KeyIdentifier KeyIdentifier with Asn1Encoding{TagNumber = 0, Tagging = Asn1Tagging.Implicit};
+    optional GeneralNames AuthorityCertIssuer with Asn1Encoding{TagNumber = 1, Tagging = Asn1Tagging.Implicit};
+    optional CertificateSerialNumber AuthorityCertSerialNumber with Asn1Encoding{TagNumber = 2, Tagging = Asn1Tagging.Implicit};
+}
+
+pattern KeyIdentifier = OctetString;
+
+pattern SubjectKeyIdentifier = KeyIdentifier;
+
+pattern KeyUsage = BitString;
+
+type PrivateKeyUsagePeriod
+{
+    optional GeneralizedTime NotBefore with Asn1Encoding{TagNumber = 0, Tagging = Asn1Tagging.Implicit};
+    optional GeneralizedTime NotAfter with Asn1Encoding{TagNumber = 1, Tagging = Asn1Tagging.Implicit};
+}
+
+pattern CertificatePolicies = array<PolicyInformation>;
+
+type PolicyInformation
+{
+    CertPolicyId PolicyIdentifier;
+    optional array<PolicyQualifierInfo> PolicyQualifiers;
+}
+
+pattern CertPolicyId = ObjectIdentifier;
+
+type PolicyQualifierInfo
+{
+    PolicyQualifierId PolicyQualifierId;
+    ([|PolicyQualifierId == [1, 3, 6, 1, 5, 5, 7, 2, 1]|] CPSuri
+        | [|PolicyQualifierId == [1, 3, 6, 1, 5, 5, 7, 2, 2]|] UserNotice) Qualifier;
+}
+
+pattern PolicyQualifierId = ObjectIdentifier;
+pattern CPSuri = IA5String;
+
+type UserNotice
+{
+    optional NoticeReference NoticeRef;
+    optional DisplayText ExplicitText;
+}
+
+type NoticeReference
+{
+    DisplayText Organization;
+    array<Integer> NoticeNumbers;
+}
+
+pattern DisplayText = IA5String | VisibleString | UTF8String | BMPString;
+
+pattern PolicyMappings = array<PolicyMapping>;
+
+type PolicyMapping
+{
+    CertPolicyId IssuerDomainPolicy;
+    CertPolicyId SubjectDomainPolicy;
+}
+
+pattern SubjectAltName = GeneralNames;
+
+pattern GeneralNames = array<GeneralName>;
+
+pattern GeneralName = AnotherName | Rfc822Name | DnsName | X400Address | DirectoryName | EdiPartyName
+                    | UniformResourceIdentifier | IPAddress | RegisteredID;
+
+type AnotherName
+{
+    ObjectIdentifier TypeId;
+    // Future Reference: any not a type in ASN
+    //value      [0] EXPLICIT ANY DEFINED BY type-id
+    //binary Value with Asn1Encoding{TagNumber = 0, Tagging = Asn1Tagging.Explicit};
+} with Asn1Encoding{TagNumber = 0, Tagging = Asn1Tagging.Implicit, IsExtensible = true};
+
+type EdiPartyName
+{
+    //DirectoryString is choice type, the tag is explicit
+    optional DirectoryString NameAssigner with Asn1Encoding{TagNumber = 0, Tagging = Asn1Tagging.Explicit};
+    DirectoryString PartyName with Asn1Encoding{TagNumber = 1, Tagging = Asn1Tagging.Explicit};
+} with Asn1Encoding{TagNumber = 5, Tagging = Asn1Tagging.Implicit};
+
+pattern Rfc822Name = IA5String with Asn1Encoding{TagNumber = 1, Tagging = Asn1Tagging.Implicit};
+pattern DnsName = IA5String with Asn1Encoding{TagNumber = 2, Tagging = Asn1Tagging.Implicit};
+pattern X400Address = ORAddress with Asn1Encoding{TagNumber = 3, Tagging = Asn1Tagging.Implicit};
+pattern DirectoryName = Name with Asn1Encoding{TagNumber = 4, Tagging = Asn1Tagging.Explicit};//Name is choice type, the tag is explicit
+pattern UniformResourceIdentifier = IA5String with Asn1Encoding{TagNumber = 6, Tagging = Asn1Tagging.Implicit};
+pattern IPAddress = OctetString with Asn1Encoding{TagNumber = 7, Tagging = Asn1Tagging.Implicit};
+pattern RegisteredID = ObjectIdentifier with Asn1Encoding{TagNumber = 8, Tagging = Asn1Tagging.Implicit};
+
+pattern IssuerAltName = GeneralNames;
+
+pattern SubjectDirectoryAttributes = array<Attribute>;
+
+type BasicConstraints
+{
+    optional Boolean CA;
+    optional Integer PathLenConstraint;
+}
+
+type NameConstraints
+{
+    optional GeneralSubtrees PermittedSubtrees with Asn1Encoding{TagNumber = 0, Tagging = Asn1Tagging.Implicit};
+    optional GeneralSubtrees ExcludedSubtrees with Asn1Encoding{TagNumber = 1, Tagging = Asn1Tagging.Implicit};
+}
+
+pattern GeneralSubtrees = array<GeneralSubtree>;
+
+type GeneralSubtree
+{
+    GeneralName Base;
+    optional BaseDistance Minimum with Asn1Encoding{TagNumber = 0, Tagging = Asn1Tagging.Implicit};
+    optional BaseDistance Maximum with Asn1Encoding{TagNumber = 1, Tagging = Asn1Tagging.Implicit};
+}
+
+pattern BaseDistance = Integer;
+
+pattern PolicyConstraints = PolicyConstraintsType;
+
+type PolicyConstraintsType
+{
+    optional SkipCerts RequireExplicitPolicy with Asn1Encoding{TagNumber = 0, Tagging = Asn1Tagging.Implicit};
+    optional SkipCerts InhibitPolicyMapping with Asn1Encoding{TagNumber = 1, Tagging = Asn1Tagging.Implicit};
+}
+
+pattern SkipCerts = Integer;
+
+pattern CrlDistributionPoints = array<DistributionPoint>;
+
+type DistributionPoint
+{
+    //DistributionPointName is choice type, the tag is explicit
+    optional DistributionPointName DistributionPoint with Asn1Encoding{TagNumber = 0, Tagging = Asn1Tagging.Explicit};
+    optional ReasonFlags Reasons with Asn1Encoding{TagNumber = 1, Tagging = Asn1Tagging.Implicit};
+    optional GeneralNames CrlIssuer with Asn1Encoding{TagNumber = 2, Tagging = Asn1Tagging.Implicit};
+}
+
+pattern DistributionPointName = FullName | NameRelativeToCRLIssuer;
+pattern FullName = GeneralNames with Asn1Encoding{TagNumber = 0, Tagging = Asn1Tagging.Implicit};
+pattern NameRelativeToCRLIssuer = RelativeDistinguishedName with Asn1Encoding{TagNumber = 1, Tagging = Asn1Tagging.Implicit};
+pattern ReasonFlags = BitString;  //waiting for each bit structure
+
+pattern ExtKeyUsageSyntax = array<KeyPurposeId>;
+
+pattern KeyPurposeId = ObjectIdentifier;
+
+pattern InhibitAnyPolicy = SkipCerts;
+
+pattern FreshestCrl = CrlDistributionPoints;
+
+pattern AuthorityInfoAccessSyntax = array<AccessDescription>;
+
+type AccessDescription
+{
+    ObjectIdentifier AccessMethod;
+    GeneralName AccessLocation;
+}
+
+pattern SubjectInfoAccessSyntax = array<AccessDescription>;
+
+pattern CrlNumber = Integer;
+
+type IssuingDistributionPoint
+{
+    //DistributionPointName is choice type, the tag is explicit
+    optional DistributionPointName DistributionPoint with Asn1Encoding{TagNumber = 0, Tagging = Asn1Tagging.Explicit};
+    optional Boolean OnlyContainsUserCerts with Asn1Encoding{TagNumber = 1, Tagging = Asn1Tagging.Implicit};
+    optional Boolean OnlyContainsCACerts with Asn1Encoding{TagNumber = 2, Tagging = Asn1Tagging.Implicit};
+    optional ReasonFlags OnlySomeReasons with Asn1Encoding{TagNumber = 3, Tagging = Asn1Tagging.Implicit};
+    optional Boolean IndirectCrl with Asn1Encoding{TagNumber = 4, Tagging = Asn1Tagging.Implicit};
+    optional Boolean OnlyContainsAttributeCerts with Asn1Encoding{TagNumber = 5, Tagging = Asn1Tagging.Implicit};
+}
+
+pattern BaseCrlNumber = CrlNumber;
+pattern CrlReason = enum Integer
+{
+    Unspecified = 0,
+    KeyCompromise = 1,
+    CACompromise = 2,
+    AffiliationChanged = 3,
+    Superseded = 4,
+    CessationOfOperation = 5,
+    CertificateHold = 6,
+    RemoveFromCRL = 8,
+    PrivilegeWithdrawn = 9,
+    AACompromise = 10
+};
+
+pattern CertificateIssuer = GeneralNames;
+pattern HoldInstructionCode = ObjectIdentifier;
+pattern InvalidityDate = GeneralizedTime;
+
+///*******************************RFC 3279*****************************/
+pattern DsaPublicKey = Integer;
+
+type DssParms
+{
+    Integer P;
+    Integer Q;
+    Integer G;
+}
+
+type DssSigValue
+{
+    Integer R;
+    Integer S;
+}
+
+type RsaPublicKey 
+{
+    Integer Modulus;
+    Integer PublicExponent;
+}
+
+pattern DHPublicKey = Integer;
+
+type DomainParameters
+{
+    Integer P;
+    Integer G;
+    Integer Q;
+    optional Integer J;
+    optional ValidationParms ValidationParms; 
+}
+
+type ValidationParms
+{
+    BitString Seed;
+    Integer PgenCounter;
+}
+
+pattern KeaParmsId = OctetString;
+
+type FieldID
+{
+    ObjectIdentifier FieldType;
+    ([|FieldType == [1, 2, 840, 10045, 1, 1]|] PrimeP
+        | [|FieldType == [1, 2, 840, 10045, 1, 2]|] CharacteristicTwo) Parameters;
+}
+
+type EcdsaSigValue
+{
+    Integer R;
+    Integer S;
+}
+
+pattern PrimeP = Integer;
+
+type CharacteristicTwo
+{
+    Integer M;
+    ObjectIdentifier Basis;
+    ([|Basis == [1, 2, 840, 10045, 1, 2, 1, 1]|] Null
+        | [|Basis == [1, 2, 840, 10045, 1, 2, 1, 2]|] Trinomial
+        | [|Basis == [1, 2, 840, 10045, 1, 2, 1, 3]|] Pentanomial) Parameters;
+}
+
+pattern Trinomial = Integer;
+
+type Pentanomial
+{
+    Integer K1;
+    Integer K2;
+    Integer K3;
+}
+
+pattern FieldElement = OctetString;
+pattern ECPoint = OctetString;
+pattern EcpkParameters = ECParameters | ObjectIdentifier | Null;
+
+type ECParameters
+{
+    EcpVer Version;
+    FieldID FieldID;
+    Curve Curve;
+    ECPoint Base;
+    Integer Order;
+    optional Integer Cofactor;
+}
+
+pattern EcpVer = enum Integer{EcpVer1 = 1};
+
+type Curve
+{
+    FieldElement A;
+    FieldElement B;
+    optional BitString Seed;
+}
+
+///*******************************RFC 3709*****************************/
+///Extension: OID = {1.3.6.1.5.5.7.1.12}
+type LogotypeExtn
+{
+    optional LogotypeInfos CommunityLogos with Asn1Encoding{TagNumber = 0, Tagging = Asn1Tagging.Explicit};
+    optional LogotypeInfo IssuerLogo with Asn1Encoding{TagNumber = 1, Tagging = Asn1Tagging.Explicit};
+    optional LogotypeInfo SubjectLogo with Asn1Encoding{TagNumber = 2, Tagging = Asn1Tagging.Explicit};
+    optional OtherLogotypeInfos OtherLogos with Asn1Encoding{TagNumber = 3, Tagging = Asn1Tagging.Explicit};
+}
+
+pattern LogotypeInfos = array<LogotypeInfo>;
+
+pattern LogotypeInfo = Direct | Indirect;
+
+pattern Direct = LogotypeData with Asn1Encoding{TagNumber = 0, Tagging = Asn1Tagging.Implicit};
+pattern Indirect = LogotypeReference with Asn1Encoding{TagNumber = 1, Tagging = Asn1Tagging.Implicit};
+
+type LogotypeData
+{
+    optional LogotypeImages Image;
+    optional LogotypeAudios Audio with Asn1Encoding{TagNumber = 1, Tagging = Asn1Tagging.Implicit};
+}
+
+pattern LogotypeImages = array<LogotypeImage>;
+
+type LogotypeImage
+{
+    LogotypeDetails ImageDetails;
+    optional LogotypeImageInfo ImageInfo;
+}
+
+pattern LogotypeAudios = array<LogotypeAudio>;
+
+type LogotypeAudio
+{
+    LogotypeDetails AudioDetails;
+    optional LogotypeAudioInfo AudioInfo;
+}
+
+type LogotypeDetails
+{
+    IA5String MediaType;
+    HashAlgAndValues LogotypeHash;
+    IA5Strings LogotypeUri;
+}
+
+type LogotypeImageInfo
+{
+    optional LogotypeImageType Type with Asn1Encoding{TagNumber = 0, Tagging = Asn1Tagging.Implicit};
+    Integer FileSize;
+    Integer XSize;
+    Integer YSize;
+    optional LogotypeImageResolution Resolution;
+    optional IA5String Language with Asn1Encoding{TagNumber = 4, Tagging = Asn1Tagging.Implicit};
+}
+
+pattern LogotypeImageType = enum Integer
+{
+    GrayScale = 0,
+    Color = 1
+};
+
+pattern LogotypeImageResolution = NumBits | TableSize;
+pattern NumBits = Integer with Asn1Encoding{TagNumber = 1, Tagging = Asn1Tagging.Implicit};
+pattern TableSize = Integer with Asn1Encoding{TagNumber = 2, Tagging = Asn1Tagging.Implicit};
+
+type LogotypeAudioInfo
+{
+    Integer FileSize;
+    Integer PlayTime;
+    Integer Channels;
+    optional Integer SampleRate with Asn1Encoding{TagNumber = 3, Tagging = Asn1Tagging.Implicit};
+    optional IA5String Language with Asn1Encoding{TagNumber = 4, Tagging = Asn1Tagging.Implicit};
+}
+
+pattern OtherLogotypeInfos = array<OtherLogotypeInfo>;
+
+type OtherLogotypeInfo
+{
+    ObjectIdentifier LogotypeType;
+    LogotypeInfo Info;
+}
+
+type LogotypeReference
+{
+    HashAlgAndValues RefStructHash;
+    IA5Strings RefStructUri;
+}
+
+pattern IA5Strings = array<IA5String>;
+pattern HashAlgAndValues = array<HashAlgAndValue>;
+
+type HashAlgAndValue
+{
+    AlgorithmIdentifier HashAlg;
+    OctetString HashValue;
+}
+
+///*******************************RFC 2633*****************************/
+///Extension: OID = {1.2.840.113549.1.9.15}
+type SmimeCapability
+{
+    ObjectIdentifier CapabilityID;
+    optional Integer Version;
+    optional IV Iv;
+    //WORKROUND
+    //optional ([|CapabilityID == [1, 2, 840, 113549, 3, 2]|] Rc2CbcParameter
+        //| [|CapabilityID == [1, 2, 840, 113549, 3, 7]|] CbcParameter) Parameters;
+} with Asn1Encoding{IsExtensible = true};
+
+pattern SmimeCapabilities = array<SmimeCapability>;
+pattern IV = OctetString;
+pattern CbcParameter = IV;
+
+type Rc2CbcParameter
+{
+    Integer Version;
+    IV Iv;
+}
+
+//http://msdn.microsoft.com/en-us/library/windows/desktop/aa378274(v=vs.85).aspx
+//Extension: OID = {1.3.6.1.4.1.311.21.7}
+type CertificateTemplate
+{
+    EncodedObjectID ID;
+    TemplateVersion MajorVersion;
+    optional TemplateVersion MinorVersion;
+}
+
+pattern TemplateVersion = Integer;
+pattern EncodedObjectID = ObjectIdentifier;
+
+//http://msdn.microsoft.com/en-us/library/windows/desktop/aa378155(v=vs.85).aspx
+//Extension: OID = {1.3.6.1.4.1.311.21.10}
+pattern MSApplicationPolicies = array<PolicyInformation>;

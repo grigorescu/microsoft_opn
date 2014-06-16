@@ -1,0 +1,300 @@
+protocol NBTSS with
+BinaryEncodingDefaults{Endian = Endian.Big},
+Documentation
+{
+    ProtocolName = "NetBIOS Session Service Protocol",
+    ShortName = "NBTSS",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+            new Reference{Name = "RFC 1002"},
+        ],
+    RevisionSummary = 
+        [
+            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "09/02/2011"}
+        ]
+};
+
+using Standard;
+using IANA;
+using TCP;
+using IPv4;
+using NBTNS;
+using Utility;
+using VirtualTransport;
+using Reassembly;
+
+endpoint Server over VirtualTransport.Server accepts SessionService issues SessionService;
+client endpoint Client connected to Server;
+
+autostart actor NBTSSOverTCP(VirtualTransport.Server server)
+{
+    DecodingCache inboundCache = null;
+    DecodingCache outboundCache = null;
+    
+    process server accepts s:VirtualTransport.VirtualDataSegment{DestinationPort is Port.NBTSS}
+    {
+        if (inboundCache == null)
+        {
+            inboundCache = new DecodingCache{ Dispatcher = AcceptDispatcher };
+        }
+        
+        inboundCache.Add(s);
+        inboundCache.TryDecodeAndDispatchMessage();
+    }
+    
+    process server issues s:VirtualTransport.VirtualDataSegment{SourcePort is Port.NBTSS}
+    {
+        if (outboundCache == null)
+        {
+            outboundCache = new DecodingCache{ Dispatcher = IssueDispatcher };
+        }
+        
+        outboundCache.Add(s);
+        outboundCache.TryDecodeAndDispatchMessage();
+    }
+    
+    ~endpoint(VirtualTransport.Server e)
+    {
+        if (inboundCache != null)
+        {
+            inboundCache.Clear();
+        }
+        if (outboundCache != null)
+        {
+            outboundCache.Clear();
+        }
+    }
+    
+    void AcceptDispatcher(SessionService ss)
+    {
+        dispatch (endpoint Server over server) accepts ss;
+    }
+    
+    void IssueDispatcher(SessionService ss)
+    {
+        dispatch (endpoint Server over server) issues ss;
+    }
+}
+
+type DecodingCache : DecodingCacheBase
+{
+    void(SessionService) Dispatcher;
+    
+    uint BufferCount()
+    {
+        if (Buffer == null)
+            return 0;
+        return Buffer.Count as uint;
+    }
+
+    void TryDecodeAndDispatchMessage()
+    {
+        stream str = Buffer;
+        while (str.RemainingLength > 0)
+        {
+            optional SessionService ss = BinaryDecoder<SessionService>(str);
+            // Decoder successed
+            if (ss != nothing)
+            {
+                SessionService tss = ss as SessionService;
+                // Decode for CalledName and CallingName
+                if (tss.Type == SessionPacketTypes.SessionRequest && tss.Trailer != nothing)
+                {
+                    var calledName = (tss.Trailer as SessionRequestPacketTrailer).CalledName as NBTNS.NbtString;
+                    calledName.Chars = ((tss.Trailer as SessionRequestPacketTrailer).CalledName as NBTNS.NbtString).GetName();
+        
+                    var callingName = (tss.Trailer as SessionRequestPacketTrailer).CallingName as NBTNS.NbtString;
+                    callingName.Chars = ((tss.Trailer as SessionRequestPacketTrailer).CallingName as NBTNS.NbtString).GetName();
+                }
+                tss.Origins = Origins;
+                Dispatcher(tss);
+                Reset(str);
+            }
+            // Invalid starting field
+            else if (!(str.CurrentByte is SessionPacketTypes))
+            {
+                Origins = [];
+                Buffer = $[];
+                ThrowDecodingExceptionForTCP("NBTSS", "SessionService", HasIncompleteSegments, HasSegmentLost);
+            }
+            else if(HasIncompleteSegments)
+            {
+                Clear();
+                return;
+            }
+            else
+            {
+                // Future Reference: Need to check if binary length is enough.
+                return;
+            }
+        }
+    }
+    
+    override optional any message DecodePartialMessage()
+    {
+        if (BufferCount() < 4)
+        {
+            return nothing;
+        }
+        if (!(Buffer[0] is SessionPacketTypes))
+        {
+            return nothing;
+        }
+        // Guarantee partial message always decode successfuly.
+        var opartial = BinaryDecoder<PartialSessionService>(Buffer);
+        if (opartial == nothing)
+        {
+            return nothing;
+        }
+        var partial = opartial as PartialSessionService;
+        ReportInsufficientData(partial, DiagnosisLevel.Warning, 
+                "NBTSS: Incomplete NBTSS payload for full reassembly, missing continuous message. Expected length: " + 
+                ((partial.Flag.Extension ? (partial.Length + 65536) : partial.Length) as uint).ToString() + 
+                ", Actual length: " + (partial.Blob == null ? 4 : partial.Blob.Count + 4).ToString() + ".");
+        return partial;
+    }
+}
+
+// 4.3.1.  GENERAL FORMAT OF SESSION PACKETS
+message SessionService
+{
+    SessionPacketTypes Type;
+    SessionFlags Flag;
+    ushort Length;
+    optional ([|Type == SessionPacketTypes.SessionMessage|] SessionMessagePacket[(Flag.Extension ? (Length + 65536): Length) as uint]
+            | [|Type == SessionPacketTypes.SessionRequest|] SessionRequestPacketTrailer
+            | [|Type == SessionPacketTypes.NegativeSessionResponse|] NegativeSessionResponsePacketTrailer
+            | [|Type == SessionPacketTypes.RetargetSessionResponse|] SessionRetargetResponsePacketTrailer) Trailer;
+    
+    invariant Trailer != nothing || Type in {SessionPacketTypes.PositiveSessionResponse, SessionPacketTypes.SessionKeepAlive} || Length == 0;
+
+    override string ToString()
+    {
+        string msgLength = (Flag.Extension ? (Length + 65536) : Length) as string;
+        string summary = SessionPacketTypesName(Type) + ", Length: " + msgLength;
+        if (Type == SessionPacketTypes.SessionRequest)
+        {
+            summary += ", CalledName: " + (this.Trailer as SessionRequestPacketTrailer).CalledName.GetName();
+            summary += ", CallingName: " + (this.Trailer as SessionRequestPacketTrailer).CallingName.GetName();
+        }
+        else if (Type == SessionPacketTypes.NegativeSessionResponse)
+        {
+            summary += ", ErrorCode: " + EnumToString((this.Trailer as NegativeSessionResponsePacketTrailer).ErrorCode, "ErrorCode");
+        }
+        else if (Type == SessionPacketTypes.RetargetSessionResponse)
+        {
+            summary += ", RetargetIpAddress: " + (this.Trailer as SessionRetargetResponsePacketTrailer).RetargetIpAddress.ToString();
+            summary += ", Port: ";
+            if (InRange<IANA.Port>((this.Trailer as SessionRetargetResponsePacketTrailer).Port as ushort))
+            {
+                summary += EnumToString((this.Trailer as SessionRetargetResponsePacketTrailer).Port as ushort, "IANA.Port") + " (" + ((this.Trailer as SessionRetargetResponsePacketTrailer).Port as string) + ")";            
+            }
+            else
+            {
+                summary += (this.Trailer as SessionRetargetResponsePacketTrailer).Port as string;
+            }
+        }
+        return summary;
+    }
+}
+
+// Only for partial message parsing.
+message PartialSessionService
+{
+    SessionPacketTypes Type;
+    SessionFlags Flag;
+    ushort Length;
+    binary Blob;
+    
+    override string ToString()
+    {
+        return "Partial SessionService";
+    }
+}
+
+pattern SessionPacketTypes = enum byte
+{
+    SessionMessage              = 0,
+    SessionRequest              = 0x81,
+    PositiveSessionResponse     = 0x82,
+    NegativeSessionResponse     = 0x83,
+    RetargetSessionResponse     = 0x84,
+    SessionKeepAlive            = 0x85,
+};
+
+string SessionPacketTypesName(byte packetType)
+{
+    if (packetType == SessionPacketTypes.SessionMessage)
+    {
+        return "Session Message";
+    }
+    if (packetType == SessionPacketTypes.SessionRequest)
+    {
+        return "Session Request";
+    }
+    if (packetType == SessionPacketTypes.PositiveSessionResponse)
+    {
+        return "Positive Session Response";
+    }
+    if (packetType == SessionPacketTypes.NegativeSessionResponse)
+    {
+        return "Negative Session Response";
+    }
+    if (packetType == SessionPacketTypes.RetargetSessionResponse)
+    {
+        return "Retarget Session Response";
+    }
+    if (packetType == SessionPacketTypes.SessionKeepAlive)
+    {
+        return "Session Keep Alive";
+    }
+    else
+    {
+        return "Unknown Session Packet Type: " + (packetType as string);
+    }
+}
+
+type SessionFlags
+{
+    byte Reserved where ValidationCheckReservedZero(value == 0, null, true, ReferenceType.Type, "NBTSS", "Reserved", "SessionFlags", value) with BinaryEncoding{Width = 7};
+    bool Extension with BinaryEncoding{Width = 1};
+}
+
+// 4.3.2.  SESSION REQUEST PACKET
+type SessionRequestPacketTrailer
+{
+    NBTNS.NbtString CalledName;
+    NBTNS.NbtString CallingName;
+}
+
+// 4.3.4.  NEGATIVE SESSION RESPONSE PACKET
+type NegativeSessionResponsePacketTrailer
+{
+    ErrorCode ErrorCode;
+}
+
+pattern ErrorCode = enum byte
+{
+    NotListeningOnCalledName                    = 0x80,
+    NotListeningForCallingName                  = 0x81,
+    CalledNameBotPresent                        = 0x82,
+    CalledNamePresentButInsufficientResources   = 0x83,
+    UnspecifiedError                            = 0x8F,
+};
+
+// 4.3.5.  SESSION RETARGET RESPONSE PACKET
+type SessionRetargetResponsePacketTrailer
+{
+    IPv4Address RetargetIpAddress;
+    byte Port;
+}
+
+type SessionMessagePacket[uint Length]
+{
+    binary UserData with BinaryEncoding{Length = Length};
+}

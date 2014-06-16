@@ -1,0 +1,105 @@
+﻿protocol Finger
+    with StreamEncodingDefaults{Encoding = TextEncoding.ASCII},
+Documentation
+{
+    ProtocolName = "Finger User Information Protocol",
+    ShortName = "Finger",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+            new Reference{Name = "RFC 1288"},
+        ],
+    RevisionSummary = 
+        [
+            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "11/25/2011"}
+        ]
+};
+
+using Standard;
+using TCP;
+using IANA;
+using Utility;
+using VirtualTransport;
+
+endpoint Server
+    over VirtualTransport.Server
+    accepts Request issues Response;
+
+client endpoint Client connected to Server;
+
+autostart actor FingerOverTCP(VirtualTransport.Server server)
+{
+    process server accepts p:VirtualTransport.VirtualDataSegment{DestinationPort is Port.Finger}
+    {
+        optional Request d = Q(p.Payload);
+        if (d != nothing)
+        {
+            Request m = d as Request;
+            m#RequestPort = p.SourcePort;
+            var n = endpoint Finger.Server over server;
+            dispatch n accepts m;
+        }
+        else
+        {
+            ThrowDecodingExceptionForTCP("Finger", "Request", p#IsIncomplete, p#SegmentLost);
+        }
+    }
+    process server issues p:VirtualTransport.VirtualDataSegment{SourcePort is Port.Finger}
+    {
+        optional Response d = Fields(p.Payload);
+        if (d != nothing)
+        {
+            Response m = d as Response;
+            m#ResponsePort = p.DestinationPort;
+            var n = endpoint Finger.Server over server;
+            dispatch n issues m;
+        }
+        else
+        {
+            ThrowDecodingExceptionForTCP("Finger", "Response", p#IsIncomplete, p#SegmentLost);
+        }
+    }
+}
+
+annotation ushort Finger.Request#RequestPort;
+annotation ushort Finger.Response#ResponsePort;
+
+message Request
+{
+    string RequestCommandLine;
+    override string ToString()
+    {
+        return "Request from client using port = " + (this#RequestPort as string);
+    }
+}
+
+message Response
+{
+    array<string> FingerInformationReturn;
+    override string ToString()
+    {
+        return "Response to client using port = " + (this#ResponsePort as string);
+    }
+}
+
+syntax CRLF = "\r\n";
+syntax Token = s:regex{[^\r\n@]*} => s;
+syntax UserName = Token;
+syntax HostName = Token;
+syntax H = "@" HostName;
+syntax U = UserName;
+syntax S = " ";
+syntax SP = S+;
+
+//Request:::::::::::::::::::::::::::::::
+syntax Q1 = SP? s:UserName CRLF => s; 
+syntax Q2 = SP? u:UserName h:H+ CRLF => (u + ConvertStringArrayToString(h));
+syntax Q = u:(Q1 | Q2)  => new Request{RequestCommandLine = u};
+
+//Response::::::::::::::::::::::::::::::
+syntax Field = s:Token CRLF => s;
+syntax Fields = s:Field+ => new Response{FingerInformationReturn = s};

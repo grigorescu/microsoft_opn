@@ -1,0 +1,835 @@
+protocol IKE with 
+BinaryEncodingDefaults{Endian = Endian.Big},
+Documentation
+{
+    ProtocolName = "Internet Key Exchange",
+    ShortName = "IKE",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+            new Reference{Name = "RFC 2407"},
+            new Reference{Name = "RFC 2408"},
+            new Reference{Name = "RFC 2409"},
+            new Reference{Name = "RFC 3947"},
+            new Reference{Name = "RFC 4306"},
+        ],
+    RevisionSummary =
+        [
+            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "09/02/2011"}
+        ]
+};
+
+using IANA;
+using UDP;
+using Standard;
+using Utility;
+
+endpoint Node[ulong InitiatorSPI] 
+    over UDP.Host 
+    accepts IKEDatagram;
+
+autostart actor IKEOverUDP(UDP.Host host)
+{
+    process host accepts p:UDP.Datagram where (((p.SourcePort == Port.NATT || p.DestinationPort == Port.NATT) && p.Payload.Segment(0,4) == $[00000000] && p.Length > 12) || p.SourcePort == Port.IKE || p.DestinationPort == Port.IKE) && !IsAuthIP(p.Payload)
+    {
+        switch (p.Payload)
+        {
+            case d:IKEDatagram from IKEDecoder =>
+                var ep = endpoint IKE.Node[d.InitiatorSPI] over host;
+                dispatch ep accepts d;
+            default =>
+                ThrowDecodingException("IKE");
+        }
+    }
+}
+
+optional IKEDatagram IKEDecoder(binary binaryValue)
+{
+    if (binaryValue.Count < 4)
+    {
+        return nothing;
+    }
+    if (binaryValue.Segment(0,4) == $[00000000])
+    {
+        binaryValue = binaryValue.Segment(4);
+    }
+    stream s = binaryValue;
+    var datagram = BinaryDecoder<IKEDatagram>(s);
+    if (datagram == nothing)
+    {
+        return nothing;
+    }
+    var d = datagram as IKEDatagram;
+    d.Data = s.PeekBytes(s.BitPosition);
+    if (d.Flags is Flagsv1)
+    {
+        if ((d.Flags as Flagsv1).Encryption == 1)
+        {
+            d.Payloads = ["Encrypted Payloads"];
+            return d;
+        }
+    }
+    byte nextType = d.NextPayload;
+    int prePos = s.BitPosition;
+    int startPos = prePos;
+    array<PayloadChoice> arrPayloads = [];
+    array<DataChunks> chunks = [];
+    while (s.BytePosition < s.ByteLength)
+    {
+        byte currentType = nextType;
+        nextType = s.CurrentByte;
+        var p = BinaryDecoder<Payloads[currentType]>(s);
+        if (p != nothing && (p as Payloads).Payload != null)
+        {
+            arrPayloads += [(p as Payloads).Payload];
+            chunks += [new DataChunks{DataSource = s, Chunks = [new BinaryChunk{BitPosition = prePos, BitLength = s.BitPosition - prePos }]}];
+            prePos = s.BitPosition;
+        }
+        else
+        {
+            // WORKAROUND for truncation parsing: disable the validation since it's very easy to trigger under truncation situation.
+            // ValidationCheck(false, d, "Parsing payload failed due to invalid data.");
+            break;
+        }
+            
+        if (nextType == 0)
+        {
+            break;
+        }
+    }
+    DataChunks payloadChunk = new DataChunks{
+                DataSource = s, 
+                Chunks = [new BinaryChunk{BitPosition = startPos, BitLength = s.BitPosition - startPos}],
+                };
+    d.Payloads = arrPayloads;
+    d.AssociateArrayField("Payloads", chunks);
+    d.AssociateField("Payloads", payloadChunk);
+    return d;
+}
+
+message IKEDatagram
+{
+    (ulong where value != 0) InitiatorSPI;
+    ulong ResponderSPI;
+    byte NextPayload;
+    byte MajorVersion where ValidationCheck(value == 1 || value == 2, null, DiagnosisLevel.Warning, "IKE: The MajorVersion field in message IKEDatagram must be set to 1 or 2, not " + (value as string) + ".") with BinaryEncoding{Width = 4};
+    byte MinorVersion with BinaryEncoding{Width = 4};
+    byte ExchangeType;
+    ([|MajorVersion == 1|] Flagsv1 | [|MajorVersion == 2|] Flagsv2) Flags;
+    uint MessageId;
+    uint Length;
+    array<PayloadChoice> Payloads with Encoding{Ignore = true};
+    binary Data with Encoding{Ignore = true};
+    
+    override string ToString()
+    {
+        string summary = this#IsTruncated != nothing && (this#IsTruncated as bool) ? "Truncated, " : "";
+        summary += "Version: "+ (MajorVersion as string) + "." + (MinorVersion as string) + ", " + "ExchangeType: " + ExchangeTypeEnum(ExchangeType);
+        string flagsSummary = ", Flags: ";
+        string payloadsSummary = ", Payloads: HDR";
+        if (Flags is Flagsv1)
+        {
+            Flagsv1 f = Flags as Flagsv1;
+            flagsSummary += (f.AuthenticationOnly == 1 ? "AuthOnly|" : "")
+                + (f.Commit == 1 ? "Commit|" : "")
+                + (f.Encryption == 1 ? "Encryption" : "");
+            if (f.Encryption == 1)
+            {
+                payloadsSummary += "*";
+            }
+        }
+        
+        if (Flags is Flagsv2)
+        {
+            Flagsv2 f = Flags as Flagsv2;
+            flagsSummary += (f.Initiator == 1 ? "Initiator" : "")
+                + (f.Version == 1 ? "Version|" : "")
+                + (f.Response == 1 ? "Response" : "");
+        }
+        
+        array<string> summaryCollection = [];
+        foreach (any p in Payloads)
+        {
+            if (!("SA" in summaryCollection) && p is (SecurityAssociationPayloadv1 | SecurityAssociationPayloadv2))
+            {
+                payloadsSummary += ", SA";
+                summaryCollection += ["SA"];
+            }
+            else if (!("P" in summaryCollection) && p is ProposalPayloadv1)
+            {
+                payloadsSummary += ", P";
+                summaryCollection += ["P"];
+            }
+            else if (!("T" in summaryCollection) && p is TransformPayloadv1)
+            {
+                payloadsSummary += ", T";
+                summaryCollection += ["T"];
+            }
+            else if (!("KE" in summaryCollection) && p is (KeyExchangePayloadv1 | KeyExchangePayloadv2))
+            {
+                payloadsSummary += ", KE";
+                summaryCollection += ["KE"];
+            }
+            else if (!("ID" in summaryCollection) && p is (IdentificationPayloadv1 | IdentificationPayloadsv2))
+            {
+                payloadsSummary += ", ID";
+                summaryCollection += ["ID"];
+            }
+            else if (!("CERT" in summaryCollection) && p is (CertificatePayloadv1 | CertificatePayloadv2))
+            {
+                payloadsSummary += ", CERT";
+                summaryCollection += ["CERT"];
+            }
+            else if (!("CERTREQ" in summaryCollection) && p is (CertificateRequestPayloadv1 | CertificateRequestPayloadv2))
+            {
+                payloadsSummary += ", CERTREQ";
+                summaryCollection += ["CERTREQ"];
+            }
+            else if (!("HASH" in summaryCollection) && p is HashPayloadv1)
+            {
+                payloadsSummary += ", HASH";
+                summaryCollection += ["HASH"];
+            }
+            else if (!("SIG" in summaryCollection) && p is SignaturePayloadv1)
+            {
+                payloadsSummary += ", SIG";
+                summaryCollection += ["SIG"];
+            }
+            else if (!("NC" in summaryCollection) && p is (NoncePayloadv1 | NoncePayloadv2))
+            {
+                payloadsSummary += ", NC";
+                summaryCollection += ["NC"];
+            }
+            else if (!("N" in summaryCollection) && p is (NotificationPayloadv1 | NotifyPayloadv2))
+            {
+                payloadsSummary += ", N";
+                summaryCollection += ["N"];
+            }
+            else if (!("D" in summaryCollection) && p is (DeletePayloadv1 | DeletePayloadv2))
+            {
+                payloadsSummary += ", D";
+                summaryCollection += ["D"];
+            }
+            else if (!("VID" in summaryCollection) && p is (VendorIDPayloadv1 | VendorIDPayloadv2))
+            {
+                payloadsSummary += ", VID";
+                summaryCollection += ["VID"];
+            }
+            else if (!("NAT-D" in summaryCollection) && p is NATDiscoveryPayload)
+            {
+                payloadsSummary += ", NAT-D";
+                summaryCollection += ["NAT-D"];
+            }
+            else if (!("NAT-OA" in summaryCollection) && p is NATOriginalAddressPayload)
+            {
+                payloadsSummary += ", NAT-OA";
+                summaryCollection += ["NAT-OA"];
+            }
+            else if (!("AUTH" in summaryCollection) && p is AuthenticationPayloadv2)
+            {
+                payloadsSummary += ", AUTH";
+                summaryCollection += ["AUTH"];
+            }
+            else if (!("TS" in summaryCollection) && p is TrafficSelectorPayloadv2)
+            {
+                payloadsSummary += ", TS";
+                summaryCollection += ["TS"];
+            }
+            else if (!("CP" in summaryCollection) && p is ConfigurationPayloadv2)
+            {
+                payloadsSummary += ", CP";
+                summaryCollection += ["CP"];
+            }
+            else if (!("EAP" in summaryCollection) && p is EAPPayloadv2)
+            {
+                payloadsSummary += ", EAP";
+                summaryCollection += ["EAP"];
+            }
+        }
+        
+        summary += payloadsSummary + flagsSummary;
+        summary += ", Length: " + (Length as string);
+        return summary;
+    }
+    
+    static string GetPayloadSummary(byte next)
+    {
+        switch (next)
+        {
+            case (1 | 33) => return ", SA";
+            case 2 => return ", P";
+            case 3 => return ", T";
+            case (4 | 34) => return ", KE";
+            case (5 | 35 | 36) => return ", ID";
+            case (6 | 37) => return ", CERT";
+            case (7 | 38) => return ", CERTREQ";
+            case 8 => return ", HASH";
+            case 9 => return ", SIG";
+            case (10 | 40) => return ", NC";
+            case (11 | 41) => return ", N";
+            case (12 | 42) => return ", D";
+            case (13 | 43) => return ", VID";
+            case 20 => return ", NAT-D";
+            case 21 => return ", NAT-OA";
+            case 39 => return ", AUTH";
+            case (44 | 45) => return ", TS";
+            case 47 => return ", CP";
+            case 48 => return ", EAP";
+            default => return "";
+        }
+    }
+}
+
+string ExchangeTypeEnum(byte exchangeType)
+{
+    if (exchangeType > 0x06 && exchangeType <= 0x1F)
+    {
+        return "ISAKMP future use (" + (exchangeType as string) + ")";
+    }
+    if (exchangeType > 0x20 && exchangeType <= 0xEF)
+    {
+        return "DOI specific use (" + (exchangeType as string) + ")";
+    }
+    if (exchangeType > 0x06 && exchangeType <= 0x1F)
+    {
+        return "Private use (" + (exchangeType as string) + ")";
+    }
+    
+    switch (exchangeType)
+    {
+        //ISAKMP - RFC 2408
+        case  0x00 => return "None";
+        case  0x01 => return "Base";
+        case  0x02 => return "Identity protection (Main Mode)";
+        case  0x03 => return "Authentication only";
+        case  0x04 => return "Aggressive Mode";
+        case  0x05 => return "Informational";
+        case  0x06 => return "Transaction (Config Mode)";
+        case  0x20 => return "Quick Mode";
+        case  0x21 => return "New Group Mode";
+
+        //IKEv2 - RFC 4306
+        case  0x22 => return "IKE_SA_INIT";
+        case  0x23 => return "IKE_AUTH";
+        case  0x24 => return "CREATE_CHILD_SA";
+        case  0x25 => return "INFORMATIONAL";
+
+        //Authenticated IP
+        case  0xF3 => return "Main Mode";
+        case  0xF4 => return "Quick Mode";
+        case  0xF5 => return "Extended Mode";
+        case  0xF6 => return "Notify";
+        default => return "Unknown Exchange Type (" + (exchangeType as string) + ")";
+    }
+}
+
+type Payloads[byte Type]
+{ 
+    ([|Type == 1|] SecurityAssociationPayloadv1                         // 1
+        | [|Type == 2|] ProposalPayloadv1                               // 2
+        | [|Type == 3|] TransformPayloadv1                              // 3
+        | [|Type == 4|] KeyExchangePayloadv1                            // 4
+        | [|Type == 5|] IdentificationPayloadv1                         // 5
+        | [|Type == 6|] CertificatePayloadv1                            // 6
+        | [|Type == 7|] CertificateRequestPayloadv1                     // 7
+        | [|Type == 8|] HashPayloadv1                                   // 8
+        | [|Type == 9|] SignaturePayloadv1                              // 9
+        | [|Type == 10|] NoncePayloadv1                                 // 10
+        | [|Type == 11|] NotificationPayloadv1                          // 11
+        | [|Type == 12|] DeletePayloadv1                                // 12
+        | [|Type == 13|] VendorIDPayloadv1                              // 13
+        | [|Type == 20|] NATDiscoveryPayload                            // 20
+        | [|Type == 21|] NATOriginalAddressPayload                      // 21
+        | [|Type == 33|] SecurityAssociationPayloadv2                   // 33
+        | [|Type == 34|] KeyExchangePayloadv2                           // 34
+        | [|Type == 35 || Type == 36|] IdentificationPayloadsv2         // 35/36
+        | [|Type == 37|] CertificatePayloadv2                           // 37
+        | [|Type == 38|] CertificateRequestPayloadv2                    // 38
+        | [|Type == 39|] AuthenticationPayloadv2                        // 39
+        | [|Type == 40|] NoncePayloadv2                                 // 40
+        | [|Type == 41|] NotifyPayloadv2                                // 41
+        | [|Type == 42|] DeletePayloadv2                                // 42
+        | [|Type == 43|] VendorIDPayloadv2                              // 43
+        | [|Type == 44 || Type == 45|] TrafficSelectorPayloadv2         // 44/45
+        | [|Type == 46|] EncryptedPayloadv2                             // 46
+        | [|Type == 47|] ConfigurationPayloadv2                         // 47
+        | [|Type == 48|] EAPPayloadv2                                   // 48
+        | [|Type >= 49 && Type <=127|] ReservedPayloadv2                // 49~127
+        | [|Type == 129|] IkeGssapiTokenPayload                         // 129
+        | [|Type >=128 && Type <= 255 && Type != 129|] PrivateUsePayloadv2) Payload; // 128~255
+}
+
+pattern PayloadChoice = SecurityAssociationPayloadv1 | ProposalPayloadv1 | TransformPayloadv1 | KeyExchangePayloadv1 | IdentificationPayloadv1
+        | CertificatePayloadv1 | CertificateRequestPayloadv1 | HashPayloadv1 | SignaturePayloadv1 | NoncePayloadv1 | NotificationPayloadv1
+        | DeletePayloadv1 | VendorIDPayloadv1 | NATDiscoveryPayload | NATOriginalAddressPayload | SecurityAssociationPayloadv2 | KeyExchangePayloadv2
+        | IdentificationPayloadsv2 | CertificatePayloadv2 | CertificateRequestPayloadv2 | AuthenticationPayloadv2 | NoncePayloadv2 | NotifyPayloadv2
+        | DeletePayloadv2 | VendorIDPayloadv2 | TrafficSelectorPayloadv2 | EncryptedPayloadv2 | ConfigurationPayloadv2 | EAPPayloadv2
+        | ReservedPayloadv2 | IkeGssapiTokenPayload | PrivateUsePayloadv2;
+
+type Flagsv1
+{
+    byte Reserved where ValidationCheck(value == 0, null, () => "IKE: The Reserved field in type Flagsv1 should be set to zero, not " + DecToHexFormat(value) + ".") with BinaryEncoding{Width = 5};
+    byte AuthenticationOnly with BinaryEncoding{Width = 1};
+    byte Commit with BinaryEncoding{Width = 1};
+    byte Encryption with BinaryEncoding{Width = 1};
+    
+}
+
+type Flagsv2
+{
+    byte Reserved1 with BinaryEncoding{Width = 3};
+    byte Initiator with BinaryEncoding{Width = 1};
+    byte Version with BinaryEncoding{Width = 1};
+    byte Response with BinaryEncoding{Width = 1};
+    byte Reserved2 with BinaryEncoding{Width = 2};
+}
+
+//1
+type SecurityAssociationPayloadv1
+{
+    byte NextPayload;
+    byte Reserved where ValidationCheck(value == 0, null, () => "IKE: The Reserved field in type SecurityAssociationPayloadv1 should be set to zero, not " + DecToHexFormat(value) + ".");
+    ushort PayloadLength;
+    uint DomainOfInterpretation;
+    Situation Situation;
+}
+
+// RFC 2407
+type Situation
+{
+    uint Reserved with BinaryEncoding{Width = 29};
+    uint Integrity with BinaryEncoding{Width = 1};
+    uint Secrecy with BinaryEncoding{Width = 1};
+    uint Identity with BinaryEncoding{Width = 1};
+}
+
+//2
+type ProposalPayloadv1
+{
+    byte NextPayload;
+    byte Reserved where ValidationCheck(value == 0, null, () => "IKE: The Reserved field in type ProposalPayloadv1 should be set to zero, not " + DecToHexFormat(value) + ".");
+    ushort PayloadLength;
+    byte ProposalNumber;
+    byte ProtocolId;
+    byte SPISize;
+    byte NumberofTransforms;
+    binary SPI with BinaryEncoding{Length = (PayloadLength - 8) as uint};
+}
+
+//3
+type TransformPayloadv1
+{
+    byte NextPayload;
+    byte Reserved where ValidationCheck(value == 0, null, () => "IKE: The Reserved field in type TransformPayloadv1 should be set to zero, not " + DecToHexFormat(value) + ".");
+    ushort PayloadLength;
+    byte TransformNumber;
+    byte TransformId;
+    ushort Reserved2 where ValidationCheck(value == 0, null, () => "IKE: The Reserved2 field in type TransformPayloadv1 should be set to zero, not " + DecToHexFormat(value) + ".");
+    DataAttributes SAAttributes;
+}
+
+//4
+type KeyExchangePayloadv1
+{
+    byte NextPayload;
+    byte Reserved where ValidationCheck(value == 0, null, () => "IKE: The Reserved field in type KeyExchangePayloadv1 should be set to zero, not " + DecToHexFormat(value) + ".");
+    ushort PayloadLength;
+    binary KeyExchangeData with BinaryEncoding{Length = (PayloadLength - 4) as uint};
+}
+
+//5
+type IdentificationPayloadv1
+{
+    byte NextPayload;
+    byte Reserved where ValidationCheck(value == 0, null, () => "IKE: The Reserved field in type IdentificationPayloadv1 should be set to zero, not " + DecToHexFormat(value) + ".");
+    ushort PayloadLength;
+    byte IDType;
+    array<byte> DOISpecificIDData with BinaryEncoding{Length = 3};
+    binary IdentificationData with BinaryEncoding{Length = (PayloadLength - 8) as uint};
+}
+
+//6
+type CertificatePayloadv1
+{
+    byte NextPayload;
+    byte Reserved where ValidationCheck(value == 0, null, () => "IKE: The Reserved field in type CertificatePayloadv1 should be set to zero, not " + DecToHexFormat(value) + ".");
+    ushort PayloadLength;
+    byte CertEncoding;
+    binary CertificateData with BinaryEncoding{Length = (PayloadLength - 5) as uint};
+}
+
+//7
+type CertificateRequestPayloadv1
+{
+    byte NextPayload;
+    byte Reserved where ValidationCheck(value == 0, null, () => "IKE: The Reserved field in type CertificateRequestPayloadv1 should be set to zero, not " + DecToHexFormat(value) + ".");
+    ushort PayloadLength;
+    byte CertType;
+    optional [|PayloadLength > 5|] binary CertificateAuthority with BinaryEncoding{Length = (PayloadLength - 5) as uint};
+}
+
+//8
+type HashPayloadv1
+{
+    byte NextPayload;
+    byte Reserved where ValidationCheck(value == 0, null, () => "IKE: The Reserved field in type HashPayloadv1 should be set to zero, not " + DecToHexFormat(value) + ".");
+    ushort PayloadLength;
+    binary HashData with BinaryEncoding{Length = (PayloadLength - 4) as uint};
+}
+
+//9
+type SignaturePayloadv1
+{
+    byte NextPayload;
+    byte Reserved where ValidationCheck(value == 0, null, () => "IKE: The Reserved field in type SignaturePayloadv1 should be set to zero, not " + DecToHexFormat(value) + ".");
+    ushort PayloadLength;
+    binary SignatureData with BinaryEncoding{Length = (PayloadLength - 4) as uint};
+}
+
+//10
+type NoncePayloadv1
+{
+    byte NextPayload;
+    byte Reserved where ValidationCheck(value == 0, null, () => "IKE: The Reserved field in type NouncePayloadv1 should be set to zero, not " + DecToHexFormat(value) + ".");
+    ushort PayloadLength;
+    binary NonceData with BinaryEncoding{Length = (PayloadLength - 4) as uint};
+}
+
+//11
+type NotificationPayloadv1
+{
+    byte NextPayload;
+    byte Reserved where ValidationCheck(value == 0, null, () => "IKE: The Reserved field in type NotificationPayloadv1 should be set to zero, not " + DecToHexFormat(value) + ".");
+    ushort PayloadLength;
+    uint DomainOfInterpretation;
+    byte ProtocolID;
+    byte SPISize;
+    ushort NotifyMessageType;
+    binary SPI with BinaryEncoding{Length = SPISize};
+    binary NotificationData with BinaryEncoding{Length = (PayloadLength - SPISize - 12) as uint};
+}
+
+//12
+type DeletePayloadv1
+{
+    byte NextPayload;
+    byte Reserved where ValidationCheck(value == 0, null, () => "IKE: The Reserved field in type DeletePayloadv1 should be set to zero, not " + DecToHexFormat(value) + ".");
+    ushort PayloadLength;
+    uint DomainOfInterpretation;
+    byte ProtocolID;
+    byte SPISize;
+    ushort NumberofSPIs;
+    array<SPI[SPISize]> SecurityParameterIndex with BinaryEncoding{Length = NumberofSPIs as uint};
+}
+
+type SPI[byte size]
+{
+    binary SPI with BinaryEncoding{Length = size as uint};
+}
+
+//13
+type VendorIDPayloadv1
+{
+    byte NextPayload;
+    byte Reserved where ValidationCheck(value == 0, null, () => "IKE: The Reserved field in type VendorIDPayloadv1 should be set to zero, not " + DecToHexFormat(value) + ".");
+    ushort PayloadLength;
+    binary VendorID with BinaryEncoding{Length = (PayloadLength - 4) as uint};
+}
+
+// 20, RFC 3947
+type NATDiscoveryPayload
+{
+    byte NextPayload;
+    byte Reserved where ValidationCheck(value == 0, null, () => "IKE: The Reserved field in type NATDiscoveryPayload should be set to zero, not " + DecToHexFormat(value) + ".");
+    ushort PayloadLength;
+    binary HASHofAddressAndPort with BinaryEncoding{Length = (PayloadLength - 4) as uint};
+}
+
+// 21, RFC 3947
+type NATOriginalAddressPayload
+{
+    byte NextPayload;
+    byte Reserved where ValidationCheck(value == 0, null, () => "IKE: The Reserved field in type NATOriginalAddressPayload should be set to zero, not " + DecToHexFormat(value) + ".");
+    ushort PayloadLength;
+    byte IDType;
+    byte Reserved2 where ValidationCheck(value == 0, null, () => "IKE: The Reserved2 field in type NATOriginalAddressPayload should be set to zero, not " + DecToHexFormat(value) + ".");
+    ushort Reserved3 where ValidationCheck(value == 0, null, () => "IKE: The Reserved3 field in type NATOriginalAddressPayload should be set to zero, not " + DecToHexFormat(value) + ".");
+    ([|IDType == 1|] IPv4Address | [|IDType == 5|] IPv6Address) Address;
+}
+
+//33
+type SecurityAssociationPayloadv2
+{
+    (byte where value == 0 || value == 2) NextPayload;
+    byte C with BinaryEncoding{Width = 1};
+    byte Reserved where ValidationCheck(value == 0, null, () => "IKE: The Reserved field in type SecurityAssociationPayloadv2 should be set to zero, not " + DecToHexFormat(value) + ".") with BinaryEncoding{Width = 7};
+    ushort PayloadLength;
+    byte ProposalNumber;
+    byte ProtocolID;
+    byte SPISize;
+    byte NumberofTransforms;
+    array<byte> SPI with BinaryEncoding{Length = 7};
+    array<Transforms> Transforms with BinaryEncoding{Length = NumberofTransforms as uint};
+}
+
+type Transforms
+{
+    byte LastorMore where value == 0 || value ==3;
+    byte Reserved where ValidationCheck(value == 0, null, () => "IKE: The Reserved field in type Transforms should be set to zero, not " + DecToHexFormat(value) + ".");
+    ushort TransformLength;
+    byte TransformType;
+    byte Reserved2 where ValidationCheck(value == 0, null, () => "IKE: The Reserved2 field in type Transforms should be set to zero, not " + DecToHexFormat(value) + ".");
+    ushort TransformID;
+    array<DataAttributes> TransformAttributes;
+}
+
+// Workaround: define 2 types to handle the optional field.
+type DataAttributes
+{
+    (TransformTVAttribute | TransformTLVAttribute) TransformAttribute;
+}
+
+type TransformTVAttribute
+{
+    (ushort where value == 1) AF with BinaryEncoding{Width = 1};
+    ushort AttributeType with BinaryEncoding{Length = 15};
+    ushort AttributeValue;
+}
+
+type TransformTLVAttribute
+{
+    (ushort where value == 0) AF with BinaryEncoding {Width = 1};
+    ushort AttributeType with BinaryEncoding{Length = 15};
+    ushort AttributeLength;
+    array<byte> AttributeValue with BinaryEncoding{Length = AttributeLength as uint};
+}
+
+// 34
+type KeyExchangePayloadv2
+{
+    byte NextPayload where value == 0 || value == 2;
+    byte C with BinaryEncoding{Width = 1};
+    byte Reserved where ValidationCheck(value == 0, null, () => "IKE: The Reserved field in type KeyExchangePayloadv2 should be set to zero, not " + DecToHexFormat(value) + ".") with BinaryEncoding{Width = 7};
+    ushort PayloadLength;
+    ushort DHGroupNumber;
+    ushort Reserved2;
+    array<byte> KeyExchangeData with BinaryEncoding{Length = (PayloadLength - 8) as uint};
+}
+
+// 35/36
+type IdentificationPayloadsv2
+{
+    byte NextPayload where value == 0 || value == 2;
+    byte C with BinaryEncoding{Width = 1};
+    byte Reserved where ValidationCheck(value == 0, null, () => "IKE: The Reserved field in type IdentificationPayloadsv2 should be set to zero, not " + DecToHexFormat(value) + ".") with BinaryEncoding{Width = 7};
+    ushort PayloadLength;
+    byte IDType;
+    array<byte> Reserved2 with BinaryEncoding{Length = 3};
+    ((IPv4Address where IDType == 1)
+        | (IPv6Address where IDType == 5)
+        | array<byte>) IdentificationData with BinaryEncoding{Length = (PayloadLength - 8) as uint};
+}
+
+// 37
+type CertificatePayloadv2
+{
+    byte NextPayload where value == 0 || value == 2;
+    byte C with BinaryEncoding{Width = 1};
+    byte Reserved where ValidationCheck(value == 0, null, () => "IKE: The Reserved field in type CertificatePayloadv2 should be set to zero, not " + DecToHexFormat(value) + ".") with BinaryEncoding{Width = 7};
+    ushort PayloadLength;
+    byte CertEncoding;
+    array<byte> CertificateData with BinaryEncoding{Length = (PayloadLength - 8) as uint};
+}
+
+// 38
+type CertificateRequestPayloadv2
+{
+    byte NextPayload where value == 0 || value == 2;
+    byte C with BinaryEncoding{Width = 1};
+    byte Reserved where ValidationCheck(value == 0, null, () => "IKE: The Reserved field in type CertificateRequestPayloadv2 should be set to zero, not " + DecToHexFormat(value) + ".") with BinaryEncoding{Width = 7};
+    ushort PayloadLength;
+    byte CertEncoding;
+    array<byte> CertificateData with BinaryEncoding{Length = (PayloadLength - 8) as uint};
+}
+
+// 39
+type AuthenticationPayloadv2
+{
+    byte NextPayload where value == 0 || value == 2;
+    byte C with BinaryEncoding{Width = 1};
+    byte Reserved where ValidationCheck(value == 0, null, () => "IKE: The Reserved field in type AuthenticationPayloadv2 should be set to zero, not " + DecToHexFormat(value) + ".") with BinaryEncoding{Width = 7};
+    ushort PayloadLength;
+    byte AuthMethod;
+    array<byte> Reserved2 with BinaryEncoding{Length = 3};
+    array<byte> AuthenticationData with BinaryEncoding{Length = (PayloadLength - 8) as uint};
+}
+
+// 40
+type NoncePayloadv2
+{
+    byte NextPayload where value == 0 || value == 2;
+    byte C with BinaryEncoding{Width = 1};
+    byte Reserved where ValidationCheck(value == 0, null, () => "IKE: The Reserved field in type NoncePayloadv2 should be set to zero, not " + DecToHexFormat(value) + ".") with BinaryEncoding{Width = 7};
+    ushort PayloadLength;
+    array<byte> NonceData with BinaryEncoding{Length = (PayloadLength - 8) as uint};
+}
+
+// 41
+type NotifyPayloadv2
+{
+    byte NextPayload where value == 0 || value == 2;
+    byte C with BinaryEncoding{Width = 1};
+    byte Reserved where ValidationCheck(value == 0, null, () => "IKE: The Reserved field in type NotifyPayloadv2 should be set to zero, not " + DecToHexFormat(value) + ".") with BinaryEncoding{Width = 7};
+    ushort PayloadLength;
+    byte ProtocolID;
+    byte SPISize;
+    ushort NotifyMessageType;
+    array<byte> SPI with BinaryEncoding{Length = SPISize as uint};
+    array<byte> NotificationData with BinaryEncoding{Length = (PayloadLength - 8 - SPISize) as uint};
+}
+
+// 42
+type DeletePayloadv2
+{
+    byte NextPayload where value == 0 || value == 2;
+    byte C with BinaryEncoding{Width = 1};
+    byte Reserved where ValidationCheck(value == 0, null, () => "IKE: The Reserved field in type DeletePayloadv2 should be set to zero, not " + DecToHexFormat(value) + ".") with BinaryEncoding{Width = 7};
+    ushort PayloadLength;
+    byte ProtocolID;
+    byte SPISize;
+    ushort NumberofSPIs;
+    array<byte> SPI with BinaryEncoding{Length = SPISize as uint};
+}
+
+// 43
+type VendorIDPayloadv2
+{
+    byte NextPayload where value == 0 || value == 2;
+    byte C with BinaryEncoding{Width = 1};
+    byte Reserved where ValidationCheck(value == 0, null, () => "IKE: The Reserved field in type VendorIDPayloadv2 should be set to zero, not " + DecToHexFormat(value) + ".") with BinaryEncoding{Width = 7};
+    ushort PayloadLength;
+    array<byte> VendorID with BinaryEncoding{Length = (PayloadLength - 4) as uint};
+}
+
+// 44/45
+type TrafficSelectorPayloadv2
+{
+    byte NextPayload where value == 0 || value == 2;
+    byte C with BinaryEncoding{Width = 1};
+    byte Reserved where ValidationCheck(value == 0, null, () => "IKE: The Reserved field in type TrafficSelectorPayloadv2 should be set to zero, not " + DecToHexFormat(value) + ".") with BinaryEncoding{Width = 7};
+    ushort PayloadLength;
+    byte NumberofTSs;
+    array<byte> Reserved2 with BinaryEncoding{Length = 3};
+    array<TrafficSelector> TrafficSelectors;
+}
+
+type TrafficSelector
+{
+    byte TSType;
+    byte IPProtocolID;
+    optional [|TSType == 7 || TSType == 8|] ushort SelectorLength;
+    optional [|TSType == 7 || TSType == 8|] ushort StartPort;
+    optional [|TSType == 7 || TSType == 8|] ushort EndPort;
+    optional ([|TSType == 7|] TrafficSelectorIPv4Address 
+        | [|TSType == 8|] TrafficSelectorIPv6Address) Addresses;
+}
+
+type TrafficSelectorIPv4Address
+{
+    IPv4Address StartingAddress;
+    IPv4Address EndingAddress;
+}
+
+type TrafficSelectorIPv6Address
+{
+    IPv6Address StartingAddress;
+    IPv6Address EnddingAddress;
+}
+
+// 46, Future Reference: EncryptedData should has more inside details
+type EncryptedPayloadv2
+{
+    byte NextPayload where value == 0 || value == 2;
+    byte C with BinaryEncoding{Width = 1};
+    byte Reserved where ValidationCheck(value == 0, null, () => "IKE: The Reserved field in type EncryptedPayloadv2 should be set to zero, not " + DecToHexFormat(value) + ".") with BinaryEncoding{Width = 7};
+    ushort PayloadLength;
+    array<byte> EncryptedData with BinaryEncoding{Length = (PayloadLength - 4) as uint};
+}
+
+// 47
+type ConfigurationPayloadv2
+{
+    byte NextPayload where value == 0 || value == 2;
+    byte C with BinaryEncoding{Width = 1};
+    byte Reserved where ValidationCheck(value == 0, null, () => "IKE: The Reserved field in type ConfigurationPayloadv2 should be set to zero, not " + DecToHexFormat(value) + ".") with BinaryEncoding{Width = 7};
+    ushort PayloadLength;
+    byte CFGType;
+    array<byte> Reserved2 with BinaryEncoding{Length = 3};
+    ConfigurationAttributes ConfigurationAttributes;
+}
+
+type ConfigurationAttributes
+{
+    ushort R with BinaryEncoding{ Width = 1};
+    ushort AttributeType with BinaryEncoding{ Width = 15};
+    ushort Length;
+    array<byte> Value with BinaryEncoding{Length = Length as uint};
+    // Future Reference: Configuration types. RFC 4306, Page 81.
+    //([|Length > 0|] ConfigurationAttributesValue[AttributeType] | Blob[0]) Value
+}
+
+// 48
+type EAPPayloadv2
+{
+    byte NextPayload where value == 0 || value == 2;
+    byte C with BinaryEncoding{Width = 1};
+    byte Reserved where ValidationCheck(value == 0, null, () => "IKE: The Reserved field in type EAPPayloadv2 should be set to zero, not " + DecToHexFormat(value) + ".") with BinaryEncoding{Width = 7};
+    ushort PayloadLength;
+    binary PayloadForEAP;
+}
+
+// 49~127
+type ReservedPayloadv2
+{
+    byte NextPayload;
+    byte Reserved where ValidationCheck(value == 0, null, () => "IKE: The Reserved field in type ReservedPayloadv2 should be set to zero, not " + DecToHexFormat(value) + ".");
+    ushort PayloadLength;
+    array<byte> Data with BinaryEncoding{Length = (PayloadLength - 4) as uint};
+}
+
+// 128~255
+type PrivateUsePayloadv2
+{
+    byte NextPayload;
+    byte Reserved where ValidationCheck(value == 0, null, () => "IKE: The Reserved field in type PrivateUsePayloadv2 should be set to zero, not " + DecToHexFormat(value) + ".");
+    ushort PayloadLength;
+    array<byte> Data with BinaryEncoding{Length = (PayloadLength - 4) as uint};
+}
+
+type IkeGssapiTokenPayload
+{
+    byte NextPayload;
+    byte Reserved where ValidationCheck(value == 0, null, () => "IKE: The Reserved field in type IkeGssapiTokenPayload should be set to zero, not " + DecToHexFormat(value) + ".");
+    ushort PayloadLength;
+    byte VendorEncoding;
+    optional array<byte> Data with BinaryEncoding{Length = (PayloadLength - 5) as uint};
+    // Cannot replace any to GssapiType defined in GSSAPI.opn, otherwise circular reference issue will be introduced.
+    optional any Gssapi with Encoding{Ignore = true};
+}
+
+bool IsAuthIP(binary payload)
+{
+    if (payload.Count > 18)
+    {
+        byte exchangeType = payload[18];
+        if (exchangeType >= 0xF3 && exchangeType <= 0xF6)
+        {
+            return true;
+        }
+    }
+    return false;
+}

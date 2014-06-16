@@ -1,0 +1,1303 @@
+protocol WKST with
+Documentation
+{
+    ProtocolName = "Workstation Service Remote Protocol",
+    ProtocolType = "rpc",
+    ShortName = "WKST",
+    DocumentName = "MS-WKST",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References =
+    [
+        new Reference{Name = "MS-WKST", Version = "23.1", ProgramName = ProgramName.WSPP}
+    ],
+    RevisionSummary =
+    [
+        new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "01/18/2013"}
+    ]
+};
+
+using Technologies.IDL;
+using DTYP;
+using ERREF;
+using MSRPCE;
+
+const guid WkssvcUuid = {6BFFD098-A112-3610-9833-46C3F87E345A};
+
+endpoint WkssvcService over MSRPCE.Server provides Wkssvc;
+
+contract Wkssvc
+{
+    accepts operation NetrWkstaGetInfo
+    {
+        in string ServerName with IDL{BaseStringType = TypeOf<WkssvcIdentifyHandle>(), PointerType = PointerKind.UniquePtr};
+        in IDLUlong Level where ValidationCheck(value is NetrWkstaGetInfoLevel, this, DiagnosisLevel.Error,
+            "WKST: The Level parameter in operation NetrWkstaGetInfo must be one of the values specified in NetrWkstaGetInfoLevel, not " + value.ToString() + ".");
+        out LPWkstaInfo[Level] WkstaInfo with IDL{Switch_Is = Level};
+        result IDLUlong ReturnValue where ValidationCheck(value is NetrWkstaGetInfoReturnValue, this, DiagnosisLevel.Error,
+            "WKST: The ReturnValue in operation NetrWkstaGetInfo must be one of the values specified in NetrWkstaGetInfoReturnValue, not " + value.ToString() + ".");
+
+        override string ToString()
+        {
+            return "NetrWkstaGetInfo, Level = " + NetrWkstaGetInfoLevelToString(Level) +
+                ", ReturnValue = " + Win32ErrorCodesToText(ReturnValue);
+        }
+    } with IDL{Opnum = 0};
+
+    accepts operation NetrWkstaSetInfo
+    {
+        in string ServerName with IDL{BaseStringType = TypeOf<WkssvcIdentifyHandle>(), PointerType = PointerKind.UniquePtr};
+        in IDLUlong Level where ValidationCheck(value is NetrWkstaSetInfoLevel, this, DiagnosisLevel.Error,
+            "WKST: The Level parameter in operation NetrWkstaSetInfo should be one of the values specified in NetrWkstaSetInfoLevel, not " + value.ToString() + ".");
+        in LPWkstaInfo[Level] WkstaInfo with IDL{Switch_Is = Level};
+        in out IDLUlong ErrorParameter with IDL{PointerType = PointerKind.UniquePtr, IndirectionLevel = 1};
+        result IDLUlong ReturnValue where ValidationCheck(value is NetrWkstaSetInfoReturnValue, this, DiagnosisLevel.Error,
+            "WKST: The ReturnValue in operation NetrWkstaSetInfo must be one of the values specified in NetrWkstaSetInfoReturnValue, not " + value.ToString() + ".");
+
+        override string ToString()
+        {
+            return "NetrWkstaSetInfo, Level = " + NetrWkstaSetInfoLevelToString(Level)
+                + ", ErrorParameter = " + NetrWkstaSetInfoErrorParameterToString(ErrorParameter, Level) +
+                ", ReturnValue = " + Win32ErrorCodesToText(ReturnValue);
+        }
+    } with IDL{Opnum = 1};
+
+    accepts operation NetrWkstaUserEnum
+    {
+        in string ServerName with IDL{BaseStringType = TypeOf<WkssvcIdentifyHandle>(), PointerType = PointerKind.UniquePtr};
+        in out LPWkstaUserEnumStruct UserInfo;
+        in IDLUlong PreferredMaximumLength;
+        out IDLUlong TotalEntries with IDL{IndirectionLevel = 1};
+        in out IDLUlong ResumeHandle with IDL{PointerType = PointerKind.UniquePtr, IndirectionLevel = 1};
+        result IDLUlong ReturnValue where ValidationCheck(value is NetrWkstaUserEnumReturnValue, this, DiagnosisLevel.Error,
+            "WKST: The ReturnValue in operation NetrWkstaUserEnum must be one of the values specified in NetrWkstaUserEnumReturnValue, not " + value.ToString() + ".");
+
+        override string ToString()
+        {
+            return "NetrWkstaUserEnum, TotalEntries = " + (TotalEntries as string) +
+                ", ReturnValue = " + Win32ErrorCodesToText(ReturnValue);
+        }
+    } with IDL{Opnum = 2};
+
+    accepts operation Opnum3NotUsedOnWire{} with IDL{Opnum = 3}, Documentation{Ignore = true};
+
+    accepts operation Opnum4NotUsedOnWire{} with IDL{Opnum = 4}, Documentation{Ignore = true};
+
+    accepts operation NetrWkstaTransportEnum
+    {
+        in string ServerName with IDL{BaseStringType = TypeOf<WkssvcIdentifyHandle>(), PointerType = PointerKind.UniquePtr};
+        in out LPWkstaTransportEnumStruct TransportInfo;
+        in IDLUlong PreferredMaximumLength;
+        out IDLUlong TotalEntries with IDL{IndirectionLevel = 1};
+        in out IDLUlong ResumeHandle with IDL{PointerType = PointerKind.UniquePtr, IndirectionLevel = 1};
+        result IDLUlong ReturnValue where ValidationCheck(value is NetrWkstaTransportEnumReturnValue, this, DiagnosisLevel.Error,
+            "WKST: The ReturnValue in operation NetrWkstaTransportEnum must be one of the values specified in NetrWkstaTransportEnumReturnValue, not " + value.ToString() + ".");
+
+        override string ToString()
+        {
+            return "NetrWkstaTransportEnum, ReturnValue = " + Win32ErrorCodesToText(ReturnValue);
+        }
+    } with IDL{Opnum = 5};
+
+    accepts operation NetrWkstaTransportAdd
+    {
+        in string ServerName with IDL{BaseStringType = TypeOf<WkssvcIdentifyHandle>(), PointerType = PointerKind.UniquePtr};
+        in IDLUlong Level where ValidationCheck(value == 0, this, DiagnosisLevel.Error,
+            "WKST: The Level parameter in operation NetrWkstaTransportAdd must be set to zero, not " + value.ToString() + ".");
+        in LPWkstaTransportInfo0 TransportInfo;
+        in out IDLUlong ErrorParameter with IDL{PointerType = PointerKind.UniquePtr, IndirectionLevel = 1};
+        result IDLUlong ReturnValue where ValidationCheck(value is NetrWkstaTransportAddReturnValue, this, DiagnosisLevel.Error,
+            "WKST: The ReturnValue in operation NetrWkstaTransportAdd must be one of the values specified in NetrWkstaTransportAddReturnValue, not " + value.ToString() + ".");
+
+        override string ToString()
+        {
+            return "NetrWkstaTransportAdd, Level = " + NetrWkstaTransportAddLevelToString(Level) +
+                ", ReturnValue = " + Win32ErrorCodesToText(ReturnValue);
+        }
+    } with IDL{Opnum = 6};
+
+    accepts operation NetrWkstaTransportDel
+    {
+        in string ServerName with IDL{BaseStringType = TypeOf<WkssvcIdentifyHandle>(), PointerType = PointerKind.UniquePtr};
+        in string TransportName with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1, PointerType = PointerKind.UniquePtr};
+        in IDLUlong ForceLevel where ValidationCheck(value is DelForceLevel, this, DiagnosisLevel.Error,
+            "WKST: The ForceLevel parameter in operation NetrWkstaTransportDel must be one of the values specified in DelForceLevel, not " + value.ToString() + ".");
+        result IDLUlong ReturnValue where ValidationCheck(value is NetrWkstaTransportDelReturnValue, this, DiagnosisLevel.Error,
+            "WKST: The ReturnValue in operation NetrWkstaTransportDel must be one of the values specified in NetrWkstaTransportDelReturnValue, not " + value.ToString() + ".");
+
+        override string ToString()
+        {
+            return "NetrWkstaTransportDel, ForceLevel = " + DelForceLevelToString(ForceLevel) +
+                ", ReturnValue = " + Win32ErrorCodesToText(ReturnValue);
+        }
+    } with IDL{Opnum = 7};
+
+    accepts operation NetrUseAdd
+    {
+        in string ServerName with IDL{BaseStringType = TypeOf<WkssvcImpersonateHandle>(), PointerType = PointerKind.UniquePtr};
+        in IDLUlong Level where ValidationCheck(value is UseInfoLevel, this, DiagnosisLevel.Error,
+            "WKST: The Level parameter in operation NetrUseAdd must be one of the values specified in UseInfoLevel, not " + value.ToString() + ".");
+        in LPUseInfo[Level] InfoStruct with IDL{Switch_Is = Level};
+        in out IDLUlong ErrorParameter with IDL{PointerType = PointerKind.UniquePtr, IndirectionLevel = 1};
+        result IDLUlong ReturnValue where ValidationCheck(value is NetrUseAddReturnValue, this, DiagnosisLevel.Error,
+            "WKST: The ReturnValue in operation NetrUseAdd must be one of the values specified in NetrUseAddReturnValue, not " + value.ToString() + ".");
+
+        override string ToString()
+        {
+            return "NetrUseAdd, Level" + UseInfoLevelToString(Level) +
+                ", ReturnValue = " + Win32ErrorCodesToText(ReturnValue);
+        }
+    } with IDL{Opnum = 8};
+
+    accepts operation NetrUseGetInfo
+    {
+        in string ServerName with IDL{BaseStringType = TypeOf<WkssvcImpersonateHandle>(), PointerType = PointerKind.UniquePtr};
+        in string UseName with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1};
+        in  IDLUlong Level where ValidationCheck(value is UseInfoLevel, this, DiagnosisLevel.Error,
+            "WKST: The Level parameter in operation NetrUseGetInfo must be one of the values specified in UseInfoLevel, not " + value.ToString() + ".");
+        out LPUseInfo[Level] InfoStruct with IDL{Switch_Is = Level};
+        result IDLUlong ReturnValue where ValidationCheck(value is NetrUseGetInfoReturnValue, this, DiagnosisLevel.Error,
+            "WKST: The ReturnValue in operation NetrUseGetInfo must be one of the values specified in NetrUseGetInfoReturnValue, not " + value.ToString() + ".");
+
+        override string ToString()
+        {
+            return "NetrUseGetInfo, Level" + UseInfoLevelToString(Level) +
+                ", ReturnValue = " + Win32ErrorCodesToText(ReturnValue);
+        }
+    } with IDL{Opnum = 9};
+
+    accepts operation NetrUseDel
+    {
+        in string ServerName with IDL{BaseStringType = TypeOf<WkssvcImpersonateHandle>(), PointerType = PointerKind.UniquePtr};
+        in string UseName with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1};
+        in IDLUlong ForceLevel where ValidationCheck(value is DelForceLevel, this, DiagnosisLevel.Error,
+            "WKST: The ForceLevel parameter in operation NetrUseDel must be one of the values specified in DelForceLevel, not " + value.ToString() + ".");
+        result IDLUlong ReturnValue where ValidationCheck(value is NetrUseDelReturnValue, this, DiagnosisLevel.Error,
+            "WKST: The ReturnValue in operation NetrUseDel must be one of the values specified in NetrUseDelReturnValue, not " + value.ToString() + ".");
+
+        override string ToString()
+        {
+            return "NetrUseDel, UseName = " + (UseName as string) + 
+                ", ForceLevel = " + DelForceLevelToString(ForceLevel) +
+                ", ReturnValue = " + Win32ErrorCodesToText(ReturnValue);
+        }
+    } with IDL{Opnum = 10};
+
+    accepts operation NetrUseEnum
+    {
+        in string ServerName with IDL{BaseStringType = TypeOf<WkssvcIdentifyHandle>(), PointerType = PointerKind.UniquePtr};
+        in out LPUseEnumStruct InfoStruct;
+        in IDLUlong PreferredMaximumLength;
+        out IDLUlong TotalEntries with IDL{IndirectionLevel = 1};
+        in out IDLUlong ResumeHandle with IDL{PointerType = PointerKind.UniquePtr, IndirectionLevel = 1};
+        result IDLUlong ReturnValue where ValidationCheck(value is NetrUseEnumReturnValue, this, DiagnosisLevel.Error,
+            "WKST: The ReturnValue in operation NetrUseEnum must be one of the values specified in NetrUseEnumReturnValue, not " + value.ToString() + ".");
+
+        override string ToString()
+        {
+            return "NetrUseEnum, InfoStructLevel = " + (InfoStruct.Level as string) +
+                ", TotalEntries = " + (TotalEntries as string) +
+                ", ReturnValue = " + Win32ErrorCodesToText(ReturnValue);
+        }
+    } with IDL{Opnum = 11};
+
+    accepts operation Opnum12NotUsedOnWire{} with IDL{Opnum = 12}, Documentation{Ignore = true};
+
+    accepts operation NetrWorkstationStatisticsGet
+    {
+        in string ServerName with IDL{BaseStringType = TypeOf<WkssvcIdentifyHandle>(), PointerType = PointerKind.UniquePtr};
+        in string ServiceName with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1, PointerType = PointerKind.UniquePtr};
+        in IDLUlong Level where ValidationCheck(value == 0, this, DiagnosisLevel.Error,
+            "WKST: The Level parameter in operation NetrWorkstationStatisticsGet must be zero, not " + value.ToString() + ".");
+        in IDLUlong Options where ValidationCheck(value == 0, this, DiagnosisLevel.Error,
+            "WKST: The Options parameter in operation NetrWorkstationStatisticsGet must be zero, not " + value.ToString() + ".");
+        out LPStatWorkstation0 Buffer with IDL{IndirectionLevel = 1};
+        result IDLUlong ReturnValue where ValidationCheck(value is NetrWorkstationStatisticsGetReturnValue, this, DiagnosisLevel.Error,
+            "WKST: The ReturnValue in operation NetrWorkstationStatisticsGet must be one of the values specified in NetrWorkstationStatisticsGetReturnValue, not " + value.ToString() + ".");
+
+        override string ToString()
+        {
+            return "NetrWorkstationStatisticsGet, Level = " + (Level as string) +
+                ", ReturnValue = " + Win32ErrorCodesToText(ReturnValue);
+        }
+    } with IDL{Opnum = 13};
+
+    accepts operation Opnum14NotUsedOnWire{} with IDL{Opnum = 14}, Documentation{Ignore = true};
+
+    accepts operation Opnum15NotUsedOnWire{} with IDL{Opnum = 15}, Documentation{Ignore = true};
+
+    accepts operation Opnum16NotUsedOnWire{} with IDL{Opnum = 16}, Documentation{Ignore = true};
+
+    accepts operation Opnum17NotUsedOnWire{} with IDL{Opnum = 17}, Documentation{Ignore = true};
+
+    accepts operation Opnum18NotUsedOnWire{} with IDL{Opnum = 18}, Documentation{Ignore = true};
+
+    accepts operation Opnum19NotUsedOnWire{} with IDL{Opnum = 19}, Documentation{Ignore = true};
+
+    accepts operation NetrGetJoinInformation
+    {
+        in string ServerName with IDL{BaseStringType = TypeOf<WkssvcImpersonateHandle>(), PointerType = PointerKind.UniquePtr};
+        in out string NameBuffer with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 2};
+        out PNetsetupJoinStatus BufferType;
+        result IDLUlong ReturnValue where ValidationCheck(value is NetrGetJoinInformationReturnValue, this, DiagnosisLevel.Error,
+            "WKST: The ReturnValue in operation NetrGetJoinInformation must be one of the values specified in NetrGetJoinInformationReturnValue, not " + value.ToString() + ".");
+
+        override string ToString()
+        {
+            return "NetrGetJoinInformation, NameBuffer = " + (NameBuffer as string) +
+                ", BufferType = " + EnumToString(BufferType, "WKST.NetsetupJoinStatus") +
+                ", ReturnValue = " + Win32ErrorCodesToText(ReturnValue);
+        }
+    } with IDL{Opnum = 20};
+
+    accepts operation Opnum21NotUsedOnWire{} with IDL{Opnum = 21}, Documentation{Ignore = true};
+
+    accepts operation NetrJoinDomain2
+    {
+        in optional handle_t RpcBindingHandle;
+        in string ServerName with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1, PointerType = PointerKind.UniquePtr};
+        in string DomainNameParam with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1};
+        in string MachineAccountOU with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1, PointerType = PointerKind.UniquePtr};
+        in string AccountName with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1, PointerType = PointerKind.UniquePtr};
+        in PJoinprEncryptedUserPassword Password with IDL{PointerType = PointerKind.UniquePtr};
+        in IDLUlong Options where (value is flags ULONG
+			{
+				NetsetupJoinDomain = 0x00000001,
+				NetsetupAcctCreate = 0x00000002,
+				NetsetupAcctDelete = 0x00000004,
+				NetsetupDomainJoinIfJoined = 0x00000020,
+				NetsetupJoinUnsecure = 0x00000040,
+				NetsetupMachinePwdPassed = 0x00000080,
+				NetsetupDeferSpnSet = 0x00000100,
+				NetsetupJoinDcAccount = 0x00000200,
+				NetsetupJoinWithNewName = 0x00000400,
+				NetsetupInstallInvocation = 0x00040000,
+			} || value is IDLUlong);
+        result IDLUlong ReturnValue where ValidationCheck(value is NetrJoinDomain2ReturnValue, this, DiagnosisLevel.Error,
+            "WKST: The ReturnValue in operation NetrJoinDomain2 must be one of the values specified in NetrJoinDomain2ReturnValue, not " + value.ToString() + ".");
+
+        override string ToString()
+        {
+            return "NetrJoinDomain2, DomainNameParam = " + (DomainNameParam as string) +
+                ", Options = " + (Options as string) +
+                ", AccountName = " + (AccountName as string) +
+                ", ReturnValue = " + Win32ErrorCodesToText(ReturnValue);
+        }
+    } with IDL{Opnum = 22};
+
+    accepts operation NetrUnjoinDomain2
+    {
+        in optional handle_t RpcBindingHandle;
+        in string ServerName with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1, PointerType = PointerKind.UniquePtr};
+        in string AccountName with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1, PointerType = PointerKind.UniquePtr};
+        in PJoinprEncryptedUserPassword Password with IDL{PointerType = PointerKind.UniquePtr};
+        in IDLUlong Options where (value is flags ULONG
+			{
+				NetsetupAcctDelete = 0x00000004,
+				NetsetupIgnoreUnsupportedFlags = 0x10000000,
+			} || value is IDLUlong);
+        result IDLUlong ReturnValue where ValidationCheck(value is NetrUnjoinDomain2ReturnValue, this, DiagnosisLevel.Error,
+            "WKST: The ReturnValue in operation NetrUnjoinDomain2 must be one of the values specified in NetrUnjoinDomain2ReturnValue, not " + value.ToString() + ".");
+        
+        override string ToString()
+        {
+            return "NetrJoinDomain2, AccountName = " + (AccountName as string) +
+                ", Options = " + (Options as string) +
+                ", ReturnValue = " + Win32ErrorCodesToText(ReturnValue);
+        }
+    } with IDL{Opnum = 23};
+
+    accepts operation NetrRenameMachineInDomain2
+    {
+        in optional handle_t RpcBindingHandle;
+        in string ServerName with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1, PointerType = PointerKind.UniquePtr};
+        in string MachineName with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1, PointerType = PointerKind.UniquePtr};
+        in string AccountName with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1, PointerType = PointerKind.UniquePtr};
+        in PJoinprEncryptedUserPassword Password with IDL{PointerType = PointerKind.UniquePtr};
+        in IDLUlong Options where (value is flags ULONG
+			{
+				NetsetupAcctCreate  = 0x00000002,
+				NetsetupDnsNameChangesOnly = 0x00001000,
+			} || value is IDLUlong);
+        result IDLUlong ReturnValue where ValidationCheck(value is NetrRenameMachineInDomain2ReturnValue, this, DiagnosisLevel.Error,
+            "WKST: The ReturnValue in operation NetrRenameMachineInDomain2 must be one of the values specified in NetrRenameMachineInDomain2ReturnValue, not " + value.ToString() + ".");
+
+        override string ToString()
+        {
+            return "NetrRenameMachineInDomain2, MachineName = " + (MachineName as string) +
+                ", Options = " + (Options as string) +
+                ", AccountName = " + (AccountName as string) +
+                ", ReturnValue = " + Win32ErrorCodesToText(ReturnValue);
+        }
+    } with IDL{Opnum = 24};
+
+    accepts operation NetrValidateName2
+    {
+        in optional handle_t RpcBindingHandle;
+        in string ServerName with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1, PointerType = PointerKind.UniquePtr};
+        in string NameToValidate with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1};
+        in string AccountName with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1, PointerType = PointerKind.UniquePtr};
+        in PJoinprEncryptedUserPassword Password with IDL{PointerType = PointerKind.UniquePtr};
+        in NetsetupNameType NameType;
+        result IDLUlong ReturnValue where ValidationCheck(value is NetrValidateName2ReturnValue, this, DiagnosisLevel.Error,
+            "WKST: The ReturnValue in operation NetrValidateName2 must be one of the values specified in NetrValidateName2ReturnValue, not " + value.ToString() + ".");
+
+        override string ToString()
+        {
+            return "NetrValidateName2, NameType = " + EnumToString(NameType, "WKST.NetsetupJoinStatus") + 
+                ", ReturnValue = " + Win32ErrorCodesToText(ReturnValue);
+        }
+    } with IDL{Opnum = 25};
+
+    accepts operation NetrGetJoinableOUs2
+    {
+        in optional handle_t RpcBindingHandle;
+        in string ServerName with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1, PointerType = PointerKind.UniquePtr};
+        in string DomainNameParam with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1};
+        in string AccountName with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1, PointerType = PointerKind.UniquePtr};
+        in PJoinprEncryptedUserPassword Password with IDL{PointerType = PointerKind.UniquePtr};
+        in out IDLUlong OUCount with IDL{IndirectionLevel = 1};
+        out array<string> OUs with IDL{BaseStringType = TypeOf<wchar_t>(), Size_is = [null, OUCount, null], IndirectionLevel = 3};
+        result IDLUlong ReturnValue where ValidationCheck(value is NetrGetJoinableOUs2ReturnValue, this, DiagnosisLevel.Error,
+            "WKST: The ReturnValue in operation NetrGetJoinableOUs2 must be one of the values specified in NetrGetJoinableOUs2ReturnValue, not " + value.ToString() + ".");
+
+        override string ToString()
+        {
+            return "NetrGetJoinableOUs2, DomainNameParam = " + (DomainNameParam as string) +
+                ", AccountName = " + (AccountName as string) +
+                ", OUCount = " + (OUCount as string) +
+                ", ReturnValue = " + Win32ErrorCodesToText(ReturnValue);
+        }
+    } with IDL{Opnum = 26};
+
+    accepts operation NetrAddAlternateComputerName
+    {
+        in optional handle_t RpcBindingHandle;
+        in string ServerName with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1, PointerType = PointerKind.UniquePtr};
+        in string AlternateName with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1, PointerType = PointerKind.UniquePtr};
+        in string DomainAccount with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1, PointerType = PointerKind.UniquePtr};
+        in PJoinprEncryptedUserPassword EncryptedPassword with IDL{PointerType = PointerKind.UniquePtr};
+        in IDLUlong Reserved where (value is flags ULONG
+			{
+				NetIgnoreUnsupportedFlags = 0x00000001,
+			} || value is IDLUlong);
+        result IDLUlong ReturnValue where ValidationCheck(value is NetrAddAlternateComputerNameReturnValue, this, DiagnosisLevel.Error,
+            "WKST: The ReturnValue in operation NetrAddAlternateComputerName must be one of the values specified in NetrAddAlternateComputerNameReturnValue, not " + value.ToString() + ".");
+
+        override string ToString()
+        {
+            return "NetrAddAlternateComputerName, AlternateName = " + (AlternateName as string) +
+                ", DomainAccount = " + (DomainAccount as string) +
+                ", ReturnValue = " + Win32ErrorCodesToText(ReturnValue);
+        }
+    } with IDL{Opnum = 27};
+
+    accepts operation NetrRemoveAlternateComputerName
+    {
+        in optional handle_t RpcBindingHandle;
+        in string ServerName with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1, PointerType = PointerKind.UniquePtr};
+        in string AlternateName with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1, PointerType = PointerKind.UniquePtr};
+        in string DomainAccount with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1, PointerType = PointerKind.UniquePtr};
+        in PJoinprEncryptedUserPassword EncryptedPassword with IDL{PointerType = PointerKind.UniquePtr};
+        in IDLUlong Reserved where (value is flags ULONG
+			{
+				NetIgnoreUnsupportedFlags = 0x00000001,
+			} || value is IDLUlong);
+        result IDLUlong ReturnValue where ValidationCheck(value is NetrRemoveAlternateComputerNameReturnValue, this, DiagnosisLevel.Error,
+            "WKST: The ReturnValue in operation NetrRemoveAlternateComputerName must be one of the values specified in NetrRemoveAlternateComputerNameReturnValue, not " + value.ToString() + ".");
+
+        override string ToString()
+        {
+            return "NetrRemoveAlternateComputerName, AlternateName = " + (AlternateName as string) +
+                ", DomainAccount = " + (DomainAccount as string) +
+                ", ReturnValue = " + Win32ErrorCodesToText(ReturnValue);
+        }
+    } with IDL{Opnum = 28};
+
+    accepts operation NetrSetPrimaryComputerName
+    {
+        in optional handle_t RpcBindingHandle;
+        in string ServerName with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1, PointerType = PointerKind.UniquePtr};
+        in string PrimaryName with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1, PointerType = PointerKind.UniquePtr};
+        in string DomainAccount with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1, PointerType = PointerKind.UniquePtr};
+        in PJoinprEncryptedUserPassword EncryptedPassword with IDL{PointerType = PointerKind.UniquePtr};
+        in IDLUlong Reserved where (value is flags ULONG
+			{
+				NetIgnoreUnsupportedFlags = 0x00000001,
+			} || value is IDLUlong);
+        result IDLUlong ReturnValue where ValidationCheck(value is NetrSetPrimaryComputerNameReturnValue, this, DiagnosisLevel.Error,
+            "WKST: The ReturnValue in operation NetrSetPrimaryComputerName must be one of the values specified in NetrSetPrimaryComputerNameReturnValue, not " + value.ToString() + ".");
+
+        override string ToString()
+        {
+            return "NetrSetPrimaryComputerName, PrimaryName = " + (PrimaryName as string) +
+                ", DomainAccount = " + (DomainAccount as string) +
+                ", ReturnValue = " + Win32ErrorCodesToText(ReturnValue);
+        }
+    } with IDL{Opnum = 29};
+
+    accepts operation NetrEnumerateComputerNames
+    {
+        in string ServerName with IDL{BaseStringType = TypeOf<WkssvcImpersonateHandle>(), PointerType = PointerKind.UniquePtr};
+        in NetComputerNameType NameType;
+        in IDLUlong Reserved where (value is flags ULONG
+			{
+				NetIgnoreUnsupportedFlags = 0x00000001,
+			} || value is IDLUlong);
+        out PNetComputerNameArray ComputerNames with IDL{IndirectionLevel = 1};
+        result IDLUlong ReturnValue where ValidationCheck(value is NetrEnumerateComputerNamesReturnValue, this, DiagnosisLevel.Error,
+            "WKST: The ReturnValue in operation NetrEnumerateComputerNames must be one of the values specified, not " + value.ToString() + ".");
+
+        override string ToString()
+        {
+            return "NetrEnumerateComputerNames, NameType = " + EnumToString(NameType, "WKST.NetComputerNameType") +
+                ", ReturnValue = " + Win32ErrorCodesToText(ReturnValue);
+        }
+    } with IDL{Opnum = 30};
+} with IDL {
+        Uuid = {6BFFD098-A112-3610-9833-46C3F87E345A},
+        Version = "1.0",
+        Pointer_default = PointerKind.UniquePtr,
+    };
+
+// _NETSETUP_JOIN_STATUS
+pattern NetsetupJoinStatus = enum ushort
+    {
+        NetSetupUnknownStatus = 0,
+        NetSetupUnjoined,
+        NetSetupWorkgroupName,
+        NetSetupDomainName
+		...
+    };
+
+typedef PNetsetupJoinStatus = NetsetupJoinStatus with IDL{IndirectionLevel = 1};
+
+// _NETSETUP_NAME_TYPE
+pattern NetsetupNameType = enum ushort
+    {
+        NetSetupUnknown = 0,
+        NetSetupMachine,
+        NetSetupWorkgroup,
+        NetSetupDomain,
+        NetSetupNonExistentDomain,
+        NetSetupDnsMachine
+		...
+    };
+
+typedef PNetsetupNameType = NetsetupNameType with IDL{IndirectionLevel = 1};
+
+// _NET_COMPUTER_NAME_TYPE
+pattern NetComputerNameType = enum ushort
+    {
+        NetPrimaryComputerName = 0,
+        NetAlternateComputerNames,
+        NetAllComputerNames,
+        NetComputerNameTypeMax
+		...
+    };
+
+typedef PNetComputerNameType = NetComputerNameType with IDL{IndirectionLevel = 1};
+
+//----------------------------------- Data types/ Structures/ Uniouns -----------------------------------//
+// _STAT_WORKSTATION_0
+type StatWorkstation0
+{
+    LARGE_INTEGER StatisticsStartTime;
+    LARGE_INTEGER BytesReceived;
+    LARGE_INTEGER SmbsReceived;
+    LARGE_INTEGER PagingReadBytesRequested;
+    LARGE_INTEGER NonPagingReadBytesRequested;
+    LARGE_INTEGER CacheReadBytesRequested;
+    LARGE_INTEGER NetworkReadBytesRequested;
+    LARGE_INTEGER BytesTransmitted;
+    LARGE_INTEGER SmbsTransmitted;
+    LARGE_INTEGER PagingWriteBytesRequested;
+    LARGE_INTEGER NonPagingWriteBytesRequested;
+    LARGE_INTEGER CacheWriteBytesRequested;
+    LARGE_INTEGER NetworkWriteBytesRequested;
+    IDLUlong InitiallyFailedOperations;
+    IDLUlong FailedCompletionOperations;
+    IDLUlong ReadOperations;
+    IDLUlong RandomReadOperations;
+    IDLUlong ReadSmbs;
+    IDLUlong LargeReadSmbs;
+    IDLUlong SmallReadSmbs;
+    IDLUlong WriteOperations;
+    IDLUlong RandomWriteOperations;
+    IDLUlong WriteSmbs;
+    IDLUlong LargeWriteSmbs;
+    IDLUlong SmallWriteSmbs;
+    IDLUlong RawReadsDenied;
+    IDLUlong RawWritesDenied;
+    IDLUlong NetworkErrors;
+    IDLUlong Sessions;
+    IDLUlong FailedSessions;
+    IDLUlong Reconnects;
+    IDLUlong CoreConnects;
+    IDLUlong Lanman20Connects;
+    IDLUlong Lanman21Connects;
+    IDLUlong LanmanNtConnects;
+    IDLUlong ServerDisconnects;
+    IDLUlong HungSessions;
+    IDLUlong UseCount;
+    IDLUlong FailedUseCount;
+    IDLUlong CurrentCommands;
+}
+
+typedef LPStatWorkstation0 = StatWorkstation0 with IDL{IndirectionLevel = 1};
+
+// WkstaInfo100
+type WkstaInfo100
+{
+    IDLUlong Wki100PlatformId where ValidationCheck(value is Wki100PlatformIdPattern, null,
+            "WKST: The Wki100PlatformId in type WkstaInfo100 must be one of 0x0000012C, 0x00000190, 0x000001F4, 0x00000258, and 0x000002BC.");
+    string Wki100Computername with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1};
+    string Wki100Langroup with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1};
+    IDLUlong Wki100VerMajor;
+    IDLUlong Wki100VerMinor;
+}
+
+typedef LPWkstaInfo100 = WkstaInfo100 with IDL{IndirectionLevel = 1};
+
+// WkstaInfo_101
+type WkstaInfo101
+{
+    IDLUlong Wki101platformId;
+    string Wki101Computername with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1};
+    string Wki101Langroup with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1};
+    IDLUlong Wki101VerMajor;
+    IDLUlong Wki101verMinor;
+    string Wki101Lanroot with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1}; 
+}
+
+typedef LPWkstaInfo101 = WkstaInfo101 with IDL{IndirectionLevel = 1};
+
+// _WKSTA_INFO_102
+type WkstaInfo102
+{
+    IDLUlong Wki102platformId;
+    string Wki102Computername with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1};
+    string Wki102Langroup with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1};
+    IDLUlong Wki102verMajor;
+    IDLUlong Wki102verMinor;
+    string Wki102Lanroot with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1};
+    IDLUlong Wki102LoggedOnUsers;
+}
+
+typedef LPWkstaInfo102 = WkstaInfo102 with IDL{IndirectionLevel = 1};
+
+// _WKSTA_INFO_502
+type WkstaInfo502
+{
+    IDLUlong Wki502CharWait;
+    IDLUlong Wki502CollectionTime;
+    IDLUlong Wki502MaximumCollectionCount;
+    IDLUlong Wki502KeepConn;
+    IDLUlong Wki502MaxCmds;
+    IDLUlong Wki502SessTimeout;
+    IDLUlong Wki502SizCharBuf;
+    IDLUlong Wki502MaxThreads;
+    IDLUlong Wki502LockQuota;
+    IDLUlong Wki502LockIncrement;
+    IDLUlong Wki502LockMaximum;
+    IDLUlong Wki502PipeIncrement;
+    IDLUlong Wki502PipeMaximum;
+    IDLUlong Wki502CacheFileTimeout;
+    IDLUlong Wki502DormantFileLimit;
+    IDLUlong Wki502ReadAheadThroughput;
+    IDLUlong Wki502NumMailslotBuffers;
+    IDLUlong Wki502NumSrvAnnounceBuffers;
+    IDLUlong Wki502MaxIllegalDatagramEvents;
+    IDLUlong Wki502IllegalDatagramEventResetFrequency;
+    int Wki502LogElectionPackets;
+    int Wki502UseOpportunisticLocking;
+    int Wki502UseUnlockBehind;
+    int Wki502UseCloseBehind;
+    int Wki502BufNamedPipes;
+    int Wki502UseLockReadUnlock;
+    int Wki502UtilizeNtCaching;
+    int Wki502UseRawRead;
+    int Wki502UseRawWrite;
+    int Wki502UseWriteRawData;
+    int Wki502UseEncryption;
+    int Wki502BufFilesDenyWrite;
+    int Wki502BufReadOnlyFiles;
+    int Wki502ForceCoreCreateMode;
+    int Wki502Use512ByteMaxTransfer;
+}
+
+typedef LPWkstaInfo502 = WkstaInfo502 with IDL{IndirectionLevel = 1};
+
+// _WKSTA_INFO_1013
+type WkstaInfo1013
+{
+    IDLUlong Wki1013KeepConn;
+}
+
+typedef LPWkstaInfo1013 = WkstaInfo1013 with IDL{IndirectionLevel = 1};
+
+// _WKSTA_INFO_1018
+type WkstaInfo1018
+{
+    IDLUlong Wki1018SessTimeout;
+}
+
+typedef LPWkstaInfo1018 = WkstaInfo1018 with IDL{IndirectionLevel = 1};
+
+// _WKSTA_INFO_1046
+type WkstaInfo1046
+{
+    IDLUlong Wki1046DormantFileLimit;
+}
+
+typedef LPWkstaInfo1046 = WkstaInfo1046 with IDL{IndirectionLevel = 1};
+
+// _WKSTA_USER_INFO_0
+type WkstaUserInfo0
+{
+    string Wkui0Username with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1};
+}
+
+// _WKSTA_USER_INFO_1
+type WkstaUserInfo1
+{
+    string Wkui1Username with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1};
+    string Wkui1LogonDomain with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1};
+    string Wkui1OthDomains with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1};
+    string Wkui1LogonServer with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1};
+}
+
+// _WKSTA_TRANSPORT_INFO_0
+type WkstaTransportInfo0
+{
+    IDLUlong Wkti0QualityOfService;
+    IDLUlong Wkti0NumberOfVcs;
+    string Wkti0TransportName with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1};
+    string Wkti0TransportAddress with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1};
+    IDLUlong Wkti0WanIsh;
+}
+
+typedef LPWkstaTransportInfo0 = WkstaTransportInfo0 with IDL{IndirectionLevel = 1};
+
+// WKSSVC_IDENTIFY_HANDLE
+pattern WkssvcIdentifyHandle =  wchar_t with IDL{IndirectionLevel = 1};
+
+// WKSSVC_IMPERSONATE_HANDLE
+pattern WkssvcImpersonateHandle = wchar_t with IDL{IndirectionLevel = 1};
+
+// _WKSTA_INFO
+type WkstaInfo[IDLUlong Tag]
+{
+    optional [|Tag == 100|] WkstaInfo100 WkstaInfo100 with IDL{Case = [100], IndirectionLevel = 1};
+    optional [|Tag == 101|] WkstaInfo101 WkstaInfo101 with IDL{Case = [101], IndirectionLevel = 1};
+    optional [|Tag == 102|] WkstaInfo102 WkstaInfo102 with IDL{Case = [102], IndirectionLevel = 1};
+    optional [|Tag == 502|] WkstaInfo502 WkstaInfo502 with IDL{Case = [502], IndirectionLevel = 1};
+    optional [|Tag == 1013|] WkstaInfo1013 WkstaInfo1013 with IDL{Case = [1013], IndirectionLevel = 1};
+    optional [|Tag == 1018|] WkstaInfo1018 WkstaInfo1018 with IDL{Case = [1018], IndirectionLevel = 1};
+    optional [|Tag == 1046|] WkstaInfo1046 WkstaInfo1046 with IDL{Case = [1046], IndirectionLevel = 1};
+} with IDL{UnionKind = UnionKind.NonEncapsulated, EmptyDefault = true, Switch_Type = TypeOf<IDLUlong>()};
+
+typedef LPWkstaInfo = WkstaInfo with IDL{IndirectionLevel = 1};
+
+// _USE_INFO_O
+type UseInfo0
+{
+    string Ui0Local with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1};
+    string Ui0Remote with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1};
+}
+
+typedef LPUseInfo0 = UseInfo0 with IDL{IndirectionLevel = 1};
+
+// _USE_INFO_1
+type UseInfo1
+{
+    string Ui1Local with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1};
+    string Ui1Remote with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1};
+    string Ui1Password with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1};
+    IDLUlong Ui1Status;
+    IDLUlong Ui1AsgType;
+    IDLUlong Ui1Refcount;
+    IDLUlong Ui1Usecount;
+}
+
+typedef LPUseInfo1 = UseInfo1 with IDL{IndirectionLevel = 1};
+
+// _USE_IN FO_2
+type UseInfo2
+{
+    UseInfo1 Ui2UseInfo;
+    string Ui2Username with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1};
+    string Ui2Domainname with IDL{BaseStringType = TypeOf<wchar_t>(), IndirectionLevel = 1};
+}
+
+typedef LPUseInfo2 = UseInfo2 with IDL{IndirectionLevel = 1};
+
+// _USE_INFO_3
+type UseInfo3
+{
+    UseInfo2 Ui3Ui2;
+    IDLUlong Ui3Flags;
+}
+
+typedef LPUseInfo3 = UseInfo3 with IDL{IndirectionLevel = 1};
+
+// _USE_INFO
+type UseInfo[IDLUlong Tag]
+{
+    optional [|Tag == 0|] UseInfo0 UseInfo0 with IDL{Case = [0], IndirectionLevel = 1};
+    optional [|Tag == 1|] UseInfo1 UseInfo1 with IDL{Case = [1], IndirectionLevel = 1};
+    optional [|Tag == 2|] UseInfo2 UseInfo2 with IDL{Case = [2], IndirectionLevel = 1};
+    optional [|Tag == 3|] UseInfo3 UseInfo3 with IDL{Case = [3], IndirectionLevel = 1};
+} with IDL{UnionKind = UnionKind.NonEncapsulated, EmptyDefault = true, Switch_Type = TypeOf<IDLUlong>()};
+
+typedef LPUseInfo = UseInfo with IDL{IndirectionLevel = 1};
+
+// _USE_INFO_0_CONTAINER
+type UseInfo0Container
+{
+    IDLUlong EntriesRead;
+    UseInfo0 Buffer with IDL{IndirectionLevel = 1};
+}
+
+typedef LPUseInfo0Container = UseInfo0Container with IDL{IndirectionLevel = 1};
+
+// _USE_INFO_1_CONTAINER
+type UseInfo1Container
+{
+    IDLUlong EntriesRead;
+    LPUseInfo1 Buffer;
+}
+
+typedef LPUseInfo1Container = UseInfo1Container with IDL{IndirectionLevel = 1};
+
+// _USE_INFO_2_CONTAINER
+type UseInfo2Container
+{
+    IDLUlong EntriesRead;
+    LPUseInfo2 Buffer;
+}
+
+typedef LPUseInfo2Container = UseInfo2Container with IDL{IndirectionLevel = 1};
+
+// _USE_ENUM_STRUCT
+type UseEnumStruct
+{
+    DWORD Level;
+    UseEnumUnion[Level] UseInfo with IDL{Switch_Is = Level};
+}
+
+typedef LPUseEnumStruct = UseEnumStruct with IDL{IndirectionLevel = 1};
+
+type UseEnumUnion [DWORD Tag]
+{
+    optional [|Tag == 0|] UseInfo0Container Level0 with IDL{Case = [0], IndirectionLevel = 1};
+    optional [|Tag == 1|] UseInfo1Container Level1 with IDL{Case = [1], IndirectionLevel = 1};
+    optional [|Tag == 2|] UseInfo2Container Level2 with IDL{Case = [2], IndirectionLevel = 1};
+} with IDL{UnionKind = UnionKind.NonEncapsulated, EmptyDefault = true};
+
+// _WKSTA_USER_INFO_0_CONTAINER
+type WkstaUserInfo0Container
+{
+    IDLUlong EntriesRead;
+    array<WkstaUserInfo0> Buffer with IDL{Size_is = [EntriesRead], IndirectionLevel = 1};
+}
+
+typedef LPWkstaUserInfo0Container = WkstaUserInfo0Container with IDL{IndirectionLevel = 1};
+
+// _WKSTA_USER_INFO_1_CONTAINER
+type WkstaUserInfo1Container
+{
+    IDLUlong EntriesRead;
+    array<WkstaUserInfo1> Buffer with IDL{Size_is = [EntriesRead], IndirectionLevel = 1};
+}
+
+typedef LPWkstaUserInfo1Container = WkstaUserInfo1Container with IDL{IndirectionLevel = 1};
+
+// _WKSTA_USER_ENUM_STRUCT
+type WkstaUserEnumStruct
+{
+    IDLUlong Level;
+    WkstaUserEnumUnion[Level] WkstaUserInfo with IDL{Switch_Is = Level};
+}
+
+typedef LPWkstaUserEnumStruct = WkstaUserEnumStruct with IDL{IndirectionLevel = 1};
+
+type WkstaUserEnumUnion[IDLUlong Tag]
+{
+    optional [|Tag == 0|] WkstaUserInfo0Container Level0 with IDL{Case = [0], IndirectionLevel = 1};
+    optional [|Tag == 1|] WkstaUserInfo1Container Level1 with IDL{Case = [1], IndirectionLevel = 1};
+} with IDL{UnionKind = UnionKind.NonEncapsulated, EmptyDefault = true};
+
+// _WKSTA_TRANSPORT_INFO_0_CONTAINER
+type WkstaTransportInfo0Container
+{
+    IDLUlong EntriesRead;
+    array<WkstaTransportInfo0> Buffer with IDL{Size_is = [EntriesRead], IndirectionLevel = 1};
+};
+
+typedef LPWkstaTransportInfo0Container = WkstaTransportInfo0Container with IDL{IndirectionLevel = 1};
+
+// _WKSTA_TRANSPORT_ENUM_ST RUCT
+type WkstaTransportEnumStruct
+{
+    IDLUlong Level where ValidationCheck(value == 0, null, DiagnosisLevel.Error, 
+            "WKST: The Level field in type WkstaTransportEnumStruct must be set to zero, not " + value.ToString() + ".");
+    WkstaTransportEnumUnion[Level] WkstaTransportInfo with IDL{Switch_Is = Level};
+}
+
+typedef LPWkstaTransportEnumStruct = WkstaTransportEnumStruct with IDL{IndirectionLevel = 1};
+
+type WkstaTransportEnumUnion[IDLUlong Tag]
+{
+    optional [|Tag == 0|] WkstaTransportInfo0Container Level0 with IDL{Case = [0], IndirectionLevel = 1};
+} with IDL{UnionKind = UnionKind.NonEncapsulated, EmptyDefault = true};
+
+// JOIN_OBFUSCATOR_LENGTH
+const int JoinObfuscatorLength = 8;
+// JOIN_MAX_PASSWORD_LENGTH 256
+const int JoinMaxPasswordLength = 256;
+
+// Future Reference: Custom marshalling. NDR not surpport for struct which contains this field is not directly encoded by the RPC runtime and transmitted on wire yet
+// _JOINPR_USER_PASSWORD
+//type JoinprUserPassword
+//{
+    //array<UCHAR> Obfuscator with IDL{Dimensions = [JoinObfuscatorLength]};
+    //array<wchar_t> Buffer with IDL{Dimensions = [JoinMaxPasswordLength]};
+    //IDLUlong Length;
+//}
+
+// _JOINPR_ENCRYPTED_USER_PASSWORD
+type JoinprEncryptedUserPassword
+{
+	// BUGBUG: There're type assert failed error when using const in Dimensions
+    //array<UCHAR> Buffer with IDL {Dimensions = [(JoinObfuscatorLength + (JoinMaxPasswordLength * 2) + 4) as int]};
+    array<UCHAR> Buffer with IDL {Dimensions = [524]};
+}
+
+typedef PJoinprEncryptedUserPassword = JoinprEncryptedUserPassword with IDL{IndirectionLevel = 1};
+
+// _UNICODE_STRING
+type UnicodeString
+{
+    USHORT Length;
+    USHORT MaximumLength;
+    array<USHORT> Buffer with IDL{Size_is = [MaximumLength / 2], Length_is = [Length / 2], IndirectionLevel = 1};
+}
+
+typedef PUnicodeString = UnicodeString with IDL{IndirectionLevel = 1};
+
+// _NET_COMPUTER_NAME_ARRAY
+type NetComputerNameArray
+{
+    IDLUlong EntryCount;
+    array<UnicodeString> ComputerNames with IDL{Size_is = [EntryCount], IndirectionLevel = 1};
+}
+
+typedef PNetComputerNameArray = NetComputerNameArray with IDL{IndirectionLevel = 1};
+
+//---------------------------- Not defined in IDL ----------------------------//
+// 2.2.5.1 WKSTA_INFO_100
+pattern Wki100PlatformIdPattern = enum IDLUlong
+{
+    Dos = 0x0000012C,
+    Os2 = 0x00000190,
+    Windows = 0x000001F4,
+    Osf = 0x00000258,
+    Vms = 0x000002Bc,
+} with IDL{DoNotGenerate = true};
+
+// 3.2.4.1   NetrWkstaGetInfo (Opnum 0)
+pattern NetrWkstaGetInfoLevel = enum IDLUlong
+{
+    WkstaInfo100 = 0x00000064,
+    WkstaInfo101 = 0x00000065,
+    WkstaInfo102 = 0x00000066,
+    WkstaInfo502 = 0x000001F6
+} with IDL{DoNotGenerate = true};
+
+const map<IDLUlong, string> NetrWkstaGetInfoLevels =
+    {
+        0x00000064 -> "WKSTA_INFO_100",
+        0x00000065 -> "WKSTA_INFO_101",
+        0x00000066 -> "WKSTA_INFO_102",
+        0x000001F6 -> "WKSTA_INFO_502"
+    };
+
+string NetrWkstaGetInfoLevelToString(IDLUlong key)
+{
+    if (key in NetrWkstaGetInfoLevels)
+    {
+        return NetrWkstaGetInfoLevels[key];
+    }
+    return "Unknown Value(" + (key as string) + ")";
+}
+
+// 3.2.4.2   NetrWkstaSetInfo (Opnum 1)
+pattern NetrWkstaSetInfoLevel = enum IDLUlong
+{
+    WkstaInfo502 = 0x000001F6,
+    WkstaInfo1013 = 0x000003F5,
+    WkstaInfo1018 = 0x000003FA,
+    WkstaInfo1046 = 0x00000416
+} with IDL{DoNotGenerate = true};
+
+const map<IDLUlong, string> NetrWkstaSetInfoLevels =
+    {
+        0x000001F6 -> "WKSTA_INFO_502",
+        0x000003F5 -> "WKSTA_INFO_1013",
+        0x000003FA -> "WKSTA_INFO_1018",
+        0x00000416 -> "WKSTA_INFO_1046"
+    };
+
+string NetrWkstaSetInfoLevelToString(IDLUlong key)
+{
+    if (key in NetrWkstaSetInfoLevels)
+    {
+        return NetrWkstaSetInfoLevels[key];
+    }
+    return "Unknown Value(" + (key as string) + ")";
+}
+
+const map<IDLUlong, string> WkstaInfo502ErrorParameters =
+{
+    0x0000000A-> "wki502_char_wait",
+    0x0000000B-> "wki502_collection_time",
+    0x0000000C-> "wki502_maximum_collection_count",
+    0x0000000D-> "wki502_keep_conn",
+    0x00000000-> "wki502_max_cmds",
+    0x00000012-> "wki502_sess_timeout",
+    0x00000017-> "wki502_siz_char_buf",
+    0x00000021-> "wki502_max_threads",
+    0x00000029-> "wki502_lock_quota",
+    0x0000002A-> "wki502_lock_increment",
+    0x0000002B-> "wki502_lock_maximum",
+    0x0000002C-> "wki502_pipe_increment",
+    0x0000002D-> "wki502_pipe_maximum",
+    0x0000002F-> "wki502_cache_file_timeout",
+    0x0000002E-> "wki502_dormant_file_limit",
+    0x0000003E-> "wki502_read_ahead_throughput",
+    0x00000030-> "wki502_use_opportunistic_locking",
+    0x00000031-> "wki502_use_unlock_behind",
+    0x00000032-> "wki502_use_close_behind",
+    0x00000033-> "wki502_buf_named_pipes",
+    0x00000034-> "wki502_use_lock_read_unlock",
+    0x00000035-> "wki502_utilize_nt_caching",
+    0x00000036-> "wki502_use_raw_read",
+    0x00000037-> "wki502_use_raw_write",
+    0x00000038-> "wki502_use_write_raw_data",
+    0x00000039-> "wki502_use_encryption",
+    0x0000003A-> "wki502_buf_files_deny_write",
+    0x0000003B-> "wki502_buf_read_only_files",
+    0x0000003C-> "wki502_force_core_create_mode",
+    0x0000003D-> "wki502_use_512_byte_max_transfer",
+};
+
+string NetrWkstaSetInfoErrorParameterToString(IDLUlong key, IDLUlong level)
+{
+    if (level == NetrWkstaSetInfoLevel.WkstaInfo502 && 
+        key in WkstaInfo502ErrorParameters)
+    {
+        return WkstaInfo502ErrorParameters[key];
+    }
+    if (level == NetrWkstaSetInfoLevel.WkstaInfo1013)
+    {
+        return "wki1013_keep_conn";
+    }
+    if (level == NetrWkstaSetInfoLevel.WkstaInfo1018)
+    {
+        return "wki1018_sess_timeout";
+    }
+    if (level == NetrWkstaSetInfoLevel.WkstaInfo1046)
+    {
+        return "wki1018_sess_timeout";
+    }
+    return "Unknown Value(" + (key as string) + ")";
+}
+
+string NetrWkstaTransportAddLevelToString(IDLUlong v)
+{
+    if (v == 0)
+    {
+        return "WKSTA_TRANSPORT_INFO_0";
+    }
+    return "Unknown Value(" + (v as string) + ")";
+}
+
+// 3.2.4.6   NetrWkstaTransportDel (Opnum 7)
+pattern DelForceLevel = enum IDLUlong
+{
+    UseNoforce = 0x00000000,
+    UseForce = 0x00000001,
+    UseLotsOfForce = 0x00000002,
+} with IDL{DoNotGenerate = true};
+
+const map<IDLUlong, string> DelForceLevels =
+    {
+        0x00000000 -> "USE_NOFORCE",
+        0x00000001 -> "USE_FORCE",
+        0x00000002 -> "USE_LOTS_OF_FORCE",
+    };
+
+string DelForceLevelToString(IDLUlong key)
+{
+    if (key in DelForceLevels)
+    {
+        return DelForceLevels[key];
+    }
+    return "Unknown Value(" + (key as string) + ")";
+}
+
+// 3.2.4.7   NetrUseAdd (Opnum 8)
+pattern UseInfoLevel = enum IDLUlong
+{
+    UseInfo0 = 0x00000000,
+    UseInfo1 = 0x00000001,
+    UseInfo2 = 0x00000002,
+    UseInfo3 = 0x00000003,
+} with IDL{DoNotGenerate = true};
+
+const map<IDLUlong, string> UseInfoLevels =
+    {
+        0x00000000 -> "USE_INFO_0",
+        0x00000001 -> "USE_INFO_1",
+        0x00000002 -> "USE_INFO_2",
+        0x00000003 -> "USE_INFO_3",
+    };
+
+string UseInfoLevelToString(IDLUlong key)
+{
+    if (key in UseInfoLevels)
+    {
+        return UseInfoLevels[key];
+    }
+    return "Unknown Value(" + (key as string) + ")";
+}
+
+// Patterns that defined for value validation check of the ReturnVlaues
+pattern NetrWkstaGetInfoReturnValue = enum IDLUlong
+{
+    ErrorSuccess = 0X00000000,
+    ErrorAccessDenied = 0X00000005,
+    ErrorInvalidLevel = 0X0000007C
+} with IDL{DoNotGenerate = true};
+
+pattern NetrWkstaSetInfoReturnValue = enum IDLUlong
+{
+    ErrorSuccess = 0x00000000,
+    ErrorAccessDenied = 0x00000005,
+    ErrorInvalidParameter = 0x00000057
+} with IDL{DoNotGenerate = true};
+
+pattern NetrWkstaUserEnumReturnValue = enum IDLUlong
+{
+    ErrorSuccess = 0x00000000,
+    ErrorAccessDenied = 0x00000005,
+    ErrorInvalidLevel = 0x0000007C,
+    ErrorMoreData = 0x000000EA
+} with IDL{DoNotGenerate = true};
+
+pattern NetrWkstaTransportEnumReturnValue = enum IDLUlong
+{
+    NerrSuccess = 0x00000000,
+    ErrorAccessDenied = 0x00000005,
+    ErrorInvalidLevel = 0x0000007C,
+    NerrBufTooSmall = 0x0000084B
+} with IDL{DoNotGenerate = true};
+
+pattern NetrWkstaTransportAddReturnValue = enum IDLUlong
+{
+    NerrSuccess = 0x00000000,
+    ErrorAccessDenied = 0x00000005,
+    ErrorInvalidParameter = 0x00000057,
+    ErrorInvalidLevel = 0x0000007C
+} with IDL{DoNotGenerate = true};
+
+pattern NetrWkstaTransportDelReturnValue = enum IDLUlong
+{
+    NerrSuccess = 0x00000000,
+    ErrorAccessDenied = 0x00000005,
+    ErrorInvalidParameter = 0x00000057, 
+    ErrorOpenFiles = 0x00002401,
+    ErrorDeviceInUse = 0x00002404
+} with IDL{DoNotGenerate = true};
+
+pattern NetrUseAddReturnValue = enum IDLUlong
+{
+    NerrSuccess = 0x00000000,
+    ErrorAccessDenied = 0x00000005,
+    ErrorInvalidParameter = 0x00000057,
+    ErrorInvalidLevel = 0x0000007C,
+    ErrorCallNotImplemented = 0x00000078
+} with IDL{DoNotGenerate = true};
+
+pattern NetrUseGetInfoReturnValue = enum IDLUlong
+{
+    NerrSuccess = 0x00000000,
+    ErrorAccessDenied = 0x00000005,
+    ErrorInvalidParameter = 0x00000057,
+    ErrorInvalidLevel = 0x0000007C, 
+    NerrUseNotFound = 0x000008CA
+} with IDL{DoNotGenerate = true};
+
+pattern NetrUseDelReturnValue = enum IDLUlong
+{
+    NerrSuccess = 0x00000000,
+    ErrorAccessDenied = 0x00000005,
+    ErrorInvalidParameter = 0x00000057,
+    ErrorInvalidLevel = 0x0000007C, 
+    ErrorDeviceInUse = 0x00002404,
+    ErrorRedirPaused = 0x00000048
+} with IDL{DoNotGenerate = true};
+
+pattern NetrUseEnumReturnValue = enum IDLUlong
+{
+    NerrSuccess = 0x00000000,
+    ErrorInvalidLevel = 0x0000007C, 
+    ErrorMoreData = 0x000000EA,
+    ErrorNotEnoughMemory = 0x00000008,
+    NerrBufTooSmall = 0x0000084B,
+} with IDL{DoNotGenerate = true};
+
+pattern NetrWorkstationStatisticsGetReturnValue = enum IDLUlong
+{
+    NerrSuccess = 0x00000000,
+    ErrorAccessDenied = 0x00000005,
+    ErrorInvalidParameter = 0x00000057,
+    ErrorInvalidLevel = 0x0000007C
+} with IDL{DoNotGenerate = true};
+
+pattern NetrGetJoinInformationReturnValue = enum IDLUlong
+{
+    NerrSuccess = 0x00000000,
+    ErrorAccessDenied = 0x00000005,
+    RpcSProtseqNotSupported = 0x000006A7
+} with IDL{DoNotGenerate = true};
+
+pattern NetrJoinDomain2ReturnValue = enum IDLUlong
+{
+    NerrSuccess = 0x00000000,
+    ErrorAccessDenied = 0x00000005,
+    ErrorNotSupported = 0x00000032,
+    ErrorNoSuchDomain = 0x0000054B,
+    ErrorInvalidPassword = 0x00000056,
+    ErrorInvalidParameter = 0x00000057,
+    ErrorPasswordRestriction = 0x0000052D,
+    ErrorInvalidDomainRole  = 0x0000054A,
+    RpcSProtseqNotSupported = 0x000006A7,
+    RpcSCallInProgress = 0x000006FF,
+    NerrSetupAlreadyJoined = 0x00000A83,
+    NerrSetupDomainController = 0x00000A85,
+    NerrInvalidWorkgroupName = 0x00000A87,
+} with IDL{DoNotGenerate = true};
+
+pattern NetrUnjoinDomain2ReturnValue = enum IDLUlong
+{
+    NerrSuccess = 0x00000000,
+    ErrorAccessDenied = 0x00000005,
+    ErrorInvalidPassword = 0x00000056,
+    ErrorInvalidParameter = 0x00000057,
+    ErrorInvalidFlags = 0x000003EC,
+    RpcSProtseqNotSupported = 0x000006A7,
+    NerrSetupNotJoined = 0x00000A84,
+    NerrSetupDomainController = 0x00000A85
+} with IDL{DoNotGenerate = true};
+
+pattern NetrRenameMachineInDomain2ReturnValue = enum IDLUlong
+{
+    NerrSuccess = 0x00000000,
+    ErrorAccessDenied  = 0x00000005,
+    ErrorNotSupported = 0x00000032,
+    ErrorInvalidPassword  = 0x00000056,
+    ErrorInvalidParameter  = 0x00000057,
+    RpcSProtseqNotSupported  = 0x000006A7,
+    NerrSetupNotJoined  = 0x00000A84,
+    NerrSetupDomainController = 0x00000A85,
+} with IDL{DoNotGenerate = true};
+
+pattern NetrValidateName2ReturnValue = enum IDLUlong
+{
+    NerrSuccess = 0x00000000,
+    ErrorAccessDenied  = 0x00000005,
+    ErrorDupName  = 0x00000034,
+    ErrorInvalidPassword = 0x00000056,
+    ErrorInvalidParameter = 0x00000057,
+    ErrorInvalidName = 0x0000007B,
+    ErrorInvalidDomainname = 0x000004BC,
+    ErrorNoSuchDomain = 0x0000054B,
+    RpcSProtseqNotSupported = 0x000006A7,
+    NerrInvalidComputer = 0x0000092F,
+    NerrInvalidWorkgroupName = 0x00000A87,
+    DnsErrorNonRfcName = 0x00002554,
+    DnsErrorInvalidNameChar = 0x00002558,
+    RpcERemoteDisabled = 0x8001011C,
+} with IDL{DoNotGenerate = true};
+
+pattern NetrGetJoinableOUs2ReturnValue = enum IDLUlong
+{
+    NerrSuccess = 0x00000000,
+    ErrorAccessDenied = 0x00000005,
+    ErrorNotEnoughMemory = 0x00000008,
+    ErrorInvalidParameter = 0x00000057,
+    RpcSProtseqNotSupported = 0x000006A7,
+    NerrInvalidAPI  = 0x0000085E,
+    NerrDefaultJoinRequired = 0x00000A86,
+} with IDL{DoNotGenerate = true};
+
+pattern NetrAddAlternateComputerNameReturnValue = enum IDLUlong
+{
+    NerrSuccess = 0x00000000,
+    ErrorAccessDenied = 0x00000005,
+    ErrorNotSupported = 0x00000032,
+    ErrorInvalidPassword = 0x00000056,
+    ErrorInvalidParameter = 0x00000057,
+    ErrorInvalidName = 0x0000007B,
+    ErrorInvalidFlags = 0x000003EC,
+    RpcSProtseqNotSupported = 0x000006A7,
+    RpcSCallInProgress  = 0x000006FF,
+    DnsErrorInvalidNameChar = 0x00002558,
+} with IDL{DoNotGenerate = true};
+
+pattern NetrRemoveAlternateComputerNameReturnValue = enum IDLUlong
+{
+    NerrSuccess = 0x00000000,
+    ErrorAccessDenied = 0x00000005,
+    ErrorNotSupported = 0x00000032,
+    ErrorInvalidPassword = 0x00000056,
+    ErrorInvalidParameter = 0x00000057,
+    ErrorInvalidName = 0x0000007B,
+    ErrorInvalidFlags = 0x000003EC,
+    ErrorNotFound  = 0x00000490,
+    RpcSProtseqNotSupported  = 0x000006A7,
+    RpcSCallInProgress  = 0x000006FF,
+    DnsErrorInvalidNameChar = 0x00002558,
+} with IDL{DoNotGenerate = true};
+
+pattern NetrSetPrimaryComputerNameReturnValue = enum IDLUlong
+{
+    NerrSuccess = 0x00000000,
+    ErrorAccessDenied = 0x00000005,
+    ErrorNotSupported = 0x00000032,
+    ErrorInvalidPassword = 0x00000056,
+    ErrorInvalidParameter = 0x00000057,
+    ErrorInvalidName = 0x0000007B,
+    ErrorInvalidFlags = 0x000003EC,
+    RpcSProtseqNotSupported  = 0x000006A7,
+    RpcSCallInProgress  = 0x000006FF,
+    NerrDefaultJoinRequired = 0x00000A86,
+    DnsErrorInvalidNameChar = 0x00002558,
+} with IDL{DoNotGenerate = true};
+
+pattern NetrEnumerateComputerNamesReturnValue = enum IDLUlong
+{
+    NerrSuccess = 0x00000000,
+    ErrorAccessDenied = 0x00000005,
+    ErrorNotEnoughMemory = 0x00000008,
+    ErrorInvalidParameter = 0x00000057,
+    ErrorNotSupported = 0x00000032,
+    ErrorInvalidFlags = 0x000003EC,
+    RpcSProtseqNotSupported  = 0x000006A7,
+    RpcSCallInProgress = 0x000006FF,
+} with IDL{DoNotGenerate = true};

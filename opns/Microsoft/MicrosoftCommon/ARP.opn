@@ -1,0 +1,264 @@
+protocol ARP with 
+BinaryEncodingDefaults{Endian = Endian.Big},
+Documentation
+{
+    ProtocolName = "Address Resolution Protocol",
+    ShortName = "ARP",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+            new Reference{Name = "RFC 2625"},
+        ],
+    RevisionSummary =
+        [
+            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "09/02/2011"}
+        ]
+};
+
+using Standard;
+using Ethernet;
+using IPv4;
+using IANA;
+using IPv6;
+using SNAP;
+using Utility;
+using LinuxCookedMode;
+
+endpoint Node[binary DestinationAddress]
+    accepts Packet;
+    
+endpoint NodeOverSNAP
+    over SNAP.Node
+    accepts Packet;
+
+IPv4Address get Source(this Packet packet)
+{
+    return packet.ProtocolAddrOfSender;
+}
+
+IPv4Address get Destination(this Packet packet)
+{
+    return packet.ProtocolAddrOfTarget;
+}
+
+message Packet
+{
+    ushort HWType;
+    ushort Protocol;
+    byte HWAddrLength where ValidationCheck(value == 6, null, "The Packet.HWAddrLength field must be set to 6.");
+    byte ProtocolAddrLength where ValidationCheck(value == 4, null, "The Packet.ProtocolAddrLength field must be set to 4.");
+    ushort OpCode;
+    MacAddress HWAddrOfSender;
+    IPv4Address ProtocolAddrOfSender;
+    MacAddress HWAddrOfTarget;
+    IPv4Address ProtocolAddrOfTarget;
+    
+    override string ToString()
+    {
+        string summary = "";
+        summary = summary + OperationCodeNaming(OpCode);
+        summary = summary + ", SenderIP: ";
+        summary = summary + ProtocolAddrOfSender.ToString();
+        summary = summary + ", TargetIP: ";
+        summary = summary + ProtocolAddrOfTarget.ToString();
+        return summary;
+    }
+}
+
+autostart actor ARPOverIPv4(IPv4.Node node)
+{
+    process node accepts d:IPv4.Datagram where d.Protocol == ProtocolType.LARP
+    {            
+        switch (d.Payload)
+        {
+            case p:Packet from BinaryDecoder<Packet> =>
+               dispatch endpoint Node[d.DestinationAddress.FlatAddress] accepts p;
+            
+            default => 
+                ThrowDecodingException("ARP", "Packet");
+        }
+    }
+}
+
+autostart actor ARPOverIPv6(IPv6.Node node)
+{
+    process node accepts d:IPv6.Datagram where d.NextProtocol == ProtocolType.LARP
+    {            
+        switch (d.Payload)
+        {
+            case p:Packet from BinaryDecoder<Packet> =>
+                dispatch endpoint Node[d.DestinationAddress.FlatAddress] accepts p;
+            
+            default => 
+                ThrowDecodingException("ARP", "Packet");
+        }
+    }
+}
+
+autostart actor ARPOverEthernet(Ethernet.Node node)
+{
+    process node accepts f:Ethernet.Frame where f.LengthOrType == 2054
+    {            
+        switch (f.MacClientData)
+        {
+            case p:Packet from BinaryDecoder<Packet> =>
+                dispatch (endpoint Node[f.DestinationAddress.FlatAddress] over node) accepts p;
+            default => 
+                ThrowDecodingException("ARP", "Packet");
+        }
+    }
+}
+
+// Since Bug 36618, change all the "binding" to actor temporarily.
+//binding ARPOverSNAP: NodeOverSNAP over node:SNAP.Node
+//{
+    //rule node accepts SNAP.Segment{EtherType is $2054, Payload is m:Packet from BinaryDecoder<Packet>}
+        //=>NodeOverSNAP accepts m;
+//}
+//
+
+autostart actor ARPOverSNAP(SNAP.Node node) //follows ATMARPOverSNAP
+{
+    process node accepts s:SNAP.Segment where ((s.EtherType == 2054) 
+    // WORKAROUND:$[0013] is the signature of protocol ATMARP.
+    // This should be removed after ATMARP is implemented and use "follows" above
+        && (s.Payload.Segment(0, 2) != $[0013]))
+    {
+        switch (s.Payload)
+        {
+            case p:Packet from BinaryDecoder<Packet> =>
+                dispatch (endpoint NodeOverSNAP over node) accepts p;
+            default => 
+                ThrowDecodingException("ARP", "Packet");
+        }
+    }
+}
+
+autostart actor ARPOverLinuxCookedMode(LinuxCookedMode.Node node) follows LinuxCookedMode.Node
+{
+    process node accepts lcm:LinuxCookedMode.Datagram{EthernetType is LinuxProtocolType.ARP} 
+    {
+        switch (lcm.Payload)
+        {
+            case d:ARP.Packet from BinaryDecoder<ARP.Packet> =>
+            if (lcm.Address is MacAddr)
+            {
+                dispatch (endpoint ARP.Node[(lcm.Address as MacAddr).Address.Octets]) accepts d;
+            }
+            else if (lcm.Address is IPv4Addr)
+            {
+                dispatch (endpoint ARP.Node[(lcm.Address as IPv4Addr).Address.Octets]) accepts d;
+            }
+            else
+            {
+                ThrowDecodingException("LinuxCookedMode");
+            }
+            default =>
+            ThrowDecodingException("LinuxCookedMode");
+        }        
+    }
+}
+
+string OperationCodeNaming(ushort OpCode)
+{
+    if (OpCode == 1)
+    {
+        return "Request";
+    }
+    else if (OpCode == 2)
+    {
+        return "Response";
+    }
+    else if (OpCode == 3)
+    {
+        return "Request Reverse";
+    }
+    else if (OpCode == 4)
+    {
+        return "Reply Reverse";
+    }
+    else if (OpCode == 5)
+    {
+        return "DRARP Request";
+    }
+    else if (OpCode == 6)
+    {
+        return "DRARP Reply";
+    }
+    else if (OpCode == 7)
+    {
+        return "DRARP Error";
+    }
+    else if (OpCode == 8)
+    {
+        return "InARP Request";
+    }
+    else if (OpCode == 9)
+    {
+        return "InARP Reply";
+    }
+    else if (OpCode == 10)
+    {
+        return "ARP NAK";
+    }
+    else if (OpCode == 11)
+    {
+        return "MARS Request";
+    }
+    else if (OpCode == 12)
+    {
+        return "MARS Multi";
+    }
+    else if (OpCode == 13)
+    {
+        return "MARS MServ";
+    }
+    else if (OpCode == 14)
+    {
+        return "MARS Join";
+    }
+    else if (OpCode == 15)
+    {
+        return "MARS Leave";
+    }
+    else if (OpCode == 16)
+    {
+        return "MARS NAK";
+    }
+    else if (OpCode == 17)
+    {
+        return "MARS Unserv";
+    }
+    else if (OpCode == 18)
+    {
+        return "MARS SJoin";
+    }
+    else if (OpCode == 19)
+    {
+        return "MARS SLeave";
+    }
+    else if (OpCode == 20)
+    {
+        return "MARS Grouplist Request";
+    }
+    else if (OpCode == 21)
+    {
+        return "MARS Grouplist Reply";
+    }
+    else if (OpCode == 22)
+    {
+        return "MARS Redirect Map";
+    }
+    else if (OpCode == 23)
+    {
+        return "MAPOS UNARP";
+    }
+    else
+    {
+        return "Unknown Operation: " + (OpCode as string);
+    }
+}

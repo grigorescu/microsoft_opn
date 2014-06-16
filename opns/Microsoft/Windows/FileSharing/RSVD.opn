@@ -1,0 +1,71 @@
+protocol RSVD with
+Documentation
+{
+    ProtocolName = "Remote Shared Virtual Disk Protocol",
+    ShortName = "RSVD",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References =
+        [
+            new Reference{Name = "MS-RSVD", Version = "1.0", ProgramName = ProgramName.WSPP},
+        ],
+    RevisionSummary =
+        [
+            new Revision{Class=RevisionClass.Major, Version="1.0.0", Date="08/15/2013"}
+        ]
+};
+
+using Standard;
+using Utility;
+using DTYP;
+
+// 2.2.5.2   SVHDX_OPEN_DEVICE_CONTEXT
+type SVHDX_OPEN_DEVICE_CONTEXT
+{
+    ULONG Version
+        with Documentation {Description = "The version of the create context. It MUST be set to the highest supported version of the protocol."};
+
+    BOOLEAN HasInitiatorId
+        with Documentation {Description = "A Boolean value, where zero represents FALSE and nonzero represents TRUE."};
+
+    UINT Reserved where ValidationCheckReservedZero(value == 0, null, true, ReferenceType.Type, "SMB2", "Reserved", "SVHDX_OPEN_DEVICE_CONTEXT", value)
+        with BinaryEncoding{Width = 24},
+            Documentation {Description = "This field MUST be set to zero when sent and MUST be ignored on receipt."};
+
+	//TDI 69484: [MS-RSVD] Section 3.1.4.2 is inconsistent with section 2.2.5.2 about whether InitiatorId field is optional field
+    GUID InitiatorId 
+        with Documentation {Description = "An optional GUID that identifies the initiator of the open request."};
+
+    ULONG Flags where ValidationCheckReservedZero(value == 0, null, true, ReferenceType.Type, "SMB2", "Flags", "SVHDX_OPEN_DEVICE_CONTEXT", value)
+        with Documentation
+            {Description = "Reserved. The client SHOULD set this field to 0x00000000, and the server MUST ignore it on receipt."};
+    
+	// TDI 69485: [MS-RSVD] According to section 2.2.5.2, Windows Client shouldn not set OriginatorFlags to 0x00000004 in Windows server 2012 R2 standard preview         
+    SVHDX_OPEN_DEVICE_CONTEXT_OriginatorFlags OriginatorFlags where ValidationCheckEnumValue(InRange<SVHDX_OPEN_DEVICE_CONTEXT_OriginatorFlags>(value), null, false, ReferenceType.Type, "RSVD", "OriginatorFlags", "SVHDX_OPEN_DEVICE_CONTEXT", "0x00000001, 0x00000002, 0x00000004, 0x00000008, 0x00000010", value);
+	
+	ULONGLONG SequenceNumber;
+
+    USHORT InitiatorHostNameLength  
+        with Documentation
+            {Description = "The length, in bytes, of the InitiatorHostName, including the null termination."};
+    
+	// TDI 69486: [MS-RSVD] According to section 2.2.5.2, InitiatorHostName is a variable-length buffer of up to 126 bytes containing a null-terminated Unicode UTF-16 string. But Windows Client set InitiatorHostName to a fix-length(126 bytes) buffer  in Windows server 2021        
+    string InitiatorHostName with BinaryEncoding{MaxLength = 126}
+        with Documentation
+            {Description = "A variable-length buffer of up to 126 bytes containing a null-terminated Unicode UTF-16 string that specifies the computer name on which the initiator resides."};
+
+} with BinaryEncoding{WidthForComposedType = 1344};
+
+pattern SVHDX_OPEN_DEVICE_CONTEXT_OriginatorFlags = enum ULONG
+{
+    SVHDX_ORIGINATOR_PVHDPARSER     = 0x00000001,
+	SVHDX_ORIGINATOR_SVHDXFLT       = 0x00000002,  
+	SVHDX_ORIGINATOR_VHDMP          = 0x00000004,  
+	SVHDX_ORIGINATOR_VHDMP_SHARED   = 0x00000008,  
+	SVHDX_ORIGINATOR_TEST           = 0x00000010, 
+	...
+};
+

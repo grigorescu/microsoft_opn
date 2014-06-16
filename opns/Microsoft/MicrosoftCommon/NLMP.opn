@@ -1,0 +1,624 @@
+protocol NLMP with 
+    BinaryEncodingDefaults{Endian = Endian.Little},
+Documentation
+{
+    ProtocolName = "NT LAN Manager (NTLM) Authentication Protocol",
+    ShortName = "NLMP",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+            new Reference{Name = "MS-NLMP", Version = "23.0", ProgramName = ProgramName.MCPP},
+        ],
+    RevisionSummary =
+        [
+            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "07/27/2012"}
+        ]
+};
+
+using Standard;
+using DTYP;
+using Utility;
+using MSRPCE;
+using SMTP;
+
+endpoint Server 
+    over SMTP.Server
+    accepts NegotiateMessage issues ChallengeMessage 
+    accepts AuthenticateMessage
+{
+    //bool sNegotiateMessageAccepted = false;
+    //bool sAuthenticateMessageAccepted = false;
+    //bool sChallengeMessageSent = false;
+    
+    //observe this accepts NegotiateMessage n where n.MessageType == 1
+    //{
+    //assert sNegotiateMessageAccepted == false;
+    //sNegotiateMessageAccepted = true;
+    //}
+    
+    //observe this issues ChallengeMessage c where c.MessageType == 2
+    //{
+    //assert sChallengeMessageSent == false;
+    //assert sNegotiateMessageAccepted == true;
+    //sChallengeMessageSent = true;
+    //}
+    
+    //observe this accepts AuthenticateMessage a where a.MessageType == 3
+    //{
+    //assert sAuthenticateMessageAccepted == false;
+    //assert sChallengeMessageSent == true;
+    //sAuthenticateMessageAccepted = true;
+    //}
+};
+client endpoint Client connected to Server;
+
+autostart actor NLMPOverMSRPCE(MSRPCE.Server server)
+{
+    bool micPresent = false;
+    // accepts RpcconnBindHdrT
+    observe server accepts s:RpcconnBindHdrT where (s.AuthVerifier != nothing && s.AuthVerifier is AuthVerifierCoT && (s.AuthVerifier as AuthVerifierCoT).AuthValue is binary && ((s.AuthVerifier as AuthVerifierCoT).AuthValue as binary).Segment(0,8) == $[4E544C4D53535000])
+    {
+        binary authValue = (s.AuthVerifier as AuthVerifierCoT).AuthValue as binary;
+        var nlmpMessage = NlmpDecoder(authValue, ref micPresent);
+        if (nlmpMessage != nothing)
+        {
+            AuthVerifierCoT auth = s.AuthVerifier as AuthVerifierCoT;
+            auth.AuthValue = nlmpMessage;
+            any message nlmp = nlmpMessage as any message;
+            s#Embedded = {"NLMP" -> nlmp};
+        }
+    }
+    
+    // issues RpcconnBindAckHdrT
+    observe server issues s:RpcconnBindAckHdrT where (s.AuthVerifier != nothing && s.AuthVerifier is AuthVerifierCoT && (s.AuthVerifier as AuthVerifierCoT).AuthValue is binary && ((s.AuthVerifier as AuthVerifierCoT).AuthValue as binary).Segment(0,8) == $[4E544C4D53535000])
+    {
+        binary authValue = (s.AuthVerifier as AuthVerifierCoT).AuthValue as binary;
+        var nlmpMessage = NlmpDecoder(authValue, ref micPresent);
+        if (nlmpMessage != nothing)
+        {
+            AuthVerifierCoT auth = s.AuthVerifier as AuthVerifierCoT;
+            auth.AuthValue = nlmpMessage;
+            any message nlmp = nlmpMessage as any message;
+            s#Embedded = {"NLMP" -> nlmp};
+        }
+    }
+    
+    // accepts RpcconnRpcAuth3HdrT
+    observe server accepts s:RpcconnRpcAuth3HdrT where (s.AuthenticationTokens != nothing && (s.AuthenticationTokens as binary).Segment(0,8) == $[4E544C4D53535000])
+    {
+        binary authValue = s.AuthenticationTokens as binary;
+        var nlmpMessage = NlmpDecoder(authValue, ref micPresent);
+        if (nlmpMessage != nothing)
+        {
+            s.AuthenticationTokens = nlmpMessage;
+            any message nlmp = nlmpMessage as any message;
+            s#Embedded = {"NLMP" -> nlmp};
+        }
+    }
+}
+
+// Future Reference: Wait for supporting of BASE64
+//autostart actor NLMPOverSMTP(SMTP.SMTPNode node)
+//{
+    //// $[546C524D54564E54] = "TlRMTVNTUA", which is the entry of messages.
+    //process node issues s:SMTP.MailPacket where (s.Payload != nothing && s.Payload.Count >= 8 && (s.Payload.Segment(0,8) is $[546C524D54564E54]))
+    //{
+        //binary payload = s.Payload as binary;
+        //switch (payload)
+        //{
+            //case r:NLMP.RawMessage from BinaryDecoder<NLMP.RawMessage> =>
+                ////  $[5541414341414141]: Server send Challenge Message to Client, and type value of Challenge Message is 2.
+                //if (r.Content.Segment(8,4) is $[55414143])
+                //{
+                    //dispatch (endpoint NLMP.RawServer over node) issues r;
+                //}
+                //else
+                //{
+                    //ValidationCheck(true, r, "Server should send Challenge Message only.");
+                //}
+            //default =>
+                //ThrowDecodingException("NLMPOverSMTP");
+        //}
+    //}
+    //process node accepts s:SMTP.MailPacket where (s.Payload != nothing && s.Payload.Count >= 8 && (s.Payload.Segment(0,8) is $[546C524D54564E54]))
+    //{
+        //binary payload = s.Payload as binary;
+        //switch (payload)
+        //{
+            //case r:NLMP.RawMessage from BinaryDecoder<NLMP.RawMessage> =>
+                ////  $[5541414241414141]: Type value of Negotiate Message; $[5541414441414141]: Type value of Authentiate Message.
+                //if ((r.Content.Segment(8,4) is $[55414142]) | (r.Content.Segment(8,4) is $[55414144]))
+                //{
+                    //dispatch (endpoint NLMP.RawServer over node) accepts r;
+                //}
+                //else
+                //{
+                    //ValidationCheck(true, r, "Server should accept Negotiate Message or Authenticate Message only.");
+                //}
+            //default =>
+                //ThrowDecodingException("NLMPOverSMTP");
+        //}
+    //}
+//}
+
+pattern NlmpMessage = NegotiateMessage | ChallengeMessage | AuthenticateMessage;
+optional NlmpMessage NlmpDecoder(stream s, ref bool micPresent)
+{
+    // Return nothing if the message has a bad header .
+    if (s.ByteLength < 24) // 24 is the mandatory length of the header.
+    {
+        return nothing;
+    }
+
+    // Typecasting the messageType, and diff the three messages.
+    var messageType = BinaryDecoder<uint>(s.PeekBytes(64, 4));
+    switch (messageType)
+    {
+        case $1 =>
+            switch (s)
+            {
+                case r1:NLMP.NegotiateMessage from BinaryDecoder<NLMP.NegotiateMessage> =>
+                    r1.DomainName = BinaryDecoder<NlmpStringWithLength[(r1.Flags & NegotiateFlags.NegotiateUnicode) > 0 && (r1.Flags & NegotiateFlags.NegotiateOEM) == 0, 
+                        r1.DomainNameLen]>(s.PeekBytes((r1.DomainNameBufferOffset as int) * 8, r1.DomainNameLen as int));
+                    r1.AssignFieldEncodingInfo("DomainName", ((r1.DomainNameBufferOffset as int) * 8) * 8, (r1.DomainNameLen as int) * 8);
+                    if (r1.DomainName != nothing)
+                    {
+                        NlmpStringWithLength dn = r1.DomainName as NlmpStringWithLength;
+                        dn.AssignFieldEncodingInfo("Value", (r1.DomainNameBufferOffset as int) * 8, (r1.DomainNameLen as int) * 8);
+                    }
+                    r1.WorkstationName = BinaryDecoder<NlmpStringWithLength[(r1.Flags & NegotiateFlags.NegotiateUnicode) > 0 && (r1.Flags & NegotiateFlags.NegotiateOEM) == 0, 
+                        r1.WorkstationLen]>(s.PeekBytes((r1.WorkstationBufferOffset as int) * 8, r1.WorkstationLen as int));
+                    r1.AssignFieldEncodingInfo("WorkstationName", (r1.WorkstationBufferOffset as int) * 8, (r1.WorkstationLen as int) * 8);
+                    if (r1.WorkstationName != nothing)
+                    {
+                        NlmpStringWithLength wn = r1.WorkstationName as NlmpStringWithLength; 
+                        wn.AssignFieldEncodingInfo("Value", (r1.WorkstationBufferOffset as int) * 8, (r1.WorkstationLen as int) * 8);
+                    }
+                    return r1;
+                default =>
+                    ThrowDecodingException("NLMP", "NegotiateMessage");
+            }
+        case $3 =>
+            // WORKAROUND: Relative bug# 29125, which is closed and move to I7. Update AuthenticateMessage to be AuthenticateMessage[micPresent]
+            optional NLMP.AuthenticateMessage msg1 = BinaryDecoder<NLMP.AuthenticateMessage>(s);
+            AuthenticateMessage msg = msg1 as AuthenticateMessage;
+            if (micPresent == true || msg.DomainNameBufferOffset-16 == 64 || msg.DomainNameBufferOffset-16 == 72)
+            {
+                array<byte> mic = s.PeekBytes(((msg.DomainNameBufferOffset-16) as int) * 8, 16) as array<byte>;
+                msg.MIC = mic;
+                msg.AssignFieldEncodingInfo("MIC", ((msg.DomainNameBufferOffset-16) as int) * 8, 16 * 8);
+            }
+            
+            msg.DomainName = BinaryDecoder<NlmpStringWithLength[(msg.Flags & NegotiateFlags.NegotiateUnicode) > 0 && (msg.Flags & NegotiateFlags.NegotiateOEM) == 0, 
+                msg.DomainNameLen]>(s.PeekBytes((msg.DomainNameBufferOffset as int) * 8, msg.DomainNameLen as int));
+            msg.AssignFieldEncodingInfo("DomainName", (msg.DomainNameBufferOffset as int) * 8, (msg.DomainNameLen as int) * 8);
+            if (msg.DomainName != nothing)
+            {
+                NlmpStringWithLength dn = msg.DomainName as NlmpStringWithLength;
+                dn.AssignFieldEncodingInfo("Value", (msg.DomainNameBufferOffset as int) * 8, (msg.DomainNameLen as int) * 8);
+            }
+                    
+            msg.WorkstationName = BinaryDecoder<NlmpStringWithLength[(msg.Flags & NegotiateFlags.NegotiateUnicode) > 0 && (msg.Flags & NegotiateFlags.NegotiateOEM) == 0, 
+                msg.WorkstationLen]>(s.PeekBytes((msg.WorkstationBufferOffset as int) * 8, msg.WorkstationLen as int));
+            msg.AssignFieldEncodingInfo("WorkstationName", (msg.WorkstationBufferOffset as int) * 8, (msg.WorkstationLen as int) * 8);
+            if (msg.WorkstationName != nothing)
+            {
+                NlmpStringWithLength wn = msg.WorkstationName as NlmpStringWithLength; 
+                wn.AssignFieldEncodingInfo("Value", (msg.WorkstationBufferOffset as int) * 8, (msg.WorkstationLen as int) * 8);
+            }
+                    
+            msg.UserName = BinaryDecoder<NlmpStringWithLength[(msg.Flags & NegotiateFlags.NegotiateUnicode) > 0 && (msg.Flags & NegotiateFlags.NegotiateOEM) == 0, 
+                msg.UserNameLen]>(s.PeekBytes((msg.UserNameBufferOffset as int) * 8, msg.UserNameLen as int));
+            msg.AssignFieldEncodingInfo("UserName", (msg.UserNameBufferOffset as int) * 8, (msg.UserNameLen as int) * 8);
+            if (msg.UserName != nothing)
+            {
+                NlmpStringWithLength un = msg.UserName as NlmpStringWithLength;
+                un.AssignFieldEncodingInfo("Value", (msg.UserNameBufferOffset as int) * 8, (msg.UserNameLen as int) * 8);              
+            }
+                        
+            if ((msg.Flags & NegotiateFlags.NegotiateNTLM2) > 0)
+            {
+                msg.LmChallengeResponse = BinaryDecoder<LMv2Response>(s.PeekBytes((msg.LmChallengeResponseBufferOffset as int) * 8, msg.LmChallengeResponseLen as int));
+                msg.NtChallengeResponse = BinaryDecoder<NTLMv2Response>(s.PeekBytes((msg.NtChallengeResponseBufferOffset as int) * 8, msg.NtChallengeResponseLen as int));
+            }
+            else
+            {
+                msg.LmChallengeResponse = BinaryDecoder<LMResponse>(s.PeekBytes((msg.LmChallengeResponseBufferOffset as int) * 8, msg.LmChallengeResponseLen as int));
+                msg.NtChallengeResponse = BinaryDecoder<NTLMResponse>(s.PeekBytes((msg.NtChallengeResponseBufferOffset as int) * 8, msg.NtChallengeResponseLen as int));
+            }
+            
+            msg.AssignFieldEncodingInfo("LmChallengeResponse", (msg.LmChallengeResponseBufferOffset as int) * 8, (msg.LmChallengeResponseLen as int) * 8);
+            msg.AssignFieldEncodingInfo("NtChallengeResponse", (msg.NtChallengeResponseBufferOffset as int) * 8, (msg.NtChallengeResponseLen as int) * 8);
+            
+            msg.EncryptedRandomSessionKey = BinaryDecoder<NlmpStringWithLength[(msg.Flags & NegotiateFlags.NegotiateUnicode) > 0 && (msg.Flags & NegotiateFlags.NegotiateOEM) == 0, 
+                msg.EncryptedRandomSessionKeyLen]>(s.PeekBytes((msg.EncryptedRandomSessionKeyBufferOffset as int) * 8, msg.EncryptedRandomSessionKeyLen as int));
+            msg.AssignFieldEncodingInfo("EncryptedRandomSessionKey", (msg.EncryptedRandomSessionKeyBufferOffset as int) * 8, (msg.EncryptedRandomSessionKeyLen as int) * 8);
+            if (msg.EncryptedRandomSessionKey != nothing)
+            {
+                NlmpStringWithLength sk = msg.EncryptedRandomSessionKey as NlmpStringWithLength;
+                sk.AssignFieldEncodingInfo("Value", (msg.EncryptedRandomSessionKeyBufferOffset as int) * 8, (msg.EncryptedRandomSessionKeyLen as int) * 8);
+            }
+            
+            micPresent = false;
+            return msg;
+        case $2 =>
+            switch (s)
+            {
+                case r2:NLMP.ChallengeMessage from ChallengeMessageDecoder =>
+                    if (r2.TargetInfoLen > 0 && r2.TargetInfo != nothing && r2.TargetInfo is array<AVPair>)
+                    {
+                        array<AVPair> targetInfo = r2.TargetInfo as array<AVPair>;
+                        foreach (AVPair avpair in targetInfo)
+                        {
+                            if ((avpair.AvId is AvId.MsvAvFlags && avpair.AvLen == 1) || avpair.AvId is AvId.MsvAvTimestamp)
+                            {
+                                micPresent = true;
+                            }
+                        }
+                    }
+                    return r2;
+                default =>
+                    ThrowDecodingException("NLMP", "ChallengeMessage");
+            }
+        default =>
+            break;
+    }
+    return nothing;
+}
+
+type NlmpStringWithLength[bool IsFlags2Unicode, ushort Length]
+{
+    string Value with BinaryEncoding{Length = (IsFlags2Unicode ? (Length / 2) as uint : Length as uint), TextEncoding = (IsFlags2Unicode ? TextEncoding.UTF16 : TextEncoding.ASCII)};
+}
+
+optional ChallengeMessage ChallengeMessageDecoder(stream s)
+{
+    int start = s.BitPosition;
+    optional ChallengeMessage challengeMessageOptional = BinaryDecoder<ChallengeMessage>(s);
+    if (challengeMessageOptional == nothing)
+    {
+        return nothing;
+    }
+    
+    ChallengeMessage challengeMessage = challengeMessageOptional as ChallengeMessage;  
+    
+	if (challengeMessage.version != nothing)
+	{
+		ValidationCheck((challengeMessage.Flags & NegotiateFlags.NegotiateVersion) > 0, null, "NLMP: The NTLMSSP_NEGOTIATE_VERSION flag is not set in NegotiateFlags field. The VERSION structure is present only when this flag is set.");
+	}
+    
+    int tn = start + (challengeMessage.TargetNameBufferOffset * 8 as int);
+    int tnlen = (challengeMessage.TargetNameLen as int);
+    
+    int avp = start + (challengeMessage.TargetInfoBufferOffset * 8 as int);
+    int avplen = (challengeMessage.TargetInfoLen as int);
+    
+    int remainingEndBytePosition = tnlen + avplen + s.BytePosition;
+    
+    while (s.BytePosition < remainingEndBytePosition)
+    {
+        if (s.BitPosition == tn)
+        {
+            var targetName = BinaryDecoder<NlmpStringWithLength[(challengeMessage.Flags & NegotiateFlags.NegotiateUnicode) > 0 && (challengeMessage.Flags & NegotiateFlags.NegotiateOEM) == 0, challengeMessage.TargetNameLen]>(s);
+        
+            if (targetName == nothing)
+            {
+                challengeMessage.TargetName = nothing;
+            }
+            challengeMessage.AssignFieldEncodingInfo("TargetName", tn, tnlen * 8);
+            challengeMessage.TargetName = targetName as NlmpStringWithLength;
+        }
+        else if (s.BitPosition == avp)
+        {
+            var AVPairsEndPosition = s.BytePosition + challengeMessage.TargetInfoLen;
+        
+            array<any> targetInfo = [];
+            challengeMessage.AssignFieldEncodingInfo("TargetInfo", avp, avplen * 8);
+    
+            while (s.BytePosition < AVPairsEndPosition)
+            {
+                var avpair = BinaryDecoder<AVPair>(s);
+            
+                if (avpair == nothing)
+                {
+                    // Padding the Options field if the decoder failed.
+                    var avpairData = BinaryDecoder<Blob[challengeMessage.TargetInfoLen as uint]>(s) as Blob;
+                    array<byte> padding = avpairData.Data as array<byte>;
+                    targetInfo += [padding];
+                    break;
+                }
+            
+                targetInfo += [avpair as AVPair];
+            }
+            challengeMessage.TargetInfo = targetInfo as any;
+        }
+        else if (challengeMessage.TargetNameLen == 0)
+        {
+            challengeMessage.TargetName = nothing;
+        }
+        else if (challengeMessage.TargetInfoLen == 0)
+        {
+            challengeMessage.TargetInfo = nothing;
+        }
+        else
+        {
+            ThrowDecodingException("NLMP", "ChallengeMessage");
+        }
+    }
+    return challengeMessage;
+}
+
+message NegotiateMessage
+{
+    // Future Reference: should use string Signature where value == "NTLMSSP";
+    array<byte> Signature with BinaryEncoding{Length = 8};
+    uint MessageType where ValidationCheck(value == 1, this, "NLMP: The MessageType field in message NegotiateMessage must be 0x00000001, not " + (MessageType as string) + ".");
+
+    NegotiateFlags Flags;
+
+    ushort DomainNameLen;
+    ushort DomainNameMaxLen;
+    uint DomainNameBufferOffset;
+
+    ushort WorkstationLen;
+    ushort WorkstationMaxLen;
+    uint WorkstationBufferOffset;
+    optional [|(Flags & NegotiateFlags.NegotiateVersion) > 0|] Version version;
+    
+    // Payload part
+    optional NlmpStringWithLength DomainName with Encoding{Ignore = true};
+    optional NlmpStringWithLength WorkstationName with Encoding{Ignore = true};
+    
+    override string ToString()
+    {
+       return "NegotiateMessage" + ", DomainName: " + (DomainName as string) + ", WorkstationName: " + (WorkstationName as string) + ", Flags: " + EnumToString(Flags as uint, "NLMP.NegotiateFlags");
+    }
+}
+
+message ChallengeMessage
+{
+    array<byte> Signature with BinaryEncoding{Length = 8};
+    uint MessageType where ValidationCheck(value == 2, this, "NLMP: The MessageType field in message ChallengeMessage must be 0x00000002, not " + (MessageType as string) + ".");
+
+    ushort TargetNameLen;
+    ushort TargetNameMaxLen;
+    uint TargetNameBufferOffset;
+
+    NegotiateFlags Flags;
+    ulong ServerChallenge;
+    binary Reserved with BinaryEncoding{Length = 8};
+    
+    ushort TargetInfoLen;
+    ushort TargetInfoMaxLen;
+    uint TargetInfoBufferOffset;
+    optional [|TargetNameBufferOffset >= 56 && TargetInfoBufferOffset >= 56|] Version version;
+    
+    // Payload part
+    optional NlmpStringWithLength TargetName with Encoding{Ignore = true};
+    optional any TargetInfo with Encoding{Ignore = true};
+    
+    override string ToString()
+    {
+        return "ChallengeMessage" + ", TargetName: " + (TargetName as string) + ", Flags: " + EnumToString(Flags as uint, "NLMP.NegotiateFlags");
+    }
+}
+
+message AuthenticateMessage
+{
+    array<byte> Signature with BinaryEncoding{Length = 8};
+    uint MessageType where ValidationCheck(value == 3, this, "NLMP: The MessageType field in message AuthenticateMessage must be 0x00000003, not " + (MessageType as string) +".");
+
+    ushort LmChallengeResponseLen;
+    ushort LmChallengeResponseMaxLen;
+    uint LmChallengeResponseBufferOffset;
+    
+    ushort NtChallengeResponseLen;
+    ushort NtChallengeResponseMaxLen;
+    uint NtChallengeResponseBufferOffset;
+    
+    ushort DomainNameLen;
+    ushort DomainNameMaxLen;
+    uint DomainNameBufferOffset;
+    
+    ushort UserNameLen;
+    ushort UserNameMaxLen;
+    uint UserNameBufferOffset;
+    
+    ushort WorkstationLen;
+    ushort WorkstationMaxLen;
+    uint WorkstationBufferOffset;
+    
+    ushort EncryptedRandomSessionKeyLen;
+    ushort EncryptedRandomSessionKeyMaxLen;
+    uint EncryptedRandomSessionKeyBufferOffset;
+    
+    NegotiateFlags Flags;
+    
+    optional [|(Flags & NegotiateFlags.NegotiateVersion) > 0 &&
+            (LmChallengeResponseBufferOffset == 72 ||
+            NtChallengeResponseBufferOffset == 72 ||
+            DomainNameBufferOffset == 72 ||
+            (DomainNameLen == 0 && UserNameBufferOffset == 72) ||
+            (DomainNameLen == 0 && UserNameLen == 0 && WorkstationBufferOffset == 72) ||
+            (DomainNameLen == 0 && UserNameLen == 0 && WorkstationLen == 0 && EncryptedRandomSessionKeyBufferOffset == 72))|] Version version;
+    optional array<byte> MIC with BinaryEncoding{Length = 16} with Encoding{Ignore = true};
+    
+    // Payload part
+    optional any LmChallengeResponse with Encoding{Ignore = true};
+    optional any NtChallengeResponse with Encoding{Ignore = true};
+    optional NlmpStringWithLength DomainName with Encoding{Ignore = true};
+    optional NlmpStringWithLength WorkstationName with Encoding{Ignore = true};
+    optional NlmpStringWithLength UserName with Encoding{Ignore = true};
+    optional NlmpStringWithLength EncryptedRandomSessionKey with Encoding{Ignore = true};
+    
+    override string ToString()
+    {
+        return "AuthenticateMessage" + ", DomainName: " + (DomainName as string) + ", WorkstationName: " + (WorkstationName as string) + ", UserName: " + (UserName as string) + ", Flags: " + EnumToString(Flags as uint, "NLMP.NegotiateFlags");
+    }
+}
+
+type Version
+{
+    byte ProductMajorVersion;
+    byte ProductMinorVersion;
+    ushort ProductBuild;
+    ushort Reserved1;
+    byte Reserved2;
+    byte NTLMRevisionCurrent where ValidationCheck(value == 0x0F, null, "NLMP: The NTLMRevisionCurrent in type Version should be 0x0F.");
+}
+
+pattern NegotiateFlags = flags uint
+{
+    Negotiate56                     = 0x80000000,
+    NegotiateKeyExch                = 0x40000000,
+    Negotiate128                    = 0x20000000,
+    Reserved1                       = 0x10000000,
+    Reserved2                       = 0x08000000,
+    Reserved3                       = 0x04000000,
+    NegotiateVersion                = 0x02000000,
+    Reserved4                       = 0x01000000,
+    NegotiateTargetInfo             = 0x00800000,
+    RequestNonNTSessionKey          = 0x00400000,
+    Reserved5                       = 0x00200000,
+    NegotiateIdentify               = 0x00100000,
+    NegotiateNTLM2                  = 0x00080000,
+    Reserved6                       = 0x00040000,
+    TargetTypeServer                = 0x00020000,
+    TargetTypeDomain                = 0x00010000,
+    NegotiateAlwaysSign             = 0x00008000,
+    Reserved7                       = 0x00004000,
+    NegotiateOEMWorkstationSupplied = 0x00002000,
+    NegotiateOEMDomainSupplied      = 0x00001000,
+    AnonymousConnections            = 0x00000800,
+    Reserved8                       = 0x00000400,
+    NegotiateNTLM                   = 0x00000200,
+    Reserved9                       = 0x00000100,
+    NegotiateLMKey                  = 0x00000080,
+    NegotiateDatagram               = 0x00000040,
+    NegotiateSeal                   = 0x00000020,
+    NegotiateSign                   = 0x00000010,
+    Reserved10                      = 0x00000008,
+    RequestTarget                   = 0x00000004,
+    NegotiateOEM                    = 0x00000002,
+    NegotiateUnicode                = 0x00000001,
+} with DisplayInfo{ToText = NegotiateFlagsToText};
+
+string NegotiateFlagsToText(any data)
+{
+    string summary = "" + Utility.DecToHexFormat(data as uint);
+	if (data is NegotiateFlags)
+	{
+	    NegotiateFlags negFlags = data as NegotiateFlags;
+        summary += ((negFlags & NegotiateFlags.NegotiateNTLM2) > 0 ? " (NTLM v2, " : " (NTLM v1, ") + 
+		       ((negFlags & NegotiateFlags.Negotiate128) > 0 ? "128-bit encryption, " : ((negFlags & NegotiateFlags.Negotiate56) > 0 ? "56-bit encryption, " : "No encryption, ")) + 
+			   ((negFlags & NegotiateFlags.NegotiateAlwaysSign) > 0 ? ((negFlags & NegotiateFlags.NegotiateSeal) > 0 ? "Always Sign & Seal)" : "Always Sign)") : ((negFlags & NegotiateFlags.NegotiateSign) > 0 ? ((negFlags & NegotiateFlags.NegotiateSeal) > 0 ? "Sign & Seal)" : "Sign)") : "No Sign or Seal)"));
+	}
+	else
+	{
+	    summary += " (Unknown NegotiateFlags)";
+	}
+    return summary;
+}
+
+type AVPair
+{
+    AvId AvId;
+    ushort AvLen;
+    optional ( [|(AvLen > 0) && ((AvId == 0x1) 
+    || (AvId == 0x2) 
+    || (AvId == 0x3) 
+    || (AvId == 0x4) 
+    || (AvId == 0x5) 
+    || (AvId == 0x9))|] NlmpStringWithLength[true, AvLen] 
+    | [|(AvLen > 0) && (AvId == 0x6)|] uint 
+    | [|(AvLen > 0) && (AvId == 0x7)|] FILETIME 
+    | [|(AvLen > 0) && (AvId == 0x8)|] SingleHostData 
+    | [|(AvLen > 0) && (AvId == 0xA)|] Blob[AvLen as uint] ) Value;
+}
+
+
+type AVPairArray
+{
+    AVPair AVPair;
+    optional [|!(AVPair.AvId is AvId.MsvAvEOL)|] AVPairArray AVPairArray;
+}
+
+pattern AvId = enum ushort
+{
+    MsvAvEOL = 0,
+    MsvAvNbComputerName = 1,
+    MsvAvNbDomainName = 2,
+    MsvAvDnsComputerName = 3,
+    MsvAvDnsDomainName = 4,
+    MsvAvDnsTreeName = 5,
+    MsvAvFlags = 6,
+    MsvAvTimestamp = 7,
+    MsAvRestrictions = 8,
+    MsvAvTargetName = 9,
+    MsvChannelBindings = 10
+};
+
+type LMResponse
+{
+    array<byte> Response with BinaryEncoding{Length = 24};
+}
+
+type LMv2Response
+{
+    array<byte> Response with BinaryEncoding{Length = 16};
+    array<byte> ChallengeFromClient with BinaryEncoding{Length = 8};
+}
+
+type NTLMResponse
+{
+    array<byte> Response with BinaryEncoding{Length = 24};
+}
+
+type NTLMv2Response
+{
+    array<byte> Response with BinaryEncoding{Length = 16};
+    NTLMv2ClientChallenge NTLMv2ClientChallenge;
+}
+
+type NTLMv2ClientChallenge
+{
+    byte ResponseVersion;
+    byte HiResponseVersion;
+    array<byte> Z1 with BinaryEncoding{Length = 6};
+    FILETIME Time;
+    array<byte> ClientChallenge with BinaryEncoding{Length = 8};
+    array<byte> Z2 with BinaryEncoding{Length = 4};
+    AVPairArray AVPair;
+}
+
+type NLMPEmpty{};
+
+//
+// 2.2.2.2   Single_Host_Data
+//
+type SingleHostData
+{
+    uint Size;
+    int Z4;
+    int IDataPresent;
+    int ICustomData;
+    binary MachineID with BinaryEncoding{Length = 32};
+}
+
+type NtlmsspMessageSignature
+{
+    (uint where value == 0x00000001) Version;
+    array<byte> RandomPad with BinaryEncoding{Length = 4};
+    array<byte> Checksum with BinaryEncoding{Length = 4};
+    uint SqlNum;
+}
+
+message NtlmSealedMessage
+{
+    NtlmsspMessageSignature Signature;
+    binary EncryptedMessage;
+}

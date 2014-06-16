@@ -1,0 +1,143 @@
+protocol DCOM with 
+Documentation
+{
+	ProtocolName = "Distributed Component Object Model (DCOM) Remote Protocol",
+    ProtocolType = "rpc",
+    ShortName = "DCOM",
+	DocumentName = "MS-DCOM",
+    Description = ""
+},
+OPNAuthoring
+{
+	Copyright = "(c) Microsoft Corporation",
+    References = 
+	[
+		new Reference {Name = "DCOM", Version = "15.1", ProgramName = ProgramName.WSPP}
+	],
+    RevisionSummary = 
+	[
+		new Revision {Class = RevisionClass.Major, Version = "1.0.0", Date = "02/18/2013"}
+	]
+};
+
+using Technologies.IDL;
+using DTYP;
+using MSRPCE;
+
+endpoint DcomService over MSRPCE.Server provides IUnknown;
+
+contract IUnknown
+{
+    accepts operation Opnum0NotUsedOnWire
+    {
+        result HRESULT ReturnValue;
+        
+        override string ToString()
+        {
+            return "Opnum0NotUsedOnWire" + ", ReturnValue = " +
+                   ReturnValue.ToString();
+        }
+    }
+    with IDL{Opnum = 0};
+    
+    accepts operation Opnum1NotUsedOnWire
+    {
+        result HRESULT ReturnValue;
+        
+        override string ToString()
+        {
+            return "Opnum1NotUsedOnWire" + ", ReturnValue = " +
+                   ReturnValue.ToString();
+        }
+    }
+    with IDL{Opnum = 1};
+    
+    accepts operation Opnum2NotUsedOnWire
+    {
+        result HRESULT ReturnValue;
+        
+        override string ToString()
+        {
+            return "Opnum2NotUsedOnWire" + ", ReturnValue = " +
+                   ReturnValue.ToString();
+        }
+    }
+    with IDL{Opnum = 2};
+}
+with IDL{Uuid = {00000000-0000-0000-c000-000000000046},
+         Object = true,
+		 Version = "0.0",
+         Pointer_default = PointerKind.UniquePtr};
+
+message ORPCRequest
+{
+	ORPCTHIS ORPCthis with IDL{IndirectionLevel = 1};
+	binary Payload;
+	
+	override string ToString()
+	{
+		return "ORPCRequest";			
+	}
+}
+
+message ORPCResponse
+{
+	ORPCTHAT ORPCthat with IDL{IndirectionLevel = 1};
+	binary Payload;
+	
+	override string ToString()
+	{
+		return "ORPCResponse"; 				
+	}
+}
+		 
+typedef ORPCTHIS = tagORPCTHIS ;
+
+type tagORPCTHIS
+{
+    COMVERSION version;
+    IDLUlong @flags;
+    IDLUlong reserved1;
+    IID cid;
+    ORPC_EXTENT_ARRAY extensions
+        with IDL{PointerType = PointerKind.UniquePtr, IndirectionLevel = 1};
+}
+
+typedef COMVERSION = tagCOMVERSION ;
+
+type tagCOMVERSION
+{
+    ushort MajorVersion;
+    ushort MinorVersion;
+}
+
+typedef IID = GUID ;
+
+typedef ORPC_EXTENT_ARRAY = tagORPC_EXTENT_ARRAY ;
+
+type tagORPC_EXTENT_ARRAY
+{
+    IDLUlong size;
+    IDLUlong reserved;
+    ORPC_EXTENT extent with IDL{Size_is = [(size+1)&(~1), null],
+                                PointerType = PointerKind.UniquePtr,
+                                IndirectionLevel = 2};
+}
+
+typedef ORPC_EXTENT = tagORPC_EXTENT ;
+
+type tagORPC_EXTENT
+{
+    IID id;
+    IDLUlong size;
+    array<byte> data with IDL{Size_is = [(size+7)&(~7)], Dimensions = [null]};
+}
+
+typedef ORPCTHAT = tagORPCTHAT ;
+
+type tagORPCTHAT
+{
+    IDLUlong @flags;
+    ORPC_EXTENT_ARRAY extensions
+        with IDL{PointerType = PointerKind.UniquePtr, IndirectionLevel = 1};
+}

@@ -1,0 +1,244 @@
+protocol POP3 with 
+StreamEncodingDefaults{Encoding = TextEncoding.ASCII}, 
+Documentation
+{
+    ProtocolName = "Post Office Protocol Version 3",
+    ShortName = "POP3",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+            new Reference{Name = "RFC 2449"},
+            new Reference{Name = "RFC 1734"},
+            new Reference{Name = "RFC 1081"},
+            new Reference{Name = "RFC 5034"},
+        ],
+    RevisionSummary =
+        [
+            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "09/08/2011"}
+        ]
+};
+
+using Standard;
+using TCP;
+using IANA;
+using Utility;
+using VirtualTransport;
+using Reassembly;
+
+endpoint Server over VirtualTransport.Server accepts RequestMsg issues ResponseMsg;
+client endpoint Client connected to Server;
+
+autostart actor POP3OverTCP(VirtualTransport.Server server)
+{
+    ResponseDecodingCache responseCache = new ResponseDecodingCache{ };
+    
+    process server accepts p:VirtualTransport.VirtualDataSegment{DestinationPort is Port.POP3}
+    {
+        optional RequestMsg request = Command(p.Payload);
+        if (request != nothing)
+        {
+            RequestMsg requestMsg = request as RequestMsg;
+            requestMsg.SourceData = p.Payload;
+            responseCache.RequestForResp = requestMsg;
+            dispatch (endpoint POP3.Server over server) accepts requestMsg;
+        }
+        else
+        {
+            request = AuthReq(p.Payload);
+            if (request != nothing)
+            {
+                RequestMsg requestMsg = request as RequestMsg;
+                requestMsg.Command = responseCache.RequestForResp.Command;
+                requestMsg.SourceData = p.Payload;
+                responseCache.RequestForResp = requestMsg;
+                dispatch (endpoint POP3.Server over server) accepts requestMsg;
+            }
+            else
+            {
+                ThrowDecodingExceptionForTCP("POP3", "Request", p#IsIncomplete, p#SegmentLost);
+            }
+        }
+    }
+    process server issues p:VirtualTransport.VirtualDataSegment{SourcePort is Port.POP3}
+    {
+        responseCache.Add(p);        
+        responseCache.TryDecodeAndDispatchResponse(server);   
+    }
+    
+    ~endpoint(VirtualTransport.Server e)
+    {
+        responseCache.Clear();
+        responseCache.RequestForResp = new RequestMsg{};
+    }
+}
+
+type ResponseDecodingCache : DecodingCacheBase
+{
+    RequestMsg RequestForResp;
+    
+    void TryDecodeAndDispatchResponse(VirtualTransport.Server server)
+    {
+        stream ss = Buffer;
+        optional ResponseMsg response1;
+        if (RequestForResp != null && (RequestForResp.Command == "RETR" || RequestForResp.Command == "TOP"
+            || RequestForResp.Command == "CAPA"
+            || ((RequestForResp.Command == "UIDL" || RequestForResp.Command == "LIST") &&  RequestForResp.Param == "")))
+        {
+            response1 = MultiResponse(ss);
+        }
+        else
+        {
+            response1 = Response(Buffer);
+        }
+        if (response1 != nothing)
+        {
+            ResponseMsg response = response1 as ResponseMsg;
+            bool isSufficient = true;
+            if (response.Body is RetrRespType)
+            {
+                isSufficient = false;
+                RetrRespType retr = response.Body as RetrRespType;
+                if (retr.Length <= ss.ByteLength - ss.BytePosition)
+                {
+                    // Set all remaining TCP payload to retr.Payload, as sometimes the implementation of POP3 may miscalculate the size of certain message.
+                    ValidationCheck(retr.Length == ss.ByteLength - ss.BytePosition - 3, response, DiagnosisLevel.Warning, "POP3: The Length in type RetrRespType is not equal to actual payload length. Possibly it is miscalculated due to protocol implementation errors.");
+                    retr.Payload = Buffer.Segment(ss.BytePosition, ss.ByteLength - ss.BytePosition - 3);
+                    retr.AssignFieldEncodingInfo("Payload", ss.BitPosition, (ss.ByteLength - ss.BytePosition - 3) * 8);
+                    response.Payload = retr.Payload;
+                    response.AssignFieldEncodingInfo("Payload", ss.BitPosition, (ss.ByteLength - ss.BytePosition - 3) * 8);
+                    isSufficient = true;
+                }
+                else if (HasIncompleteSegments)
+                {
+                    ReportInsufficientData(response, DiagnosisLevel.Error, "POP3: Insufficient data due to incomplete TCP segment.");
+                    retr.Payload = Buffer.Segment(ss.BytePosition, ss.ByteLength - ss.BytePosition - 3);
+                    retr.AssignFieldEncodingInfo("Payload", ss.BitPosition, (ss.ByteLength - ss.BytePosition - 3) * 8);
+                    response.Payload = retr.Payload;
+                    response.AssignFieldEncodingInfo("Payload", ss.BitPosition, (ss.ByteLength - ss.BytePosition - 3) * 8);
+                    isSufficient = true;
+                }
+            }
+            else
+            {
+                response.Payload = nothing;
+            }
+            if (isSufficient)
+            {
+                RequestForResp = new RequestMsg{};
+                response.SourceData = Buffer;
+                response.Origins = Origins;
+                Origins = [];
+                Buffer = $[];
+                if (HasIncompleteSegments)
+                {
+                    DisplayTopLevelMessage(response);
+                }
+                else
+                {
+                    dispatch (endpoint POP3.Server over server) issues response;
+                }
+            }
+        }
+        else if (HasSegmentLost || HasIncompleteSegments)
+        {
+            Clear();
+            RequestForResp = new RequestMsg{};
+            ValidationCheck(false, null, DiagnosisLevel.Warning, "POP3: Parsing failure due to TCP segment lost.");
+        }
+    }
+}
+
+message RequestMsg
+{
+    string Command;
+    string Param;
+    
+    override string ToString()
+    {
+        string summary = "RequestMsg, Command: " + (Command as string);
+        if (Param != "")
+        {
+            summary += ", Param: " + Param;
+        }
+        return summary;
+    }
+}
+
+message ResponseMsg
+{
+    string Status;
+    (string | StatRespType | RetrRespType | ListUidlRespType | CommonMultiRespType) Body;
+    optional binary Payload with Encoding{Ignore = true};
+    
+    override string ToString()
+    {
+        return "ResponseMsg, Status: " + Status;
+    }
+}
+
+syntax UpAlpha      = regex{[A-Z]};
+syntax LoAlpha      = regex{[a-z]};
+syntax Alpha        = (UpAlpha | LoAlpha);
+syntax Alphas       = regex{[0-9a-zA-Z~`!@#$^&_=|;:'<>,?/[ +-]+};
+syntax Digit        = regex{[0-9]};
+syntax Digits       = regex{[0-9]+};
+syntax CRLF         = "\r\n";
+syntax MultiLineEnd = ".\r\n";
+syntax SP           = " ";
+syntax Chars        = regex{[^\r\n]*};
+syntax Param        = VChars;
+syntax VChars       = regex{[\x21-\x7e]+};
+syntax CChars       = regex{[\x21-\x2d\x2f-\x7f]+}; //printable ASCII, excluding "."
+syntax GChars       = regex{[\x21-\x3b\x3d-\x7f]*}; //printable ASCII, excluding "<"
+syntax RChars       = regex{[\x21-\x2e\x30-\x5c\x5e-\x7f]+}; //printable ASCII, excluding "/" and "]"
+syntax SChars       = regex{[\x21-\x5a\x5c-\x7f]*}; //printable ASCII, excluding "["
+syntax Keyword      = regex{[\x21-\x7e]{3,4}};//"QUIT" | "STAT" | "LIST" | "NOOP" | "RSET" | "UIDL" | "CAPA" | "AUTH" | "STLS" | "USER" | "RETR" | "DELE" | "TOP" | "PASS" | "APOP";
+syntax Command      = s1:Keyword s2:(SP s3:Param => s3)* CRLF => new RequestMsg{Command = s1,Param = ConvertStringArrayToString(s2)};
+
+syntax AuthReq      = s:CommonText => new RequestMsg{Command = "",Param = s};
+
+syntax Response     = ResponseP | ResponseN | ContinueReq;
+syntax ResponseP    = s1:"+OK" s2:(CRLF | SP s3:(StatResp | CommonText) => s3) => new ResponseMsg{Status = s1, Body = s2};
+syntax ResponseN    = s1:"-ERR" s2:(CRLF | SP s3:CommonText => s3) => new ResponseMsg{Status = s1, Body = s2};
+syntax ContinueReq  = s1:"+" SP s2:CommonText => new ResponseMsg{Status = s1, Body = s2};
+syntax MultiResp   = s1:"+OK" SP s2:(RetrResp | (Chars CRLF ListUidlResp | CommonMultiResp)) => new ResponseMsg{Status = s1, Body = s2};
+syntax MultiResponse = MultiResp | ResponseN;
+
+syntax CommonText   = s:Chars CRLF => s;
+
+syntax StatResp     = num:Digits SP size:Digits CRLF
+                    => new StatRespType{MsgNumber = num.ToUInt(false) as uint, MaildropSize = size.ToUInt(false) as uint};
+type StatRespType
+{
+    uint MsgNumber;
+    uint MaildropSize;
+}
+
+syntax RetrResp    = len:Digits SP unit:VChars CRLF => new RetrRespType{Length = len.ToUInt(false) as uint, Unit = unit};
+type RetrRespType
+{
+    uint Length;
+    string Unit;
+    optional binary Payload;
+}
+
+syntax ListUidlResp = ss:(s1:Digits SP s2:VChars CRLF => new ListUidlType{MsgNumber = s1, MsgSizeOrUniqueId = s2})* MultiLineEnd
+                   => new ListUidlRespType{Uidls = ss};
+type ListUidlRespType
+{
+    array<ListUidlType> Uidls;
+}
+type ListUidlType
+{
+    string MsgNumber;
+    string MsgSizeOrUniqueId;
+}
+syntax CommonMultiResp = ss:(s0:Alphas CRLF => s0)* MultiLineEnd => new CommonMultiRespType{Lines = ss};
+type CommonMultiRespType
+{
+    array<string> Lines;
+}

@@ -1,0 +1,2017 @@
+protocol TCP with
+BinaryEncodingDefaults{Endian = Endian.Big},
+Documentation
+{
+    ProtocolName = "Transmission Control Protocol",
+    ShortName = "TCP",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References =
+        [
+            new Reference{Name = "RFC 793"},
+            new Reference{Name = "RFC 1072"},
+            new Reference{Name = "RFC 1146"},
+            new Reference{Name = "RFC 1323"},
+            new Reference{Name = "RFC 1644"},
+            new Reference{Name = "RFC 1693"},
+            new Reference{Name = "RFC 2018"},
+            new Reference{Name = "RFC 2385"},
+            new Reference{Name = "RFC 2883"},
+            new Reference{Name = "RFC 3168"},
+            new Reference{Name = "RFC 3540"},
+        ],
+    RevisionSummary =
+        [
+            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "05/10/2012"}
+        ]
+};
+
+using IANA;
+using IPv4;
+using IPv6;
+using Standard;
+using Utility;
+using VirtualTransport;
+
+/*
+ * TCB - Transmission Control Block
+ */
+type TCB
+{
+    /*
+     * Part I. Generial aspects of the TCP Control block
+     */
+
+    // Source Port
+    ushort SourcePort;
+    // Binary for the source address
+    binary SourceAddrBin;
+    // Destination Port
+    ushort DestinationPort;
+    // Binary for the destination address
+    binary DestinationAddrBin;
+    // The ISN - Initial Sequence Number
+    uint InitialSequenceNumber;
+
+    /*
+     * Part II. recieve buffer and caches related
+     */
+
+    // Data fragments coming sequentially will directly be added into this buffer
+    // Usage: readonly
+    binary ReceiveBuffer = null;
+    // The fragments have been buffered in ReceiveBuffer, including retransmitted ones and pure-ACK for the data segment
+    array<any message> BufferedFragments = [];
+    // The starting sequence number expected in the ReceiveBuffer
+    // Note: it is possible that ReciveBuffer is null and bigger sequence comes and store in the list
+    // Usage: read & write
+    uint BufferStartSequenceNumber;
+    // The ending sequence number in the ReceiveBuffer
+    // Note: it is possbile to be the same with BufferStartSequenceNumber when the ReceiveBuffer is empty
+    // Usage: read & write
+    uint BufferEndSequenceNumber;
+    // Indicate whether current ReceiveBuffer can be pushed to the receiving application
+    // Note: it is possible that fragments can be reassemble into multiple ones
+    // Usage: should use it as read only
+    bool ReadyToPush = false;
+
+    // The list chached the out-of-order fragments
+    SortedSegmentList OutOfOrderList = new SortedSegmentList{ Comparer = SegmentSequenceComparer };
+    // The count of fragments have push flag set in OutOfOrderList
+    int CountOfPushInOutOfOrderList = 0;
+
+    // Cache for pure-Ack segments
+    AckSegmentCache AckSegments = new AckSegmentCache
+                                {
+                                    Comparer = SegmentAcknowledgementComparer,
+                                    Selector = PureAckSelector,
+                                };
+
+    // Cache for complete vritual data segments
+    VirtualDataSegmentCache CompletedSegments = new VirtualDataSegmentCache{};
+    
+    // Buffer to record message number and NextSequenceNumber for Segment.
+    // Key is Sequence number and value is type SegmentInfo which contains message number and NextSequenceNumber.
+    map<uint, SegmentInfo> SeqNumToMsgNum = {};
+    // Buffer to record Message Number for pure Ack.
+    // Key is Acknowledgement number and value is message number.
+    map<uint, uint> AckNumToMsgNum = {};
+    
+    /*
+     * Part III. state variables
+     */
+
+    // Whether the block has been initiated
+    bool Initialized = false;
+    // Keep the next sequence number for each segment
+    uint ExpectedSequenceNumber;
+    // The acknowledged sequence number
+    uint AckNumber;
+    // The acknowledged sequence number by pure ACK frame
+    uint PureAckNumber;
+    // The sequence number of keep alive
+    uint KeepAliveSequenceNumber;
+    // count of current pure ACK
+    uint DupAckCount = 0;
+    // set of NextSequenceNumber for TCP control messages like SYN, RST, FIN
+    set<uint> ControlSeqs = {};
+    // Whether Fin has been recieved
+    bool FinOrRstReceived = false;
+    // Keep the beginning Sequence Number of lost sequence range when the segment-lost is indentified by AckNumber
+    optional uint SequenceNumberLost = nothing;
+    
+    /*
+     * Part IV. Public functions
+     */
+
+    // Add a fragment into the cache, and update Push indicator
+    // Returns whether it is added successfully
+    bool AddDataSegment(Segment s, void(VirtualDataSegment) dispatcher)
+    {
+        ValidationCheck(Initialized, s, DiagnosisLevel.Warning, "TCP: TCB.AddDataSegment(), TCB is assumed to be initialized before data segment is added.");
+    
+        if (ReceiveBuffer == null && BufferEndSequenceNumber == s.SequenceNumber)
+        {
+            if (OutOfOrderList.Head != null)
+            {
+                /* When the current message is ready to be added in an empty ReceiveBuffer, check the OutOfOrderList first and force pushing
+                 * the messages with a smaller NextSequenceNumber
+                 */
+                bool isContinue = (OutOfOrderList.Head.Value.SequenceNumber == BufferEndSequenceNumber);
+                while (OutOfOrderList.Head != null
+                    && SequenceComparer(OutOfOrderList.Head.Value.NextSequenceNumber, s.NextSequenceNumber, InitialSequenceNumber) <= 0)
+                {
+                    MoveFragmentsIntoBuffer(false);
+                    if (ReadyToPush)
+                    {
+                        Push(dispatcher);
+                    }
+                }
+                if ((!isContinue) && (BufferEndSequenceNumber != s.SequenceNumber))
+                {
+                    BufferStartSequenceNumber = s.SequenceNumber;
+                    BufferEndSequenceNumber = s.SequenceNumber;
+                    s#IsRetransmission = true;
+                    ErrorCodeIf(true, s, DiagnosisLevel.Warning, "TCP: Retransmitted, original message is " + AssignOriginalMessageNumberForRetransmit(s, InitialSequenceNumber));
+                }
+            }
+            // Identify segment lost
+            if (SequenceNumberLost != nothing)
+            {
+                s#IsSegmentLost = true;
+                ErrorCodeIf(true, s, DiagnosisLevel.Warning, "TCP: Lost TCP segments, sequence range " + SequenceNumberLost.ToString() + " ~ " + s .SequenceNumber.ToString() + ".");
+                SequenceNumberLost = nothing;
+            }
+        }
+        
+        /* Considering that for the FIN segment it will occupy 1 number in the sequence number space, it isn't proper to use 
+         * the NextSequenceNumber property for SequenceComparer
+         */
+        if (SequenceComparer(BufferStartSequenceNumber, (s.SequenceNumber + s.Payload.Count) as uint, InitialSequenceNumber) >= 0)
+        {
+            s#IsRetransmission = true;
+            ErrorCodeIf(true, s, DiagnosisLevel.Warning, "TCP: Retransmitted, original message is " + AssignOriginalMessageNumberForRetransmit(s, InitialSequenceNumber));
+            DisplayTopLevelMessage(s);
+            return true;
+        }
+
+        // Update ExpectedSequenceNumber
+        if (SequenceComparer(s.NextSequenceNumber, ExpectedSequenceNumber, InitialSequenceNumber) > 0)
+        {
+            ExpectedSequenceNumber = s.NextSequenceNumber;
+        }
+        
+        // Add the fragment into the list if out-of-order
+        if (SequenceComparer(BufferEndSequenceNumber, s.SequenceNumber, InitialSequenceNumber) < 0)
+        {
+            OutOfOrderList.Insert(s);
+            if (s.Flags.PSH)
+            {
+                CountOfPushInOutOfOrderList += 1;
+            }
+            // When there are 2 or more fragments in out-of-order list that have push flag set
+            // force to clear the buffer and ignore missing fragments if the sequence in out-of-order list has been acknowledged
+            while (CountOfPushInOutOfOrderList >= CountOfPushFlagToTriggerReassembly)
+            {
+                MoveFragmentsIntoBuffer(false);
+                if (ReadyToPush)
+                {
+                    Push(dispatcher);
+                }
+                else
+                {
+                    PushWithoutCheck(dispatcher);
+                    AssignAcksAsOriginsOfCompleteDataSegments();
+                }
+            }
+            return true;
+        }
+
+        // Add the fragment into the BufferedFragments, since it is taken
+        BufferedFragments += [s];
+
+        // Add the fragment into buffer if it comes sequentially
+        if (BufferEndSequenceNumber == s.SequenceNumber)
+        {
+            ReceiveBuffer += s.Payload;
+            BufferEndSequenceNumber = s.NextSequenceNumber;
+            if (s.Flags.PSH)
+            {
+                // The buffer is ready to push to receiver application
+                ReadyToPush = true;
+            }
+            else
+            {
+                MoveFragmentsIntoBuffer(true);
+            }
+            return true;
+        }
+
+        // Now the fragment is retransmission
+        AddRetransmittedFragment(s);
+        
+        // Update BufferEndSequenceNumber of ReceiveBuffer
+        if (SequenceComparer(s.NextSequenceNumber, BufferEndSequenceNumber, InitialSequenceNumber) > 0)
+        {
+            BufferEndSequenceNumber = s.NextSequenceNumber;
+        }
+
+        if (s.Flags.PSH)
+        {
+            // The buffer is ready to push to receiver application
+            ReadyToPush = true;
+        }
+        else
+        {
+            MoveFragmentsIntoBuffer(true);
+        }
+        // retransmission of data has already in the buffer will be ignored
+        return true;
+    }
+
+    bool AddPureAckSegment(Segment s, void(VirtualDataSegment) dispatcher)
+    {
+        if (!Initialized)
+        {
+            // This TCB may not be initialized yet
+            // Igore pure-ACK before TCB of the other side is initialized
+            return false;
+        }
+
+        if (s.AcknowledgementNumber == KeepAliveSequenceNumber)
+        {
+            // This ACK is for Keep-Alive segment
+            s#IsKeepAliveAck = true;
+            return false;
+        }
+
+        if (CompletedSegments.Head != null)
+        {
+            if (SequenceComparer(CompletedSegments.Head.Value.SequenceNumber, s.AcknowledgementNumber, InitialSequenceNumber) >= 0)
+            {
+                // The data segment this pure-Ack acknowledged has been removed from the cache
+                // return false and reject the pure-Ack and it will show as top level message
+                return false;
+            }
+        }
+        else // CompletedSegments.Head == null
+        {
+            if (SequenceComparer(s.AcknowledgementNumber, BufferStartSequenceNumber, InitialSequenceNumber) < 0 ||
+                (s.AcknowledgementNumber == BufferStartSequenceNumber && BufferStartSequenceNumber == BufferEndSequenceNumber))
+            {
+                // The pure-ACK is for some fragments that not captured or has been dispatched
+                return false;
+            }
+        }
+        
+        if (SequenceComparer(s.AcknowledgementNumber, BufferEndSequenceNumber, InitialSequenceNumber) > 0)
+        {
+            // Force pushing incomplete TCP segments by observing the ACK instead of waiting for two Push segments
+            PushIncompleteSegmentByAck(dispatcher, s.AcknowledgementNumber);
+        }
+
+        if (ReceiveBuffer != null
+            && SequenceComparer(s.AcknowledgementNumber, BufferStartSequenceNumber, InitialSequenceNumber) > 0
+            && SequenceComparer(s.AcknowledgementNumber, BufferEndSequenceNumber, InitialSequenceNumber) <= 0)
+        {
+            // Add the Ack fragment into the BufferedFragments directly
+            BufferedFragments += [s];
+        }
+        else
+        {
+            if (s#IsDupAck != nothing && s#IsDupAck as bool
+                && (s.AcknowledgementNumber == BufferStartSequenceNumber
+                    || (AckSegments.Head != null && SequenceComparer(AckSegments.CurrentAckNumber, s.AcknowledgementNumber, InitialSequenceNumber) >= 0)))
+            {
+                // For dup-Ack, if the original Ack has been removed from the cache, return false
+                return false;
+            }
+            AckSegments.Add(s);
+            AssignAcksAsOriginsOfCompleteDataSegments();
+        }
+        
+        return true;
+    }
+
+    void Push(void(VirtualDataSegment) dispatcher)
+    {
+        ValidationCheck(Initialized, null, DiagnosisLevel.Warning, "TCB.Push(), TCB is assumed to be initialized before push.");
+
+        while (ReadyToPush)
+        {
+            PushWithoutCheck(dispatcher);
+            AssignAcksAsOriginsOfCompleteDataSegments();
+            MoveFragmentsIntoBuffer(true);
+        }
+    }
+
+    void PushIncompleteSegmentByAck(void(VirtualDataSegment) dispatcher, uint ack)
+    {
+        bool isDispatched = false;
+        // Push incomplete TCP segments when the acknowledgement number is bigger than BufferEndSequenceNumber
+        if ((ReceiveBuffer != null && SequenceComparer(BufferEndSequenceNumber, ack, InitialSequenceNumber) < 0))
+        {
+            PushWithoutCheck(dispatcher);
+            AssignAcksAsOriginsOfCompleteDataSegments();
+            isDispatched = true;
+        }
+
+        while (OutOfOrderList.Head != null
+            && SequenceComparer(OutOfOrderList.Head.Value.NextSequenceNumber, ack, InitialSequenceNumber) <= 0)
+        {
+            MoveFragmentsIntoBuffer(false);
+            if (ReadyToPush)
+            {
+                Push(dispatcher);
+            }
+            else if (OutOfOrderList.Head == null && BufferEndSequenceNumber == ack)
+            {
+                // It's ACK to a fragment. Don't force to dispatch it as probably it needs to wait for more fragments. 
+                return;
+            }
+            else
+            {
+                PushWithoutCheck(dispatcher);
+                AssignAcksAsOriginsOfCompleteDataSegments();
+            }
+            isDispatched = true;
+        }
+
+        if (isDispatched && SequenceComparer(BufferEndSequenceNumber, ack, InitialSequenceNumber) < 0)
+        {
+            // Update the SequenceNumber since the AckNumber should be the next expected one.
+            SequenceNumberLost = BufferEndSequenceNumber;
+            BufferStartSequenceNumber = ack;
+            BufferEndSequenceNumber = ack;
+            MoveFragmentsIntoBuffer(true);
+            if (ReadyToPush)
+            {
+                Push(dispatcher);
+            }
+        }
+    }
+
+    void RemoveCompleteDataSegmentByAck(uint ack)
+    {
+        while (CompletedSegments.Head != null
+            && SequenceComparer(ack, CompletedSegments.Head.Value.NextSequenceNumber, InitialSequenceNumber) > 0)
+        {
+            // remove the data segment from cache if there is no Ack for it
+            CompletedSegments.RemoveHead();
+        }
+    }
+
+    // Function to initialize the fields in the cache
+    void Initialize(Segment s)
+    {
+        InitialSequenceNumber = s.SequenceNumber;
+        ExpectedSequenceNumber = s.NextSequenceNumber;
+        SourcePort = s.SourcePort;
+        DestinationPort = s.DestinationPort;
+        SourceAddrBin = s#SourceAddrBin as binary;
+        DestinationAddrBin = s#DestinationAddrBin as binary;
+
+        uint initSeq;
+        if (s.IsDataSegment)
+        {
+            initSeq = s.SequenceNumber;
+        }
+        else
+        {
+            initSeq = s.NextSequenceNumber;
+        }
+        BufferStartSequenceNumber = initSeq;
+        BufferEndSequenceNumber = initSeq;
+
+        AckSegments.Initialize(s);
+
+        Initialized = true;
+    }
+
+    void Clear(void(VirtualDataSegment) dispatcher)
+    {
+        // Clear cached data segments
+        if (ReceiveBuffer == null)
+        {
+            MoveFragmentsIntoBuffer(false);
+        }
+
+        while (ReceiveBuffer != null)
+        {
+            PushWithoutCheck(dispatcher);
+            AssignAcksAsOriginsOfCompleteDataSegments();
+            MoveFragmentsIntoBuffer(false);
+        }
+
+        if (BufferedFragments != null && BufferedFragments.Count > 0
+            || AckSegments.Head != null)
+        {
+            // Clear Buffered Fragments
+            if (BufferedFragments != null)
+            {
+                foreach (var frag in BufferedFragments)
+                {
+                    DisplayTopLevelMessage(frag);
+                }
+                BufferedFragments = null;
+            }
+
+            // Clear cached Ack segments
+            while (AckSegments.Head != null)
+            {
+                DisplayTopLevelMessage(AckSegments.Head.Value);
+                AckSegments.RemoveHead();
+            }
+        }
+        
+        SeqNumToMsgNum = null;
+        AckNumToMsgNum = null;
+        CompletedSegments.Clear();
+    }
+    
+    void RecordOriginalMessageNumberForSegment(Segment s)
+    {
+        if (s.SequenceNumber in SeqNumToMsgNum)
+        {
+            // It's a retransmission, get the message number of the original segment
+            s#OriginalMessageNumber = SeqNumToMsgNum[s.SequenceNumber].MessageNumber;
+        }
+        else
+        {
+            SeqNumToMsgNum[s.SequenceNumber] = new SegmentInfo{MessageNumber = s.FrameSequenceNumber, NextSequenceNumber = s.NextSequenceNumber};
+        }
+    }
+    
+    void RecordOriginalMessageNumberForAck(Segment s)
+    {
+        if (s.AcknowledgementNumber in AckNumToMsgNum)
+        {
+            // It's a Dup-ACK, get the message number of original ACK
+            s#OriginalMessageNumber = AckNumToMsgNum[s.AcknowledgementNumber];
+        }
+        else
+        {
+            AckNumToMsgNum[s.AcknowledgementNumber] = s.FrameSequenceNumber as uint;
+        }
+    }
+    
+    // Try to find original message for retransmitted message in case that OriginalMessageNumber is nothing due to segment-lost
+    string AssignOriginalMessageNumberForRetransmit(Segment s, uint lowest)
+    {
+        if (s#OriginalMessageNumber != nothing)
+        {
+            return ("#" + (s#OriginalMessageNumber as string) + ".");
+        }
+        else if (SeqNumToMsgNum.Count > 0)
+        {
+            var msgNumMapFiltered = SeqNumToMsgNum.Filter((uint seqNum, SegmentInfo segmentSequenceInfo) => 
+                (seqNum < s.NextSequenceNumber && segmentSequenceInfo.NextSequenceNumber > s.SequenceNumber));
+            // Expect to find at least 2 elements when detect retransmit, since current segment is always added in the map.
+            if (msgNumMapFiltered.Count > 1)
+            {
+                s#OriginalMessageNumber = GetCurrent(msgNumMapFiltered, 0).Value.MessageNumber;
+                return ("#" + (s#OriginalMessageNumber as string) + ".");
+            }
+        }
+        return ("missing.");
+    }
+    
+    /*
+     * Part IV. Internal functions
+     */
+
+    internal void PushWithoutCheck(void(VirtualDataSegment) dispatcher)
+    {
+        if (ReceiveBuffer == null)
+        {
+            ValidationCheck(!ReadyToPush, null, DiagnosisLevel.Warning, "TCP: TCB.PushWithoutCheck(), this function should not be called when the ReceiveBuffer variable is null.");
+            ReadyToPush = false;
+            return;
+        }
+
+        var vds = new VirtualDataSegment
+                {
+                    SourcePort = SourcePort,
+                    DestinationPort = DestinationPort,
+                    SequenceNumber = BufferStartSequenceNumber,
+                    NextSequenceNumber = BufferEndSequenceNumber,
+                    Payload = ReceiveBuffer
+                };
+
+        Segment firstSeg = BufferedFragments[0] as Segment;
+        vds#SourceAddrBin = SourceAddrBin;
+        vds#DestinationAddrBin = DestinationAddrBin;
+        vds#UnderlyingProtocol = "TCP";
+        
+        vds.Origins = BufferedFragments;
+        vds.SourceData = ReceiveBuffer;
+        vds.AssignFieldEncodingInfo("Payload", 0, ReceiveBuffer.Count * 8);
+
+        // Update the viarables
+        ReceiveBuffer = null;
+        BufferedFragments = [];
+        BufferStartSequenceNumber = BufferEndSequenceNumber;
+        if (firstSeg#IsSegmentLost != nothing && firstSeg#IsSegmentLost as bool)
+        {
+            vds#SegmentLost = true;
+        }
+        if (ReadyToPush)
+        {
+            ReadyToPush = false;
+        }
+        else
+        {
+            vds#IsIncomplete = true;
+            ReportInsufficientData(vds, DiagnosisLevel.Warning, "TCP: Incomplete TCP data segment for full reassembly, due to missing continuous message.");
+        }
+
+        // Dispatch the message
+        dispatcher(vds);
+        // Add it into CompletedSegments
+        CompletedSegments.Add(vds);
+    }
+
+    internal void MoveFragmentsIntoBuffer(bool checkSequence)
+    {
+        if (OutOfOrderList.Head == null)
+        {
+            return;
+        }
+
+        var frag = OutOfOrderList.Head.Value;
+
+        if (ReceiveBuffer == null
+            && SequenceComparer(BufferEndSequenceNumber, frag.SequenceNumber, InitialSequenceNumber) < 0)
+        {
+            // If check sequence number, exit without moving
+            if (checkSequence)
+            {
+                return;
+            }
+            // ReceiveBuffer is null, which means we are forcing to move fragments into the buffer
+            // Set BufferStartSequenceNumber and BufferEndSequenceNumber to get prepared
+            SequenceNumberLost = BufferEndSequenceNumber;
+            BufferStartSequenceNumber = frag.SequenceNumber;
+            BufferEndSequenceNumber = frag.SequenceNumber;
+        }
+        
+        // Identify segment lost
+        if (SequenceNumberLost != nothing)
+        {
+            frag#IsSegmentLost = true;
+            ErrorCodeIf(true, frag, DiagnosisLevel.Warning, "TCP: Lost TCP segments, sequence range " + SequenceNumberLost.ToString() + " ~ " + frag.SequenceNumber.ToString() + ".");
+            SequenceNumberLost = nothing;
+        }
+        
+        // Move fragments
+        while (SequenceComparer(frag.SequenceNumber, BufferEndSequenceNumber, InitialSequenceNumber) <= 0)
+        {
+            // Remove it from the out-of-order list
+            OutOfOrderList.RemoveHead();
+
+            // Release the retransmission that has been Pushed
+            if (SequenceComparer(BufferStartSequenceNumber, frag.NextSequenceNumber, InitialSequenceNumber) >= 0)
+            {
+                frag#IsRetransmission = true;
+                ErrorCodeIf(true, frag, DiagnosisLevel.Warning, "TCP: Retransmitted , original message is " + AssignOriginalMessageNumberForRetransmit(frag, InitialSequenceNumber));
+                DisplayTopLevelMessage(frag);
+            }
+            else
+            {
+                // Add the payload into ReceiveBuffer
+                if (frag.SequenceNumber == BufferEndSequenceNumber)
+                {
+                    // Append payload directly if it comes in sequencial
+                    ReceiveBuffer += frag.Payload;
+                }
+                else
+                {
+                    // it is retransmitted fragmentation
+                    AddRetransmittedFragment(frag);
+                }
+                // Add the segment into BufferedFragments
+                BufferedFragments += [frag];
+                // Update BufferEndSequenceNumber of ReceiveBuffer
+                if (SequenceComparer(frag.NextSequenceNumber, BufferEndSequenceNumber, InitialSequenceNumber) > 0)
+                {
+                    BufferEndSequenceNumber = frag.NextSequenceNumber;
+                }
+            }
+            
+            // If find a PSH and it's not the retransmission of the message that has been Pushed, set ReadyToPush as true
+            if (frag.Flags.PSH)
+            {
+                CountOfPushInOutOfOrderList -= 1;
+                if (ReceiveBuffer != null)
+                {
+                    ReadyToPush = true;
+                    break;
+                }
+            }
+            // Break when reaching the end of the list
+            if (OutOfOrderList.Head == null)
+            {
+                break;
+            }
+            // Get the next fragment in the list
+            frag = OutOfOrderList.Head.Value;
+        }
+    }
+
+    internal void AddRetransmittedFragment(Segment frag)
+    {
+        // Assumptions:
+        // assert frag.SequenceNumber < BufferEndSequenceNumber
+        // assert frag.NextSequenceNumber > BufferStartSequenceNumber;
+        frag#IsRetransmission = true;
+        ErrorCodeIf(true, frag, DiagnosisLevel.Warning, "TCP: Retransmitted , original message is " + AssignOriginalMessageNumberForRetransmit(frag, InitialSequenceNumber));
+        // Since we don't actually know which is newer between the cached the buffer and the buffer in out-of-order list,
+        // so for now we only replace the cached buffer when frag has more data beyong BufferEndSequenceNumber
+        if (SequenceComparer(frag.NextSequenceNumber, BufferEndSequenceNumber, InitialSequenceNumber) > 0)
+        {
+            var diff = SequenceComparer(frag.SequenceNumber, BufferStartSequenceNumber, InitialSequenceNumber);
+            if (diff == 0)
+            {
+                /* The retransmitted payload contains the current ReceiveBuffer right starting from
+                 * the BufferStartSequenceNumber(which is equal to frag.SequenceNumber), replace
+                 * the ReceiveBuffer as retransmitted payload
+                 */
+                ReceiveBuffer = frag.Payload;
+            }
+            else if (diff > 0)
+            {
+                /* The data retransmitted is partially buffered in ReceiveBuffer, replace that part with
+                 * the new data
+                 */
+                var noneOverlapBufferSize = frag.SequenceNumber - BufferStartSequenceNumber;
+                if (noneOverlapBufferSize < 0)
+                {
+                    // if noneOverlapBufferSize is less than 0, means SequenceNumber overlows
+                    noneOverlapBufferSize += 0xFFFFFFFF;
+                }
+
+                if (ReceiveBuffer == null)
+                {
+                    ValidationCheck(false, frag, DiagnosisLevel.Warning, "TCP: TCB.AddRetransmittedFragment(), the ReceiveBuffer variable should not be null.");
+                }
+                else if (ReceiveBuffer.Count <= noneOverlapBufferSize)
+                {
+                    ValidationCheck(false, frag, DiagnosisLevel.Warning, "TCP: TCB.AddRetransmittedFragment(), the ReceiveBuffer.Count should be bigger than " + noneOverlapBufferSize.ToString() + ".");
+                }
+                else
+                {
+                    ReceiveBuffer = ReceiveBuffer.Segment(0, noneOverlapBufferSize as int) + frag.Payload;
+                }
+            }
+            else // diff < 0
+            {
+                // the data retransmitted is partially dispatched already, replace that part that has not dispatched yet
+                var dispatchedBufferSize = BufferStartSequenceNumber - frag.SequenceNumber;
+                if (dispatchedBufferSize < 0)
+                {
+                    // if dispatchedBufferSize is less than 0, means SequenceNumber overlows
+                    dispatchedBufferSize += 0xFFFFFFFF;
+                }
+
+                if (frag.Payload.Count > dispatchedBufferSize)
+                {
+                    ReceiveBuffer = frag.Payload.Segment(dispatchedBufferSize as int);
+                }
+                else
+                {
+                    ValidationCheck(false, frag, DiagnosisLevel.Warning, "TCP: TCB.AddRetransmittedFragment(), the Payload.Count of this fragment should be bigger than " + dispatchedBufferSize.ToString() + ".");
+                }
+            }
+        }
+    }
+
+    internal void AssignAcksAsOriginsOfCompleteDataSegments()
+    {
+        while (CompletedSegments.Head != null && AckSegments.Head != null)
+        {
+            if (SequenceComparer(AckSegments.CurrentAckNumber, CompletedSegments.Head.Value.NextSequenceNumber, InitialSequenceNumber) > 0)
+            {
+                // remove the data segment from cache if there is no Ack for it
+                CompletedSegments.RemoveHead();
+                continue;
+            }
+
+            var acks = AckSegments.TakeoffSegments(
+                CompletedSegments.Head.Value.SequenceNumber,
+                CompletedSegments.Head.Value.NextSequenceNumber);
+
+            if (acks != null)
+            {
+                // assign pure-Acks as the origins
+                CompletedSegments.Head.Value.Origins += acks;
+                if (SequenceComparer(AckSegments.CurrentAckNumber, CompletedSegments.Head.Value.NextSequenceNumber, InitialSequenceNumber) >= 0)
+                {
+                    // remove the data segment from cache
+                    CompletedSegments.RemoveHead();
+                }
+                else
+                {
+                    // Still it's possible to get more ACK for this completed data segment
+                    break;
+                }
+            }
+            else
+            {
+                break;
+            }
+        }
+    }
+}
+
+/* The ServerStateMachine endpoint takes care of the reassembly and retransmission logic for fragments.
+ * No sequence validations are currently being performed.
+ * TODOs:
+ * 1. Currently if there are segments lost, the reassembly will definitly fail, but those fragments will show as missing messages,
+ *    and we may have issue to reassemble the fragments followed
+ * 2. TCBs should be released in endpoint destructor (after it is supported)
+ */
+endpoint ServerStateMachine[binary LocalAddress, binary RemoteAddress, ushort LocalPort, ushort RemotePort]
+    accepts Segment issues Segment
+{
+    /*
+     * Part I. Internal variables and functions
+     */
+    
+    // Receive Transmission Control Block
+    TCB rcvTCB = new TCB{};
+    // Send Transmission Control Block
+    TCB sndTCB = new TCB{};
+    // SYNC from client
+    Segment syncSegment = null;
+
+    void AcceptDispatcher(VirtualDataSegment s)
+    {
+        var e = endpoint Server[LocalAddress, RemoteAddress, LocalPort, RemotePort];
+        dispatch e accepts s;
+    }
+
+    void IssueDispatcher(VirtualDataSegment s)
+    {
+        var e = endpoint Server[LocalAddress, RemoteAddress, LocalPort, RemotePort];
+        dispatch e issues s;
+    }
+
+    void OnConnClose()
+    {
+        var e = endpoint Server[LocalAddress, RemoteAddress, LocalPort, RemotePort];
+        e.OnConnClose();
+    }
+
+    /*
+     * Part II. Observing rules
+     */
+
+    // Set Server.isMissingThreeWayHandshake to false if having the SYN segment
+    observe this accepts s:Segment where s.Flags.SYN
+    {
+        var server = endpoint Server[LocalAddress, RemoteAddress, LocalPort, RemotePort];
+        server.isMissingThreeWayHandshake = false;
+        SynSegmentObserver(s, rcvTCB, sndTCB);
+        
+        // cache client sync message
+        if(syncSegment == null)
+        {
+            syncSegment = s;
+        }
+    }
+
+    // Set Server.isMissingThreeWayHandshake to false if having the SYN segment
+    observe this issues s:Segment where s.Flags.SYN
+    {
+        var server = endpoint Server[LocalAddress, RemoteAddress, LocalPort, RemotePort];
+        server.isMissingThreeWayHandshake = false;
+        SynSegmentObserver(s, sndTCB, rcvTCB);
+        
+        // cache server sync message
+        if(syncSegment == null)
+        {
+            syncSegment = s;
+        }
+    }
+
+    observe this accepts s:Segment where !s.Flags.SYN
+    {
+        SegmentObserver(s, rcvTCB, sndTCB, OnConnClose);
+    }
+
+    observe this issues s:Segment where !s.Flags.SYN
+    {
+        SegmentObserver(s, sndTCB, rcvTCB, OnConnClose);
+    }
+    
+    // Receive ACK for SYN message
+    observe this accepts s:Segment where s.Flags.SYN && s.Flags.ACK
+    {
+        syncSegment = null;
+    }
+    
+    // Receive ACK for SYN message
+    observe this issues s:Segment where s.Flags.SYN && s.Flags.ACK
+    {
+        syncSegment = null;
+    }
+
+    /*
+     * Part II. Processing rules
+     */
+
+    // Process accepted pure-ACK segments
+    process this accepts s:Segment where s.IsPureACK
+    {
+        if (sndTCB.FinOrRstReceived || rcvTCB.FinOrRstReceived)
+        {
+            // reject pure-Ack after fin send or received
+            reject;
+        }
+        else if (sndTCB.ControlSeqs[s.AcknowledgementNumber])
+        {
+            // reject pure-Ack if it is for control segments
+            reject;
+        }
+        else if (sndTCB.AddPureAckSegment(s, IssueDispatcher))
+        {
+            // if segement has been successfully added to BufferedFragments, here should not dispatch it again, 
+            // otherwise, MessageDispatched will not equal to UI displayed, UnitTest.Runtime.JournalTest.PersistenceParsingConfigTest will fail.
+            // so, leave this logic empty, maybe release statement work, but must not Utility.DisplayTopLevelMessage() again, there may be a pef bug.
+            //release s;
+        }
+        else
+        {
+            reject;
+        }
+    }
+
+    // Process issued pure-ACK segments
+    process this issues s:Segment where s.IsPureACK
+    {
+        if (rcvTCB.FinOrRstReceived || sndTCB.FinOrRstReceived)
+        {          
+            // reject pure-Ack after fin send or received
+            reject;
+        }
+        else if (rcvTCB.ControlSeqs[s.AcknowledgementNumber])
+        {
+            // reject pure-Ack if it is for control segments
+            reject;
+        }
+        else if (rcvTCB.AddPureAckSegment(s, AcceptDispatcher))
+        {
+            // if segement has been successfully added to BufferedFragments, here should not dispatch it again, 
+            // otherwise, MessageDispatched will not equal to UI displayed, UnitTest.Runtime.JournalTest.PersistenceParsingConfigTest will fail.
+            // so, leave this logic empty, maybe release statement work, but must not Utility.DisplayTopLevelMessage() again, there may be a pef bug.
+            //release s;
+        }
+        else
+        {
+            reject;
+        }
+    }
+
+    // Process accepted data segments
+    process this accepts s:Segment where s.IsDataSegment
+    {
+        // Force pushing incomplete TCP segments by observing the ACK instead of waiting for two Push segments
+        sndTCB.PushIncompleteSegmentByAck(IssueDispatcher, s.AcknowledgementNumber);
+
+        // Force remove complete TCP segments by observing the ACK in data segment instead of waiting for pure ACK
+        sndTCB.RemoveCompleteDataSegmentByAck(s.AcknowledgementNumber);
+
+        if (!DataSegmentHandler(s, rcvTCB, AcceptDispatcher))
+        {
+            reject;
+        }
+    }
+
+    // Process issued data segments
+    process this issues s:Segment where s.IsDataSegment
+    {
+        // Force pushing incomplete TCP segments by observing the ACK instead of waiting for two Push segments
+        rcvTCB.PushIncompleteSegmentByAck(AcceptDispatcher, s.AcknowledgementNumber);
+
+        // Force remove complete TCP segments by observing the ACK in data segment instead of waiting for pure ACK
+        rcvTCB.RemoveCompleteDataSegmentByAck(s.AcknowledgementNumber);
+
+        if (!DataSegmentHandler(s, sndTCB, IssueDispatcher))
+        {
+            reject;
+        }
+    }
+    
+    ~endpoint(ServerStateMachine server)
+    {
+        if(syncSegment != null)
+        {
+            ErrorCodeIf(true, syncSegment, DiagnosisLevel.Warning, "TCP: ACK message for SYN message is lost.");
+            return;
+        }
+    }
+}
+
+autostart actor TcpServerActor(ServerStateMachine server)
+{
+    // destructor
+    ~endpoint(ServerStateMachine server)
+    {
+        server.rcvTCB.Clear(server.AcceptDispatcher);
+        server.sndTCB.Clear(server.IssueDispatcher);
+    }
+}
+
+void SynSegmentObserver(Segment s, TCB rcvTCB, TCB sndTCB)
+{
+    rcvTCB.RecordOriginalMessageNumberForSegment(s);
+    
+    var nextSeq = s.NextSequenceNumber;
+    if (rcvTCB.Initialized && s.SequenceNumber == rcvTCB.InitialSequenceNumber)
+    {
+        s#IsRetransmission = true;
+        ErrorCodeIf(true, s, DiagnosisLevel.Warning, "TCP: Retransmitted SYN, original message is #"+ (s#OriginalMessageNumber as string) + ".");
+    }
+    // Always initialize for SYN message
+    rcvTCB.Initialize(s);
+    rcvTCB.ControlSeqs[nextSeq] = true;
+
+    // Update the AckNumber for SYN & ACK message
+    if (s.Flags.ACK)
+    {
+        sndTCB.AckNumber = s.AcknowledgementNumber;
+    }
+}
+
+void SegmentObserver(Segment s, TCB rcvTCB, TCB sndTCB, void() OnConnClose)
+{
+    /* Firstly Mark the keep-alive segment, an acknowledgment with the sequence
+     * number set to one less than the current sequence number for the connection.
+     * An implementation SHOULD send a keep-alive segment with no data; however,
+     * it MAY be configurable to send a keep-alive segment containing one garbage
+     * octet, for compatibility with erroneous TCP implementations.
+     */
+    if (!s.Flags.SYN && !s.Flags.FIN && !s.Flags.RST && !s.Flags.PSH && s.Flags.ACK && s.Payload.Count <= 1
+        && !(sndTCB.ControlSeqs[s.AcknowledgementNumber])
+        && (s.SequenceNumber == rcvTCB.ExpectedSequenceNumber - 1
+            // This is for trace without SYNC
+            || (!rcvTCB.Initialized && s.Payload.Count == 1)))
+    {
+        s#IsKeepAlive = true;
+        rcvTCB.KeepAliveSequenceNumber = s.SequenceNumber + 1;
+        // Update sequence variables if this is the first captured message
+        if (!rcvTCB.Initialized)
+        {
+            rcvTCB.Initialize(s);
+        }
+        return;
+    }
+
+    if (rcvTCB.FinOrRstReceived || sndTCB.FinOrRstReceived)
+    {
+        OnConnClose();
+    }
+
+    // Deal with FIN message
+    if (s.Flags.FIN || s.Flags.RST)
+    {
+        rcvTCB.FinOrRstReceived = true;
+        if (s.Payload.Count == 0)
+        {
+            // Deal with FIN message carry no data
+            if (s.Flags.FIN)
+            {
+                var nextSeq = s.NextSequenceNumber;
+                rcvTCB.RecordOriginalMessageNumberForSegment(s);
+                if (nextSeq in rcvTCB.ControlSeqs)
+                {
+                    s#IsRetransmission = true;
+                    ErrorCodeIf(true, s, DiagnosisLevel.Warning, "TCP: Retransmitted FIN, original message is #" + (s#OriginalMessageNumber as string) + ".");
+                }
+                else
+                {
+                    rcvTCB.ControlSeqs[nextSeq] = true;
+                }
+            }
+            OnConnClose();
+        }
+    }
+
+    if (!rcvTCB.Initialized)
+    {
+        // Previous segments must be lost, since this is the first one that received
+        s#IsSegmentLost = true;
+        ErrorCodeIf(true, s, DiagnosisLevel.Warning, "TCP: Segment lost, missing 3-way handshake.");
+        // Initialize rcvTCB with the first segment arrived
+        rcvTCB.Initialize(s);
+        // Initialize AckNumber in sndTCB
+        sndTCB.AckNumber = s.AcknowledgementNumber;
+    }
+
+    // Update AckNumber in sndTCB
+    if (SequenceComparer(s.AcknowledgementNumber, sndTCB.AckNumber, sndTCB.InitialSequenceNumber) > 0 ||
+        s.AcknowledgementNumber in sndTCB.ControlSeqs)
+    {
+        sndTCB.AckNumber = s.AcknowledgementNumber;
+    }
+
+    // if it is pure ACK and not the Keep alive ACK. (If a TCP ACK is identified as Keep-Alive-Ack, we should'n mark it as Dup-Ack or Fast-Retransmit.)
+    if (s.IsPureACK && (s.AcknowledgementNumber != sndTCB.KeepAliveSequenceNumber))
+    {
+        // To record Message Number whose AcknowledgementNumber is repeated by s
+        rcvTCB.RecordOriginalMessageNumberForAck(s);
+        
+        if (s.AcknowledgementNumber == sndTCB.PureAckNumber)
+        {
+            // Save duplicated pure ACK count
+            sndTCB.DupAckCount++;
+            s#IsDupAck = true;
+            ErrorCodeIf(true, s, DiagnosisLevel.Warning, "TCP: Duplicate ACK of message #" + (s#OriginalMessageNumber as string) + ".");
+            
+            if (sndTCB.DupAckCount >= 3)
+            {
+                s#IsFastRetransmit = true;
+                ErrorCodeIf(true, s, DiagnosisLevel.Warning, "TCP: Request fast retransmit of sequence number " + s.AcknowledgementNumber.ToString() + ". Original message is #" + (s#OriginalMessageNumber as string) + ".");
+            }
+        }
+        else
+        {
+            sndTCB.DupAckCount = 1;
+        }
+
+        // Update PureAckNumber in rcvTCB
+        if (SequenceComparer(s.AcknowledgementNumber, sndTCB.PureAckNumber, sndTCB.InitialSequenceNumber) > 0
+            || sndTCB.PureAckNumber == 0)
+        {
+            sndTCB.PureAckNumber = s.AcknowledgementNumber;
+        }
+    }
+}
+
+bool DataSegmentHandler(Segment s, TCB tcb, void(VirtualDataSegment) dispatcher)
+{
+    // To record message number for retransmitted message
+    tcb.RecordOriginalMessageNumberForSegment(s);
+    
+    if (!tcb.AddDataSegment(s, dispatcher))
+    {
+        return false;
+    }
+
+    if (tcb.ReadyToPush)
+    {
+        tcb.Push(dispatcher);
+    }
+
+    // Check whether it is Fin and record it
+    if (s.Flags.FIN || s.Flags.RST)
+    {
+        // Don't invoke events on connection close for data segments, since at this moment the data has not yet been
+        // process by upper layer protocol. Save it for the coming message
+        tcb.FinOrRstReceived = true;
+    }
+
+    return true;
+}
+
+//-------------------------------------------
+// Client side
+
+/* The same architecture is defined for the Client.
+ * Endpoint Client is the upper level abstraction and sequence validation check is handled by ClientStateMachine endpoint.
+ * Only the Server endpoint has been implemented with the reassemble/retransmission logic, and the Client endpoint should not be processed by upper level protocol
+ */
+client endpoint Client connected to Server;
+
+client endpoint ClientStateMachine connected to ServerStateMachine;
+
+//-------------------------------------------
+// Actors
+
+// Actor that listens to IPv4 messages for both possible directions. It decodes the message payload and dispatches the decoded message.
+autostart actor TCPOverIPv4(IPv4.Node node)
+{
+    // Keep the value that consists of the address and the port pairs observed from the client side.
+    set<binary> clientSet = {};
+
+    process node accepts p:IPv4.Datagram where p.Protocol == ProtocolType.TCP
+    {
+        DecodeAndDispatchSegment(ref clientSet, p.SourceAddress.FlatAddress, p.DestinationAddress.FlatAddress, p.Payload);
+    }
+}
+
+// Same actor logic for IPv6 messages
+autostart actor TCPOverIPv6(IPv6.Node node)
+{
+    set<binary> clientSet = {};
+
+    process node accepts d:IPv6.Datagram where d.NextProtocol == ProtocolType.TCP
+    {
+        DecodeAndDispatchSegment(ref clientSet, d.SourceAddress.FlatAddress, d.DestinationAddress.FlatAddress, d.Payload);
+    }
+}
+
+//-------------------------------------------
+// Message and Data Types
+
+// Keep binary format of source and destination address for segement(reassembled included).
+annotation binary SourceAddrBin;
+annotation binary DestinationAddrBin;
+
+// Mark whether the segment is keep-alive
+annotation bool Segment#IsKeepAlive;
+
+// Mark whether the pure-ACK segment is for keep-alive
+annotation bool Segment#IsKeepAliveAck;
+
+// Mark whether the ack is duplicated
+annotation bool Segment#IsDupAck;
+
+// Mark whether the Ack is Fast Retransmit request
+annotation bool Segment#IsFastRetransmit;
+
+// Mark whether the segment is retransmission
+annotation bool Segment#IsRetransmission;
+
+// To record original message number for retransmitted message or dup ack
+annotation uint Segment#OriginalMessageNumber;
+
+// Mark whether a segment is lost before current segment
+annotation bool Segment#IsSegmentLost;
+
+// Force reassembly when observe count of Push flag in sorted segments list.
+const uint CountOfPushFlagToTriggerReassembly = 6;
+// Limit the max count of cached VDS in VirtualDataSegmentCache
+const uint MaxCountOfCachedVDS = 10;
+
+/* The Segment message models a TCP message.
+ * It inherits this ITransport interface to get the Transport property that groups TCP and UDP under this interface.
+ */
+message Segment
+{
+    ushort SourcePort with Visualization {AliasName = "Port"};
+    ushort DestinationPort with Visualization {AliasName = "Port"};
+    uint SequenceNumber;
+    uint AcknowledgementNumber;
+    DataOffset DataOffset;
+    TCP.Flags Flags;
+    ushort Window;
+    ushort Checksum;
+    ushort UrgentPointer;
+    optional [| DataOffset.DataOffset > 5 |] array<TcpOption> Options with BinaryEncoding{ WidthForComposedType = (DataOffset.DataOffset * 4 - 20) * 8 };
+    binary Payload with MimeDescription{Format = "text/plain"};
+
+    override string ToString()
+    {
+        string summary = this#IsTruncated != nothing && (this#IsTruncated as bool) ? "Truncated, " : "";
+        if (this#IsKeepAlive != nothing && this#IsKeepAlive as bool)
+        {
+            summary = "Keep-Alive, ";
+        }
+        else if (this#IsKeepAliveAck != nothing && this#IsKeepAliveAck as bool)
+        {
+            summary = "Keep-Alive-Ack, ";
+        }
+        summary += "Flags: ";
+        summary += Flags.ToString();
+
+        summary += ", SrcPort: ";
+        if (InRange<IANA.Port>(SourcePort))
+        {
+            summary += EnumToString(SourcePort, "IANA.Port") + " (" + (SourcePort as string) + ")";            
+        }
+        else
+        {
+            summary += SourcePort as string;
+        } 
+        summary += ", DstPort: ";
+        if (InRange<IANA.Port>(DestinationPort))
+        {
+            summary += EnumToString(DestinationPort, "IANA.Port") + " (" + (DestinationPort as string) + ")";            
+        }
+        else
+        {
+            summary += DestinationPort as string;
+        }
+        summary += ", Length: " + (Payload.Count as string);
+        summary += ", Seq Range: " + (SequenceNumber as string) + " - " + (this#TCPNextSequenceNumber != nothing ? (this#TCPNextSequenceNumber as string) : (CalculateNextSeqNumber(this) as string));
+        summary += ", Ack: " + (AcknowledgementNumber as string);
+        summary += ", Win: " + (Window as string);
+        return summary;
+    }
+}
+
+annotation uint Segment#TCPNextSequenceNumber;
+
+string get TCPDiagnosis(this Segment m)
+{
+    string diagnosis = "";
+    if (m#IsSegmentLost != nothing && m#IsSegmentLost as bool)
+    {
+        diagnosis = "Segment-Lost ";
+    }
+
+    if (m#IsRetransmission != nothing && m#IsRetransmission as bool)
+    {
+        if (m.Flags.SYN && !m.Flags.ACK)
+        {
+            diagnosis += "SynRetransmit ";
+        }
+        else
+        {
+            diagnosis += "Retransmitted ";
+        }
+        if (m#OriginalMessageNumber != nothing)
+        {
+            diagnosis += ("#" + (m#OriginalMessageNumber as string));
+        }
+    }
+    else if (m#IsDupAck != nothing && m#IsDupAck as bool)
+    {
+        if (m#IsFastRetransmit != nothing && m#IsFastRetransmit as bool)
+        {
+            diagnosis += "Fast-Retransmitted-Request ";
+        }
+        else
+        {
+            diagnosis += "Dup-Ack ";
+        }
+        if (m#OriginalMessageNumber != nothing)
+        {
+            diagnosis += ("#" + (m#OriginalMessageNumber as string));
+        }
+    }
+    return diagnosis.Trim();
+}
+
+// Get the segment's next sequence number
+uint get NextSequenceNumber(this Segment s)
+{
+    if (s#TCPNextSequenceNumber != nothing)
+    {
+        return s#TCPNextSequenceNumber as uint;
+    }
+    else 
+    {
+        var nextSeq = CalculateNextSeqNumber(s);
+        s#TCPNextSequenceNumber = nextSeq;
+        return nextSeq;
+    }
+}
+
+uint CalculateNextSeqNumber(Segment s)
+{
+    uint nextSeq1 = s.SequenceNumber;
+    if (s.Flags.FIN)
+    {
+        nextSeq1 += (s.Payload.Count + 1) as uint;
+    }
+    else if (s.Flags.SYN || (s#IsKeepAlive != nothing && s#IsKeepAlive as bool))
+    {
+        nextSeq1 += 1;
+    }
+    else
+    {
+        nextSeq1 += s.Payload.Count as uint;
+    }
+    return nextSeq1;
+}
+
+bool get IsPureACK(this Segment s)
+{
+    return !s.Flags.SYN && !s.Flags.FIN && !s.Flags.RST && s.Flags.ACK && s.Payload.Count == 0;
+}
+
+bool get IsDataSegment(this Segment s)
+{
+    return !s.Flags.SYN && s.Payload.Count > 0 && (s#IsKeepAlive == nothing || !(s#IsKeepAlive as bool));
+}
+
+string get Transport(this TCP.Segment segment)
+{
+    return "TCP: " + (segment.SourcePort > segment.DestinationPort
+        ? (segment.DestinationPort as string) + " - " + (segment.SourcePort as string)
+        : (segment.SourcePort as string) + " - " + (segment.DestinationPort as string));
+}
+
+uint get PayloadLength(this TCP.Segment s)
+{
+    return s.Payload.Count as uint;
+}
+
+// Data Offset: This indicates where the data begins.
+type DataOffset
+{
+    byte DataOffset with BinaryEncoding{Width = 4};
+    byte Reserved where ValidationCheckReservedZero(value == 0, null, true, ReferenceType.Type, "DNS", "Reserved", "DataOffset", value) with BinaryEncoding{Width = 3};
+    bool NS with BinaryEncoding{Width = 1};
+}
+
+/* Control Bits
+ *  URG:  Urgent Pointer field significant
+ *  ACK:  Acknowledgment field significant
+ *  PSH:  Push Function
+ *  RST:  Reset the connection
+ *  SYN:  Synchronize sequence numbers
+ *  FIN:  No more data from sender
+ *  ECE:  Indicates ECN-Capability
+ *  CWR:  Congestion window reduced
+ */
+type Flags
+{
+    bool CWR with BinaryEncoding{Width = 1};
+    bool ECE with BinaryEncoding{Width = 1};
+    bool URG with BinaryEncoding{Width = 1};
+    bool ACK with BinaryEncoding{Width = 1};
+    bool PSH with BinaryEncoding{Width = 1};
+    bool RST with BinaryEncoding{Width = 1};
+    bool SYN with BinaryEncoding{Width = 1};
+    bool FIN with BinaryEncoding{Width = 1};
+    
+    override string ToString()
+    {
+        string summary;
+        summary += CWR ? "C" : ".";
+        summary += ECE ? "E" : ".";
+        summary += URG ? "U" : ".";
+        summary += ACK ? "A" : ".";
+        summary += PSH ? "P" : ".";
+        summary += RST ? "R" : ".";
+        summary += SYN ? "S" : ".";
+        summary += FIN ? "F" : ".";
+        return summary;
+    }
+}
+
+// The union of all the option types of TCP header.
+pattern TcpOption = NoOperation
+                    | MaxSegmentSize
+                    | WindowsScaleFactor
+                    | SackPermitted
+                    | Sack
+                    | Echo
+                    | EchoReply
+                    | Timestamps
+                    | POCPermitted
+                    | POCServiceProfile
+                    | CC
+                    | CCNew
+                    | CCEcho
+                    | AlternateChecksumRequest
+                    | AlternateChecksumData
+                    | Proposed
+                    | EndOfOptionList
+                    | UnknownOption;
+
+// This section defines types for options of TCP header
+
+// Unknown option
+type UnknownOption
+{
+    byte OptionType;
+    byte Length;
+    binary Data with BinaryEncoding{Length = Length - 2 as uint};
+    invariant Data.Count == Length - 2;
+}
+
+// RFC793
+// End of option list: Kind=0, used at the end of all options
+type EndOfOptionList
+{
+    (byte where value == 0) OptionType;
+}
+
+// No-Operation: Kind=1, used between options
+type NoOperation
+{
+    (byte where value == 1) OptionType;
+}
+
+// Maximum Segment Size: Kind=2
+type MaxSegmentSize
+{
+    (byte where value == 2) OptionType;
+    byte Length where ValidationCheckValue(value == 4, null, false, ReferenceType.Type, "TCP", "Length", "MaxSegmentSize", "4", value);
+    ushort MaxSegmentSize;
+}
+
+// RFC1072
+// Window Scale Option: Kind=3
+type WindowsScaleFactor
+{
+    (byte where value == 3) OptionType;
+    byte Length where ValidationCheckValue(value == 3, null, false, ReferenceType.Type, "TCP", "Length", "WindowsScaleFactor", "3", value);
+    byte ShiftCount;
+}
+
+// Sack-Permitted Option: Kind=4
+type SackPermitted
+{
+    (byte where value == 4) OptionType;
+    byte Length where ValidationCheckValue(value == 2, null, false, ReferenceType.Type, "TCP", "Length", "SackPermitted", "2", value);
+}
+
+// Sack Option: Kind=5
+type Sack
+{
+    (byte where value == 5) OptionType;
+    byte Length where ValidationCheckValue(value % 8 == 2, null, false, ReferenceType.Type, "TCP", "Length", "Sack", "a multiple of 8 plus 2", value);
+    [SackBlock+] Blocks with BinaryEncoding{Length = (Length - 2) / 8 as uint};
+    invariant Blocks.Count == (Length - 2) / 8;
+}
+
+// Sack Block: sequence numbers of this block
+type SackBlock
+{
+    uint LeftEdge;
+    uint RightEdge;
+}
+
+// Echo Option: Kind=6
+type Echo
+{
+    (byte where value == 6) OptionType;
+    byte Length where ValidationCheckValue(value == 6, null, false, ReferenceType.Type, "TCP", "Length", "Echo", "6", value);
+    uint InfoToBeEchoed;
+}
+
+// Echo Reply Option: Kind=7
+type EchoReply
+{
+    (byte where value == 7) OptionType;
+    byte Length where ValidationCheckValue(value == 6, null, false, ReferenceType.Type, "TCP", "Length", "EchoReply", "6", value);
+    uint EchoedInfo;
+}
+
+// RFC1323
+// Timestamps Option: Kind=8
+type Timestamps
+{
+    (byte where value == 8) OptionType;
+    byte Length where ValidationCheckValue(value == 10, null, false, ReferenceType.Type, "TCP", "Length", "Timestamps", "10", value);
+    uint TSValue;
+    uint TSEchoReply;
+}
+
+// RFC1693
+// POC-permitted Option: Kind=9
+type POCPermitted
+{
+    (byte where value == 9) OptionType;
+    byte Length where ValidationCheck(value == 2, null, DiagnosisLevel.Warning, "TCP: The Length in type POCPermitted should be 2.");
+}
+
+// POC-service-profile Option: Kind=10
+type POCServiceProfile
+{
+    (byte where value == 10) OptionType;
+    byte Length where ValidationCheck(value == 3, null, DiagnosisLevel.Warning, "TCP: The Length in type POCServiceProfile should be 3.");
+    bool StartFlag with BinaryEncoding{Width = 1};
+    bool EndFlag with BinaryEncoding{Width = 1};
+    byte Filler with BinaryEncoding{Width = 6};
+}
+
+// RFC1644
+// CC Option: Kind=11
+type CC
+{
+    (byte where value == 11) OptionType;
+    byte Length where ValidationCheck(value == 6, null, DiagnosisLevel.Warning, "TCP: The Length in type CC should be 6.");
+    uint ConnectionCount;
+}
+
+// CC.NEW Option: Kind=12
+type CCNew
+{
+    (byte where value == 12) OptionType;
+    byte Length where ValidationCheck(value == 6, null, DiagnosisLevel.Warning, "TCP: The Length in type CCNew should be 6.");
+    uint ConnectionCount;
+}
+
+// CC.ECHO Option: Kind=13
+type CCEcho
+{
+    (byte where value == 13) OptionType;
+    byte Length where ValidationCheck(value == 6, null, DiagnosisLevel.Warning, "TCP: The Length in type CCEcho should be 6.");
+    uint ConnectionCount;
+}
+
+// RFC1146
+// Alternate Checksum Request Option: Kind=14
+type AlternateChecksumRequest
+{
+    (byte where value == 14) OptionType;
+    byte Length where ValidationCheck(value == 3, null, DiagnosisLevel.Warning, "TCP: The Length in type AlternateChecksumRequest should be 3.");
+    byte chksum;
+}
+
+// Alternate Checksum Data Option: Kind=15
+type AlternateChecksumData
+{
+    (byte where value == 15) OptionType;
+    byte Length;
+    array<byte> data with BinaryEncoding{Length = (Length - 2) as uint};
+}
+
+// RFC1146
+// MD5 Signature Option: Kind=19
+type Proposed
+{
+    (byte where value == 19) OptionType;
+    byte Length where ValidationCheck(value == 18, null, DiagnosisLevel.Warning, "TCP: The Length in type Proposed should be 18.");
+    array<byte> MD5Digest with BinaryEncoding{Length = 16};
+}
+
+// States of the connection termination
+pattern ConnectionState = enum byte
+{
+    Closed = 0,
+    SynSent = 2,
+    SynRecv = 3,
+    Estab = 4,
+    FinWait1 = 5,
+    FinWait2 = 6,
+    TimeWait = 7,
+    Closing = 8,
+    LastAck = 9,
+    CloseWait = 10,
+};
+
+//-------------------------------------------
+// Helper functions
+
+// Decodes TCP segment and dispatch to TCP layer. Handles both message directions.
+void DecodeAndDispatchSegment(ref set<binary> clientSet, binary sourceAddress, binary destinationAddress, binary payload)
+{
+    switch (payload)
+    {
+        case s:Segment from BinaryDecoder =>
+            // Future Reference: Temporarily disable Checksum check for CTP
+            // WORKAROUND: Can't attach this check directly at the Checksum field in Segment message, as it need to get the parent payload for the ValidateTCPUDPChecksum funtion.
+            // ValidationCheck(Utility.ValidateTCPUDPChecksum(sourceAddress, destinationAddress, 6, payload, s.Checksum), s, "Validation Error. TCP Checksum is invalid.");
+
+            // Set source and destination address
+            s#SourceAddrBin = sourceAddress;
+            s#DestinationAddrBin = destinationAddress;
+
+            // Local - Client side; Remote - Sever side
+
+            // Get the local and the remote value of each Segment, used to identify the server/client endpoint.
+            binary local = MakeBinary(destinationAddress, sourceAddress, s.DestinationPort, s.SourcePort);
+            binary remote = MakeBinary(sourceAddress, destinationAddress, s.SourcePort, s.DestinationPort);
+
+            /* Record the first unduplicated local value of issued SYN and non-ACK segment, or the remote value of accepted one in clientSet.
+             * For each Segment, it should be dispatched to client side endpoint if its local value is in clientSet, server side endpoint if the remote value is in clientSet.
+             */
+            if (s.Flags.SYN && !s.Flags.ACK)
+            {
+                clientSet[remote] = true;
+            }
+            // If the first SYN segment is lost, the dispatch direction can be distinguished by the second SYN and ACK segment.
+            if (!(local in clientSet) && s.Flags.SYN && s.Flags.ACK)
+            {
+                clientSet[local] = true;
+            }
+            // Dispatch the message to TCP layer
+            if (local in clientSet)
+                dispatch endpoint ServerStateMachine[sourceAddress,destinationAddress, s.SourcePort, s.DestinationPort] issues s;
+            else if (remote in clientSet)
+                dispatch endpoint ServerStateMachine[destinationAddress, sourceAddress, s.DestinationPort, s.SourcePort] accepts s;
+            // If the Syn Segment is missing, assume the one with smaller port is server instead.
+            else if (s.DestinationPort >= s.SourcePort)
+                dispatch endpoint ServerStateMachine[sourceAddress, destinationAddress, s.SourcePort, s.DestinationPort] issues s;
+            else
+                dispatch endpoint ServerStateMachine[destinationAddress, sourceAddress, s.DestinationPort, s.SourcePort] accepts s;
+
+        default =>
+            ThrowDecodingException("TCP");
+    }
+}
+
+// Joins the source/destination address and the source/destination port values as one binary value
+binary MakeBinary(binary sourceAddress, binary destinationAddress, ushort sourcePort, ushort destinationPort)
+{
+    return sourceAddress + destinationAddress + ConvertLongToBinary(sourcePort as long, 16) + ConvertLongToBinary(destinationPort as long, 16);
+}
+
+/*
+ * For performance's sake, we implemented double linked list specifically for caching TCP segments
+ * This cache stores segments sequentially by given comparer function
+ */
+type SortedSegmentList
+{
+    // Head is the head of the list
+    // Usage: should use it as read only
+    SegmentListNode Head = null;
+    // Rear point to the last node in the list
+    // Usage: should use it as read only
+    SegmentListNode Rear = null;
+    // The Comparer function used for sorting in Insert function
+    int(Segment, Segment, uint) Comparer;
+    // The ISN - Initial Sequence Number
+    uint InitialSequenceNumber;
+
+    // Insert a segment in the sorted list
+    void Insert(Segment s)
+    {
+        var newNode = new SegmentListNode { Value = s };
+
+        // Insert the node into an empty list
+        if (Head == null)
+        {
+            Head = newNode;
+            Rear = newNode;
+            return;
+        }
+
+        if (Comparer(Rear.Value, s, InitialSequenceNumber) <= 0)
+        {
+            // Add the segment to the rear of the list since it is sequential
+            Rear.Next = newNode;
+            newNode.Previous = Rear;
+            Rear = newNode;
+            return;
+        }
+        else
+        {
+            // Find the proper position and insert
+            var temp = Rear.Previous;
+            // Move forward till the head or find the place to insert
+            while (temp != null && Comparer(temp.Value, s, InitialSequenceNumber) > 0)
+            {
+                temp = temp.Previous;
+            }
+            // Insert
+            if (temp == null)
+            {
+                // Reached the head of the list
+                Head.Previous = newNode;
+                newNode.Next = Head;
+                Head = newNode;
+            }
+            else
+            {
+                // Insert the new node in current position, which is in the middle of the list
+                newNode.Next = temp.Next;
+                temp.Next = newNode;
+                newNode.Previous = temp;
+                var nextNode = newNode.Next;
+                nextNode.Previous = newNode;
+            }
+        }
+    }
+
+    void RemoveHead()
+    {
+        if (Head == null)
+        {
+            return;
+        }
+        Head = Head.Next;
+        if (Head == null)
+        {
+            Rear = null;
+        }
+        else
+        {
+            Head.Previous = null;
+        }
+    }
+
+    void Clear()
+    {
+        Head = null;
+        Rear = null;
+    }
+}
+
+type AckSegmentCache : SortedSegmentList
+{
+    /*
+     * The Selector funciton used for select segments in TakeoffSegments function
+     * Parameters:
+     *  1. the current segment in the cache
+     *  2. the startSeq
+     *  3. the endSeq
+     * Meaning of return values:
+     * -1: those segments will be throw away
+     *  0: those segments will be selected
+     *  1: those segments will be kept in the cache
+     */
+    int(Segment, uint, uint, uint) Selector;
+    // Current biggest AcknowledgementNumber in the cache
+    uint CurrentAck = 0;
+
+    // Add a segment into the cache and update CurrentAck
+    void Add(Segment s)
+    {
+        if (s.AcknowledgementNumber > CurrentAck)
+        {
+            CurrentAck = s.AcknowledgementNumber;
+        }
+        Insert(s);
+    }
+
+    // Takeoff Ack segments by given sequence range
+    array<any message> TakeoffSegments(uint startSeq, uint endSeq)
+    {
+        if (Head == null)
+        {
+            return null;
+        }
+
+        // Return null if no segments can be selected
+        if (Selector(Head.Value, startSeq, endSeq, InitialSequenceNumber) > 0)
+        {
+            return null;
+        }
+        
+        // Remove segments doesn't pass the selector
+        while (Head != null
+            && Selector(Head.Value, startSeq, endSeq, InitialSequenceNumber) < 0)
+        {
+            DisplayTopLevelMessage(Head.Value);
+            Head = Head.Next;
+        }
+
+        if (Head == null
+            || Selector(Head.Value, startSeq, endSeq, InitialSequenceNumber) > 0)
+        {
+            if (Head == null)
+            {
+                // Reached the end of the list, empty the list and return null
+                Rear = null;
+            }
+            return null;
+        }
+
+        array<any message> segments = [];
+
+        // Collecting segments in this sequence range
+        do
+        {
+            segments += [Head.Value];
+            Head = Head.Next;
+        }
+        while (Head != null
+            && Selector(Head.Value, startSeq, endSeq, InitialSequenceNumber) == 0);
+
+        if (Head == null)
+        {
+            // The last node has been collected, the list is empty
+            Rear = null;
+        }
+        else
+        {
+            // List is not empty, release the previous nodes
+            Head.Previous = null;
+        }
+
+        return segments;
+    }
+
+    // Function to initialize the fields in the cache
+    void Initialize(Segment s)
+    {
+        InitialSequenceNumber = s.SequenceNumber;
+    }
+}
+
+uint get CurrentAckNumber(this AckSegmentCache cache)
+{
+    if (cache.Head != null)
+    {
+        return cache.Head.Value.AcknowledgementNumber;
+    }
+    return cache.CurrentAck;
+}
+
+/*
+ * The function is used to compare the sequence number in two segments x and y
+ * isn represent the initial sequence number for the tcp connection
+ */
+int SegmentSequenceComparer(Segment x, Segment y, uint isn)
+{
+    return SequenceComparer(x.SequenceNumber, y.SequenceNumber, isn);
+}
+
+/*
+ * The function is used to compare the acknowledgement number in two segments x and y
+ * isn represent the initial sequence number for the tcp connection
+ */
+int SegmentAcknowledgementComparer(Segment x, Segment y, uint isn)
+{
+    return SequenceComparer(x.AcknowledgementNumber, y.AcknowledgementNumber, isn);
+}
+
+// The selector function used to get pure-Ack segments for specified sequence range
+int PureAckSelector(Segment s, uint startSeq, uint endSeq, uint isn)
+{
+    if (SequenceComparer(s.AcknowledgementNumber, startSeq, isn) <= 0)
+    {
+        return -1;
+    }
+    if (SequenceComparer(s.AcknowledgementNumber, endSeq, isn) > 0)
+    {
+        return 1;
+    }
+    return 0;
+}
+
+/*
+ * The function is used to compare two sequence numbers by given ISN - initial sequence number for the tcp connection
+ * TCP sequence numbers and receive windows behave very much like a clock. The receive window shifts each time the receiver
+ * receives and acknowledges a new segment of data. Once it runs out of sequence numbers, the sequence number loops back to 0
+ * x == y: return 0
+ * x > y: return > 0
+ * x < y: return < 0
+ */
+int SequenceComparer(uint x, uint y, uint isn)
+{
+    if (x == y)
+    {
+        return 0;
+    }
+    if (x >= isn)
+    {
+        if (y >= isn)
+        {
+            return (x - y) as int;
+        }
+        else
+        {
+            return SequenceComparer1(x, y, isn);
+        }
+    }
+    else
+    {
+        if (y <= isn)
+        {
+            return (x - y) as int;
+        }
+        else
+        {
+            return SequenceComparer1(x, y, isn);
+        }
+    }
+}
+
+const uint SemiMaxSequenceNumber = 0x80000000;
+
+int SequenceComparer1(uint x, uint y, uint isn)
+{
+    // Assuming y < isn < x
+    var isn1 = (isn + SemiMaxSequenceNumber) as uint;
+    if (isn >= SemiMaxSequenceNumber)
+    {
+        if (y >= isn1)
+        {
+            return 1;
+        }
+        else
+        {
+            return -1;
+        }
+    }
+    else
+    {
+        if (x < isn1)
+        {
+            return 1;
+        }
+        else
+        {
+            return -1;
+        }
+    }
+}
+
+// The double linked list node in sorted segment list
+type SegmentListNode
+{
+    Segment Value;
+    // Don't use SegmentListNode directly here, otherwize the invariant checking will overflow
+    // SegmentListNode Previous;
+    any PreviousNode;
+    any NextNode;
+}
+
+SegmentListNode get Previous(this SegmentListNode node)
+{
+    return node.PreviousNode as SegmentListNode;
+}
+
+void set Previous(this SegmentListNode node, SegmentListNode previousNode)
+{
+    node.PreviousNode = previousNode;
+}
+
+SegmentListNode get Next(this SegmentListNode node)
+{
+    return node.NextNode as SegmentListNode;
+}
+
+void set Next(this SegmentListNode node, SegmentListNode nextNode)
+{
+    node.NextNode = nextNode;
+}
+
+/*
+ * VirtualDataSegments are garanteed to come sequentially, so use FIFO single linked list
+ */
+type VirtualDataSegmentCache
+{
+    // Head of the list
+    VirtualDataSegmentCacheNode Head = null;
+    // Tail of the list
+    VirtualDataSegmentCacheNode Rear = null;
+    // Count of nodes in the list.
+    uint NodeCount = 0;
+
+    // Add the coming VirtualDataSegment to the end of the list
+    // Keep the count of nodes in the list limited to MaxCountOfCachedVDS
+    void Add(VirtualDataSegment vds)
+    {
+        var newNode = new VirtualDataSegmentCacheNode {Value = vds};
+
+        NodeCount++;
+        if (Head == null)
+        {
+            Head = newNode;
+            Rear = Head;
+            return;
+        }
+
+        Rear.Next = newNode;
+        Rear = newNode;
+        
+        while (NodeCount > MaxCountOfCachedVDS)
+        {
+            RemoveHead();
+        }
+    }
+    
+    // Remove fisrt VirtualDataSegment of the list.
+    void RemoveHead()
+    {
+        if (Head == null)
+        {
+            NodeCount = 0;
+            return;
+        }
+        NodeCount--;
+        Head = Head.NextNode;
+    }
+
+    void Clear()
+    {
+        Head = null;
+        Rear = null;
+        NodeCount = 0;
+    }
+}
+
+type VirtualDataSegmentCacheNode
+{
+    VirtualDataSegment Value;
+    any Next;
+}
+
+VirtualDataSegmentCacheNode get NextNode(this VirtualDataSegmentCacheNode node)
+{
+    return node.Next as VirtualDataSegmentCacheNode;
+}
+
+void set NextNode(this VirtualDataSegmentCacheNode node, VirtualDataSegmentCacheNode nextNode)
+{
+    node.Next = nextNode;
+}
+
+type SegmentInfo
+{
+    optional uint MessageNumber;
+    uint NextSequenceNumber;
+}

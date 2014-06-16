@@ -1,0 +1,2202 @@
+protocol DHCP with 
+BinaryEncodingDefaults{Endian = Endian.Big, TextEncoding = TextEncoding.ASCII},
+Documentation
+{
+    ProtocolName = "Dynamic Host Configuration Protocol",
+    ShortName = "DHCP",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+            new Reference{Name = "RFC 1542"},
+            new Reference{Name = "RFC 2131"},
+            new Reference{Name = "RFC 2132"},
+            new Reference{Name = "RFC 2563"},
+            new Reference{Name = "RFC 2242"},
+            new Reference{Name = "RFC 3046"},
+            new Reference{Name = "RFC 3004"},
+            new Reference{Name = "RFC 2610"},
+            new Reference{Name = "RFC 4039"},
+            new Reference{Name = "RFC 4702"},
+            new Reference{Name = "RFC 4174"},
+            new Reference{Name = "RFC 2241"},
+            new Reference{Name = "RFC 4280"},
+            new Reference{Name = "RFC 3118"},
+            new Reference{Name = "RFC 4388"},
+            new Reference{Name = "RFC 4578"},
+            new Reference{Name = "RFC 2485"},
+            new Reference{Name = "RFC 4776"},
+            new Reference{Name = "RFC 4833"},
+            new Reference{Name = "RFC 3397"},
+            new Reference{Name = "RFC 3361"},
+            new Reference{Name = "RFC 3442"},
+            new Reference{Name = "RFC 3495"},
+            new Reference{Name = "RFC 6225"},
+            new Reference{Name = "RFC 3925"},
+            new Reference{Name = "RFC 5192"},
+            new Reference{Name = "RFC 5223"},
+            new Reference{Name = "RFC 5417"},
+            new Reference{Name = "RFC 5678"},
+            new Reference{Name = "RFC 6001"},
+            new Reference{Name = "RFC 6153"},
+            new Reference{Name = "RFC 5859"},
+            new Reference{Name = "RFC 5071"},
+            new Reference{Name = "RFC 5969"},
+            new Reference{Name = "RFC 5986"},
+            new Reference{Name = "MS-DHCPE"},
+        ],
+    RevisionSummary =
+        [
+             new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "09/02/2011"}
+        ]
+};
+
+using Standard;
+using Ethernet;
+using IPv4;
+using UDP;
+using DNS;
+using Utility;
+using IANA;
+using CommonResources;
+
+endpoint Server 
+    over UDP.Host
+    accepts DhcpMessage issues DhcpMessage;
+
+client endpoint Client connected to Server;
+
+//binding ServerOverUDP: DHCP.Server over host:UDP.Host
+//{
+    //rule host accepts UDP.Datagram{SourcePort is Port.DHCPClient, Payload is m:DHCP.Message from BinaryDecoder<DHCP.Message>}
+        //=> DHCP.Client issues m;
+//}
+//binding ClientOverUDP: DHCP.Client over host:UDP.Host
+//{
+    //rule host accepts UDP.Datagram{SourcePort is Port.DHCPClient, Payload is m:DHCP.Message from BinaryDecoder<DHCP.Message>}
+        //=> DHCP.Client issues m;
+    //rule host accepts UDP.Datagram{SourcePort is Port.DHCPServer, Payload is m:DHCP.Message from BinaryDecoder<DHCP.Message>}
+        //=> DHCP.Client accepts m;
+//}
+
+autostart actor DHCPOverUDP(UDP.Host host)
+{
+    process host accepts d:UDP.Datagram{SourcePort is Port.DHCPClient, DestinationPort is Port.DHCPServer} // request
+    {
+        assert d.Payload.Count >= 243;
+        optional DhcpMessage msg = DhcpMessageDecoder(d.Payload, true);
+        if (msg != nothing)
+        {
+            DhcpMessage m = msg as DhcpMessage;
+            dispatch (endpoint DHCP.Server over host) accepts m;
+        }
+        else
+        {
+            ThrowDecodingException("DHCP"); 
+        }
+    }
+
+    process host accepts d:UDP.Datagram{SourcePort is Port.DHCPServer, DestinationPort is Port.DHCPClient} // response
+    {
+        assert d.Payload.Count >= 243;
+        optional DhcpMessage msg = DhcpMessageDecoder(d.Payload, false);
+        if (msg != nothing)
+        {
+            DhcpMessage m = msg as DhcpMessage;
+            dispatch (endpoint DHCP.Server over host) accepts m;
+        }
+        else
+        {
+            ThrowDecodingException("DHCP"); 
+        }
+    }
+}
+
+// http://www.ietf.org/rfc/rfc1700.txt
+// Number Hardware Type
+pattern HardwareTypes = enum byte
+{
+    Ethernet = 1,
+    ExperimentalEthernet = 2,
+    AmateurRadioAX25 = 3,
+    ProteonProNETTokenRing = 4,
+    Chaos = 5,
+    IEEE802Networks = 6,
+    ARCNET = 7,
+    Hyperchannel = 8,
+    Lanstar = 9,
+    AutonetShortAddress = 10,
+    LocalTalk = 11,
+    LocalNet = 12,
+    UltraLink = 13,
+    SMDS = 14,
+    FrameRelay = 15,
+    ATM_JXB2 = 16,
+    HDLC = 17,
+    FibreChannel = 18,
+    ATM_MarkLaubach = 19,
+    SerialLine = 20,
+    ATM_MXB1 = 21,
+    ...
+};
+
+// RFC 2131, page 9
+message DhcpMessage
+{
+    OpCode OpCode;
+    HardwareTypes Hardwaretype;
+    byte HardwareAddressLength;
+    byte HopCount;  
+    uint TransactionID;
+    ushort Seconds;    
+    Flag Flags;    
+    IPv4Address ClientIP;
+    IPv4Address YourIP;
+    IPv4Address ServerIP;
+    IPv4Address RelayAgentIP;
+    // WORKAROUND: Bug#47337
+    ([|HardwareAddressLength == 6 && Hardwaretype == 1|] EthernetHAddress | ClientHardwareAddress) ClientHardwareAddress with BinaryEncoding{Length = 16};
+    string ServerHostName with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = 64};
+    string BootFileName with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = 128};
+    OptionsType Options where ValidationCheck(value != null, null, "DHCP message type option must be included in every DHCP message.");
+    
+    override string ToString()
+    {
+        string summary;
+        if (Options.Option.Count > 0)
+        {
+            if (Options.GetMessageType() != nothing)
+            {
+                summary += EnumToString(Options.GetMessageType(), "DHCP.MessageTypeEnum") + ", ";
+            }
+            else
+            {
+                summary += "";
+            }
+        }
+        else
+        {
+            summary += "Unknown Message Type, ";
+        }
+                
+        summary += "OpCode: " + EnumToString(OpCode, "DHCP.OpCode");
+        summary += ", TransID: " + DecToHexFormat(TransactionID);
+
+        return summary;
+    }
+}
+
+static string GetEthernetAddr((EthernetHAddress | ClientHardwareAddress) hardwareAddr)
+{
+    if (hardwareAddr is EthernetHAddress)
+    {
+        return ((hardwareAddr as EthernetHAddress).HAddress as MacAddress).ToString();
+    }  
+    return ""; 
+}
+
+pattern OpCode = enum byte
+{
+    BootRequest = 1,
+    BootReply = 2
+};
+
+// RFC 2131, page 11
+pattern Flag = flags ushort
+{
+    BroadcastFlag = 0x8000,
+    Reserved = 0x7FFF
+};
+
+type EthernetHAddress
+{
+    MacAddress HAddress;
+    array<byte> Pad with BinaryEncoding{Length = 10};
+}
+
+string MacAddress(this EthernetHAddress ethernetAddr)
+{
+    return (ethernetAddr.HAddress as MacAddress).ToString();
+}
+
+pattern ClientHardwareAddress = binary with BinaryEncoding{Length = 16};
+   
+type OptionsType 
+{
+    // RFC 2131, page 13.
+    array<byte> MessageCookie where ValidationCheck(value == [99,130,83,99], null, "DHCP: Message cookie must be set to [99,130,83,99].") with BinaryEncoding{Length = 4}, DisplayInfo{ToText = MessageCookieToText};
+    array<OptionsChoice> Option with Encoding{Ignore = true};
+    optional EndOption End with Encoding{Ignore = true};
+    optional binary Pad with Encoding{Ignore = true};
+    
+    optional MessageTypeEnum GetMessageType()
+    {
+        if (Option.Count > 0 && Option[0].Option is MessageType)
+        {
+            return (Option[0].Option as MessageType).Type;
+        }
+        return nothing;
+    }
+    
+    static string MessageCookieToText(any m)
+    {
+        array<byte> MessageCookieArr = m as array<byte>;
+        string s = "[";
+        for (int i = 0; i < 4; i++)
+        {
+            s += MessageCookieArr[i] as string;
+            if (i == 3)
+            {
+                break;
+            }
+            s += ",";
+        }
+        s += "]";
+        return s;
+    }
+}
+
+// WORKAROUND: need to Change below type to "or pattern" 
+type OptionsChoice
+{
+    (
+    PadOption                               |               // consume pad data bettween options.
+    // RFC 2132
+    SubnetMask                              |               //1
+    TimesumVendorClassDataLength            |               //2
+    Router                                  |               //3
+    TimeServer                              |               //4
+    DHCP.NameServer                         |               //5
+    DomainNameaServer                       |               //6
+    LogServer                               |               //7
+    CookieServer                            |               //8
+    LPRServer                               |               //9
+    ImpressServer                           |               //10
+    ResourceLocationServer                  |               //11
+    HostName                                |               //12
+    BootFileSize                            |               //13
+    MeritDumpFile                           |               //14
+    DomainName                              |               //15
+    SwapServer                              |               //16
+    RootPath                                |               //17
+    ExtensionsPath                          |               //18
+    IPForwardingEnableDisable               |               //19
+    NonLocalSourceRoutingEnalbeDiable       |               //20
+    PolicyFilter                            |               //21
+    MaximumDatagramReassemblySize           |               //22
+    DefaultIPTimetolive                     |               //23
+    PathMTUAgingTimeout                     |               //24
+    PathMTUPlateauTable                     |               //25
+    InterfaceMTU                            |               //26
+    AllSubnetsAreLocal                      |               //27
+    BroadcastAddress                        |               //28
+    PerformMaskDiscovery                    |               //29
+    MaskSupplier                            |               //30
+    PerformRouterDiscovery                  |               //31
+    RouterSolicitationAddress               |               //32
+    StaticRoute                             |               //33
+    TrailerEncapsulation                    |               //34
+    ARPCacheTimeout                         |               //35
+    EthernetEncapsulation                   |               //36
+    TCPDefaultTTL                           |               //37
+    TCPKeepaliveInterval                    |               //38
+    TCPKeepaliveGarbage                     |               //39
+    NetworkInformationServiceDomain         |               //40
+    NetworkInformationServer                |               //41
+    NetworkTimeProtocolServers              |               //42
+    VendorSpecificInformation               |               //43
+    NetBIOSOverTCPIPNameServer              |               //44
+    NetBIOSOverTCPIPDatagramDistributionServer    |         //45
+    NetBIOSOverTCPIPNodeType                |               //46
+    NetBIOSOverTCPIPScope                   |               //47
+    XWindowSystemFontServer                 |               //48
+    XWindowSystemDisplayManager             |               //49
+    RequestedIPAddress                      |               //50
+    IPAddressLeaseTime                      |               //51
+    OptionOverload                          |               //52
+    MessageType                             |               //53
+    ServerIdentifier                        |               //54
+    ParameterRequestList                    |               //55
+    MessageOption                           |               //56    
+    MaximumDHCPMessageSize                  |               //57
+    RenewalT1TimeValue                      |               //58
+    RebindingT2TimeValue                    |               //59
+    VendorClassIdentifier                   |               //60
+    ClientIdentifier                        |               //61
+    // RFC 2242
+    NetWareIPDomainName                     |               //62
+    // RFC 2132
+    NetworkInformationServicePlusDomain     |               //64
+    NetworkInformationServicePlusServers    |               //65
+    TFTPServerName                          |               //66
+    BootfileName                            |               //67    
+    MobileIPHomeAgent                       |               //68
+    SimpleMailTransportProtocolServer       |               //69
+    PostOfficeProtocolServer                |               //70
+    NetworkNewsTransportProtocolServer      |               //71
+    DefaultWorldWideWebServer               |               //72
+    DefaultFingerServer                     |               //73
+    DefaultInternetRelayChatServer          |               //74
+    StreetTalkServer                        |               //75
+    StreetTalkDirectoryAssistanceServer     |               //76
+    // RFC 3004
+    UserClassOption                         |               //77
+    // RFC 2610
+    SLPDirectoryAgent                       |               //78
+    SLPServiceScope                         |               //79
+    // RFC 4039
+    RapidCommit                             |               //80
+    // RFC 4702
+    ClientFQDN                              |               //81
+    //RFC 3046
+    RelayAgentInformation                   |               //82
+    // RFC 4174
+    ISNS                                    |               //83
+    // RFC 2241
+    NDSServer                               |               //85
+    NDSTreeName                             |               //86
+    NDSContext                              |               //87
+    // RFC 4280
+    BCMCSControllerDomainNamelist           |               //88
+    BCMCSControllerIPv4Address              |               //89
+    // RFC 3118
+    Authentication                          |               //90
+    // RFC 4388
+    ClientLastTransactionTime               |               //91
+    AssociatedIp                            |               //92
+    // RFC 4578
+    ClientSystemArchitecture                |               //93
+    ClientNetworkInterfaceIdentifier        |               //94
+    ClientMachineIdentifier                 |               //97
+    // RFC 2485
+    UserAuthentication                      |               //98
+    // RFC 4776
+    Overall                                 |               //99
+    // RFC 4833
+    NewTimezonePCode                        |               //100
+    NewTimezoneTCode                        |               //101
+    NameServiceSearch                       |               //117
+    // RFC 2563
+    AutoConfigure                           |               //116
+    // 2937
+    SubnetSelection                         |               //118
+    // RFC 3397
+    DomainSearch                            |               //119
+    // RFC 3361
+    DomainNameList                          |               //120
+    // RFC 3442
+    ClasslessStaticRoute                    |                //121
+    // RFC 3495
+    CableLabsClientConfiguration            |               //122
+    // RFC 6225
+    GeoConf                                 |               //123
+    // RFC 3925
+    VIVendorClass                           |               //124
+    VIVendorSpecificInformation             |               //125
+    // RFC 5192
+    PANAAuthenticationAgent                 |               //136
+    // RFC 5223
+    LoSTServer                              |               //137 
+    // RFC 5417
+    CAPWAPAccessController                  |               //138
+    // RFC 5678
+    MoSIPv4Address                          |               //139
+    // RFC 6011
+    SIPUAConfigurationServiceDomains        |               //141
+    GeoLoc                                  |               //144
+    // RFC 5859
+    TFTPServerAddress                       |               //150
+    // RFC 5071
+    ConfigurationFile                       |               //209
+    PathPrefix                              |               //210
+    RebootTime                              |               //211
+    // RFC 5986
+    AccessNetworkDomainName                 |               //213
+    // MS-DHCPE
+    DHCPEMicrosoftClasslessStaticRouteOption |              //249
+    //RFC 2563
+    WPAD                                    |               //252
+    GenericOption                           | any) Option;
+}
+
+// RFC 2132
+type PadOption
+{
+    (byte where value == 0) Code;
+}
+    
+type EndOption
+{
+    (byte where value == 255) Code;
+}
+
+type SubnetMask
+{
+    (byte where value == 1) Code;
+    ushort Len where value == 4; // Length must be 4
+    IPv4Address Address;
+}
+
+type TimesumVendorClassDataLength
+{
+    (byte where value == 2) Code;
+    ushort Len where value == 4; // Length must be 4
+    int TimesumVendorClassDataLength;
+}
+
+type Router
+{
+    (byte where value == 3) Code;
+    ushort Len where (value >= 4) && (value % 4 == 0); // Length must be equal or greater than 4 and a multiple of 4
+    array<IPv4Address> Address with BinaryEncoding{Length = Len / 4 as uint};
+}
+
+type TimeServer
+{
+    (byte where value == 4) Code;
+    ushort Len where (value >= 4) && (value % 4 == 0); // Length must be equal or greater than 4 and a multiple of 4
+    array<IPv4Address> Address with BinaryEncoding{Length = Len / 4 as uint};
+}
+
+type NameServer
+{
+    (byte where value == 5) Code;
+    ushort Len where (value >= 4) && (value % 4 == 0); // Length must be equal or greater than 4 and a multiple of 4
+    array<IPv4Address> Address with BinaryEncoding{Length = Len / 4 as uint};
+}
+
+type DomainNameaServer
+{
+    (byte where value == 6) Code;
+    ushort Len where (value >= 4) && (value % 4 == 0); // Length must be equal or greater than 4 and a multiple of 4
+    array<IPv4Address> Address with BinaryEncoding{Length = Len / 4 as uint};
+}
+
+type LogServer
+{
+    (byte where value == 7) Code;
+    ushort Len where (value >= 4) && (value % 4 == 0); // Length must be equal or greater than 4 and a multiple of 4
+    array<IPv4Address> Address with BinaryEncoding{Length = Len / 4 as uint};
+}
+
+type CookieServer
+{
+    (byte where value == 8) Code;
+    ushort Len where (value >= 4) && (value % 4 == 0); // Length must be equal or greater than 4 and a multiple of 4
+    array<IPv4Address> Address with BinaryEncoding{Length = Len / 4 as uint};
+}   
+
+type LPRServer
+{
+    (byte where value == 9) Code;
+    ushort Len where (value >= 4) && (value % 4 == 0); // Length must be equal or greater than 4 and a multiple of 4
+    array<IPv4Address> Address with BinaryEncoding{Length = Len / 4 as uint};
+}   
+
+type ImpressServer
+{
+    (byte where value == 10) Code;
+    ushort Len where (value >= 4) && (value % 4 == 0); // Length must be equal or greater than 4 and a multiple of 4
+    array<IPv4Address> Address with BinaryEncoding{Length = Len / 4 as uint};
+}   
+
+type ResourceLocationServer
+{
+    (byte where value == 11) Code;
+    ushort Len where (value >= 4) && (value % 4 == 0); // Length must be equal or greater than 4 and a multiple of 4
+    array<IPv4Address> Address with BinaryEncoding{Length = Len / 4 as uint};
+}   
+
+type HostName
+{
+    (byte where value == 12) Code ;
+    ushort Len;
+    string Name with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = Len as uint};
+}
+
+type BootFileSize
+{
+    (byte where value == 13) Code;
+    ushort Len where value == 2; // Length must be 2
+    ushort  FileSize;
+}
+
+type MeritDumpFile
+{
+    (byte where value == 14) Code;
+    ushort Len;
+    array<byte> Name with BinaryEncoding{Length = Len as uint};
+    // TO Be Enabled
+    //string Name with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = Len as uint};
+}
+
+type DomainName
+{
+    (byte where value == 15) Code;
+    ushort Len;
+    string Name with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = Len as uint};
+}
+
+type SwapServer
+{
+    (byte where value == 16) Code;
+    ushort Len where value == 4; // Length must be 4
+    IPv4Address Address;
+}   
+
+type RootPath 
+{
+    (byte where value == 17) Code;
+    ushort Len;
+    array<byte> Name with BinaryEncoding{Length = Len as uint};
+    // TO Be Enabled
+    //string Name with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = Len as uint};
+}
+
+type ExtensionsPath
+{
+    (byte where value == 18) Code;
+    ushort Len;
+    array<byte> Name with BinaryEncoding{Length = Len as uint};
+    // TO Be Enabled
+    //string Name with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = Len as uint};
+}
+
+type IPForwardingEnableDisable
+{
+    (byte where value == 19) Code;
+    ushort Len where value == 1; // Length must be 1
+    EnableDisableEnum Value;
+}
+
+pattern EnableDisableEnum = enum byte{Disable = 0, Enable = 1}; 
+
+type NonLocalSourceRoutingEnalbeDiable 
+{
+    (byte where value == 20) Code;
+    ushort Len where value == 1; // Length must be 1
+    EnableDisableEnum Value; 
+}
+
+type PolicyFilter
+{
+    (byte where value == 21) Code;
+    ushort Len where value % 8 == 0; // Length must be a a multiple of 8
+    array<DestinationMaskPair> DestinationMaskList with BinaryEncoding{Length = Len / 8 as uint};
+}
+
+type DestinationMaskPair
+{
+    IPv4Address IPAddress;
+    IPv4Address Mask;
+}
+
+type MaximumDatagramReassemblySize
+{
+    (byte where value == 22) Code;
+    ushort Len where value == 2; // Length must be 2
+    ushort Size where value >= 576;
+}
+
+type DefaultIPTimetolive
+{
+    (byte where value == 23) Code;
+    ushort Len where value == 1; // Length must be 1
+    byte TTL;
+}
+
+type PathMTUAgingTimeout 
+{
+    (byte where value == 24) Code;
+    ushort Len where value == 4; // Length must be 4
+    uint TimeOut;
+}
+
+pattern MTUValue = ushort where value >= 68;
+
+type PathMTUPlateauTable 
+{
+    (byte where value == 25) Code;
+    ushort Len where (value >= 2) && (value % 2 == 0); // Length must be equal or greater than 2 and a multiple of 2
+    array<MTUValue> Size with BinaryEncoding{Length = Len / 2 as uint};
+}
+
+type InterfaceMTU
+{
+    (byte where value == 26) Code;
+    ushort Len where value == 2; // Length must be 2
+    MTUValue MTU;
+}
+
+pattern ShareSameMTUEnum = enum byte 
+{
+    AllSubnetShareSameMTU = 1, 
+    SomeSubnetsUseSmallerMTU = 0 
+};
+    
+type AllSubnetsAreLocal
+{
+    (byte where value == 27) Code;
+    ushort Len where value == 1; // Length must be 1
+    ShareSameMTUEnum Value;
+}
+    
+type BroadcastAddress 
+{
+    (byte where value == 28) Code;
+    ushort Len where value == 4; // Length must be 4
+    IPv4Address Address;
+}   
+     
+pattern PerformEnum = enum byte{ShouldNotPerform = 0, ShouldPerform = 1};
+    
+type PerformMaskDiscovery 
+{
+    (byte where value == 29) Code;
+    ushort Len where value == 1; // Length must be 1
+    PerformEnum PerformMaskDiscoveryValue;   
+}
+    
+pattern RespondToSubnetMaskEnum = enum byte 
+{
+    ClientShouldRespond = 0, 
+    ClientShouldNotRespond = 1 
+};
+    
+type MaskSupplier 
+{
+    (byte where value == 30) Code;
+    ushort Len where value == 1; // Length must be 1
+    RespondToSubnetMaskEnum Value;
+}
+    
+type PerformRouterDiscovery 
+{
+    (byte where value == 31) Code;
+    ushort Len where value == 1; // Length must be 1
+    PerformEnum PerformRouterDiscoveryValue;
+}
+    
+type RouterSolicitationAddress 
+{
+    (byte where value == 32) Code;
+    ushort Len where value == 4; // Length must be 4
+    IPv4Address Address;
+}   
+     
+type DestinationRouterPair
+{
+    IPv4Address Destination;
+    IPv4Address Router;
+}
+
+type StaticRoute 
+{
+    (byte where value == 33) Code;
+    ushort Len where (value >= 8) && (value % 8 == 0); // Length must be equal or greater than 8 and a multiple of 8
+    array<DestinationRouterPair> DestinationRouterList with BinaryEncoding{Length = Len / 8 as uint};
+}
+        
+type TrailerEncapsulation 
+{
+    (byte where value == 34) Code;
+    ushort Len where value == 1; // Length must be 1
+    PerformEnum AttemptToUseTrailerValue;
+}
+    
+type ARPCacheTimeout 
+{
+    (byte where value == 35) Code;
+    ushort Len where value == 4; // Length must be 4
+    uint Time;       
+}  
+  
+pattern EthernetEncapsulationEnum = enum byte 
+{
+    UseRFC894Encapsulation = 0, 
+    UseRFC1042Encapsulation = 1 
+};
+    
+type EthernetEncapsulation 
+{
+    (byte where value == 36) Code;
+    ushort Len where value == 1; // Length must be 1
+    EthernetEncapsulationEnum   EncapsulationValue;
+}
+
+type TCPDefaultTTL 
+{
+    (byte where value == 37) Code;
+    ushort Len where value == 1; // Length must be 1
+    byte TTL;
+}
+
+type TCPKeepaliveInterval 
+{
+    (byte where value == 38) Code;
+    ushort Len where value == 4; // Length must be 4
+    uint Time;
+}
+
+type TCPKeepaliveGarbage 
+{
+    (byte where value == 39) Code;
+    ushort Len where value == 1; // Length must be 1
+    PerformEnum SendGarbageOctetValue;
+}
+    
+// Future Reference: replace Name with DNSString / Domain name.
+type NetworkInformationServiceDomain 
+{
+    (byte where value == 40) Code;
+    ushort Len;
+    array<byte> Name with BinaryEncoding{Length = Len};
+}
+
+type NetworkInformationServer 
+{
+    (byte where value == 41) Code;
+    ushort Len where (value >= 4) && (value % 4 == 0); // Length must be equal or greater than 4 and a multiple of 4
+    array<IPv4Address> Address with BinaryEncoding{Length = Len / 4 as uint};
+}   
+ 
+type NetworkTimeProtocolServers 
+{
+    (byte where value == 42) Code;
+    ushort Len where (value >= 4) && (value % 4 == 0); // Length must be equal or greater than 4 and a multiple of 4
+    array<IPv4Address> Address with BinaryEncoding{Length = Len / 4 as uint};
+} 
+    
+type VendorSpecificInformation
+{
+    (byte where value == 43) Code;
+    ushort Len where value >= 1; // Length must be equal or greater than 1
+    (Blob[Len as uint] | array<VendorSpecificInfo>) Value;
+}
+
+type VendorInfoData
+{
+    byte Code;
+    byte Len;
+    (Blob[Len as uint] | any) Data;
+}
+
+pattern VendorSpecificInfo = VendorInfoData
+                                | DHCPEVendorSpecificInfoMicrosoftDisableNetBIOS
+                                | DHCPEVendorSpecificInfoMicrosoftReleaseDHCPLeaseOnShutdown
+                                | DHCPEVendorSpecificInfoMicrosoftDefaultRouterMetricBase
+                                | DHCPEVendorSpecificInfoRogueDetectionRequest
+                                | DHCPEVendorSpecificInfoRogueDetectionReply;
+
+type NetBIOSOverTCPIPNameServer 
+{
+    (byte where value == 44) Code;
+    ushort Len where (value >= 4) && (value % 4 == 0); // Length must be equal or greater than 4 and a multiple of 4
+    array<IPv4Address> Address with BinaryEncoding{Length = Len / 4 as uint};
+} 
+    
+type NetBIOSOverTCPIPDatagramDistributionServer 
+{
+    (byte where value == 45) Code;
+    ushort Len where (value >= 4) && (value % 4 == 0); // Length must be equal or greater than 4 and a multiple of 4
+    array<IPv4Address> Address with BinaryEncoding{Length = Len / 4 as uint};
+}
+    
+pattern NodeTypeEnum = enum byte 
+{
+    BNode = 1, 
+    PNode = 2, 
+    MNode = 4, 
+    HNode = 8 
+};
+    
+type NetBIOSOverTCPIPNodeType 
+{
+    (byte where value == 46) Code;
+    ushort Len where value == 1; // Length must be 1
+    NodeTypeEnum NodeType;
+}
+    
+type NetBIOSOverTCPIPScope 
+{
+    (byte where value == 47) Code;
+    ushort Len where value >= 1; // Length must be equal or greater than 1
+    // TO Be Enabled
+    //string NetBIOSScope with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = Len as uint};
+    array<byte> NetBIOSScope with BinaryEncoding{Length = Len as uint};
+}
+    
+type XWindowSystemFontServer 
+{
+    (byte where value == 48) Code;
+    ushort Len where (value >= 4) && (value % 4 == 0); // Length must be equal or greater than 4 and a multiple of 4
+    array<IPv4Address> Address with BinaryEncoding{Length = Len / 4 as uint};
+} 
+   
+type XWindowSystemDisplayManager 
+{
+    (byte where value == 49) Code;
+    ushort Len where (value >= 4) && (value % 4 == 0); // Length must be equal or greater than 4 and a multiple of 4
+    array<IPv4Address> Address with BinaryEncoding{Length = Len / 4 as uint};
+}
+    
+type NetworkInformationServicePlusDomain 
+{
+    (byte where value == 64) Code;
+    ushort Len where value >= 1; // Length must be equal or greater than 1
+    array<byte> Name with BinaryEncoding{Length = Len};
+}
+
+type NetworkInformationServicePlusServers 
+{
+    (byte where value == 65) Code;
+    ushort Len where (value >= 4) && (value % 4 == 0); // Length must be equal or greater than 4 and a multiple of 4
+    array<IPv4Address> Address with BinaryEncoding{Length = Len / 4 as uint};
+}  
+  
+type MobileIPHomeAgent 
+{
+    (byte where value == 68) Code;
+    ushort Len where (value >= 4) && (value % 4 == 0); // Length must be equal or greater than 4 and a multiple of 4
+    array<IPv4Address> Address with BinaryEncoding{Length = Len / 4 as uint};
+}  
+    
+type SimpleMailTransportProtocolServer 
+{
+    (byte where value == 69) Code;
+    ushort Len where (value >= 4) && (value % 4 == 0); // Length must be equal or greater than 4 and a multiple of 4
+    array<IPv4Address> Address with BinaryEncoding{Length = Len / 4 as uint};
+}  
+
+type PostOfficeProtocolServer 
+{
+    (byte where value == 70) Code;
+    ushort Len where (value >= 4) && (value % 4 == 0); // Length must be equal or greater than 4 and a multiple of 4
+    array<IPv4Address> Address with BinaryEncoding{Length = Len / 4 as uint};
+}  
+   
+type NetworkNewsTransportProtocolServer 
+{
+    (byte where value == 71) Code;
+    ushort Len where (value >= 4) && (value % 4 == 0); // Length must be equal or greater than 4 and a multiple of 4
+    array<IPv4Address> Address with BinaryEncoding{Length = Len / 4 as uint};
+}      
+
+type DefaultWorldWideWebServer 
+{
+    (byte where value == 72) Code;
+    ushort Len where (value >= 4) && (value % 4 == 0); // Length must be equal or greater than 4 and a multiple of 4
+    array<IPv4Address> Address with BinaryEncoding{Length = Len / 4 as uint};
+}      
+
+type DefaultFingerServer 
+{
+    (byte where value == 73) Code;
+    ushort Len where (value >= 4) && (value % 4 == 0); // Length must be equal or greater than 4 and a multiple of 4
+    array<IPv4Address> Address with BinaryEncoding{Length = Len / 4 as uint};
+}  
+    
+type DefaultInternetRelayChatServer 
+{
+    (byte where value == 74) Code;
+    ushort Len where (value >= 4) && (value % 4 == 0); // Length must be equal or greater than 4 and a multiple of 4
+    array<IPv4Address> Address with BinaryEncoding{Length = Len / 4 as uint};
+}  
+    
+type StreetTalkServer 
+{
+    (byte where value == 75) Code;
+    ushort Len where (value >= 4) && (value % 4 == 0); // Length must be equal or greater than 4 and a multiple of 4
+    array<IPv4Address> Address with BinaryEncoding{Length = Len / 4 as uint};
+}  
+    
+type StreetTalkDirectoryAssistanceServer 
+{
+    (byte where value == 76) Code;
+    ushort Len where (value >= 4) && (value % 4 == 0); // Length must be equal or greater than 4 and a multiple of 4
+    array<IPv4Address> Address with BinaryEncoding{Length = Len / 4 as uint};
+}  
+    
+type RequestedIPAddress
+{
+    (byte where value == 50) Code;
+    ushort Len where value == 4; // Length must be 4
+    IPv4Address IpAddress;
+}
+    
+type IPAddressLeaseTime
+{
+    (byte where value == 51) Code;
+    ushort Len where value == 4; // Length must be 4
+    uint LeaseTime;
+}
+
+pattern OptionOverloadEnum = enum byte 
+{
+    FileFieldUsedToHoldOptions = 1, 
+    SnameFieldUsedToHoldOptions = 2,
+    BothFieldsUsedToHoldOptions = 3
+};
+    
+type OptionOverload
+{
+    (byte where value == 52) Code;
+    ushort Len where value == 1; // Length must be 1
+    OptionOverloadEnum OverLoadFieldsValue;
+}
+    
+type TFTPServerName
+{
+    (byte where value == 66) Code;
+    ushort Len where value >= 1; // Length must be equal or greater than 1
+    array<byte> TFTPServer with BinaryEncoding{Length = Len};
+}
+    
+type BootfileName
+{
+    (byte where value == 67) Code;
+    ushort Len where value >= 1; // Length must be equal or greater than 1
+    array<byte> BootFileName with BinaryEncoding{Length = Len};
+}
+
+pattern MessageTypeEnum = enum byte 
+{ 
+    DHCPDiscover = 1, 
+    DHCPOffer = 2, 
+    DHCPRequest = 3, 
+    DHCPDecline = 4,
+    DHCPACK = 5, 
+    DHCPNAK = 6,
+    DHCPRelease = 7,
+    DHCPInform = 8
+};
+
+
+type MessageType
+{
+    (byte where value == 53) Code;
+    ushort Len where value == 1; // Length must be 1
+    MessageTypeEnum Type;
+}
+    
+type ServerIdentifier
+{
+    (byte where value == 54) Code;
+    ushort Len where value == 4; // Length must be 4
+    IPv4Address Address;
+}
+    
+type ParameterRequestList
+{
+    (byte where value == 55) Code;
+    ushort Len where value >= 1; // Length must be equal or greater than 1
+    array<byte> OptionCodes with BinaryEncoding{Length = Len};
+}
+    
+type MessageOption
+{
+    (byte where value == 56) Code;
+    ushort Len where value >= 1; // Length must be equal or greater than 1
+    array<byte> Text with BinaryEncoding{Length = Len};
+}
+
+type MaximumDHCPMessageSize
+{
+    (byte where value == 57) Code;
+    ushort Len where value == 2; // Length must be 2
+    ushort Length where value >= 576;
+}
+
+type RenewalT1TimeValue
+{
+    (byte where value == 58) Code;
+    ushort Len where value == 4; // Length must be 4
+    uint T1Interval;
+}
+
+type RebindingT2TimeValue
+{
+    (byte where value == 59) Code;
+    ushort Len where value == 4; // Length must be 4
+    uint T2Interval;
+}
+
+type VendorClassIdentifier
+{
+    (byte where value == 60) Code;
+    ushort Len where value >= 1; // Length must be equal or greater than 1
+    string VendorClassIdentifier with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = Len as uint};
+}
+
+type ClientIdentifier
+{
+    (byte where value == 61) Code;
+    ushort Len where value >= 2; // Length must be equal or greater than 2
+    byte Type;
+    array<byte> ClientID with BinaryEncoding{Length = (Len - 1) as uint};
+} 
+
+// RFC2242
+type NetWareIPDomainName 
+{
+    (byte where value == 62) Code;
+    ushort Len where value <= 255;
+    array<byte> DomainName with BinaryEncoding{Length = Len};
+    // TO Be Enabled
+    // string DomainName with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = Len};
+}
+
+// RFC3046
+type RelayAgentInformation 
+{
+    (byte where value == 82) Code;
+    ushort Len where value >= 2; // Length must be equal or greater than 2
+    //array<RelayAgentSubOptionChoice> AgentInformation;
+    array<byte> AgentInformation with BinaryEncoding{Length = Len as uint};
+}
+
+pattern RelayAgentSubOptionChoice = AgentCircuitIDSub  | AgentRemoteIDSub;
+
+type AgentCircuitIDSub 
+{
+    byte SubCode where ValidationCheck(value == 1, null, () => "DHCP: The Length field in type AgentCircuitIDSub must be set to 1, not " + DecToHexFormat(value) + ".");
+    ushort Len;
+    array<byte> SubOptionValue with BinaryEncoding{Length = Len};
+}
+
+type AgentRemoteIDSub 
+{
+    byte SubCode where ValidationCheck(value == 2, null, () => "DHCP: The Length field in type AgentRemoteIDSub must be set to 2, not " + DecToHexFormat(value) + ".");
+    ushort Len;
+    array<byte> SubOptionValue with BinaryEncoding{Length = Len};
+}
+
+// RFC2563
+type AutoConfigure 
+{
+    (byte where value == 116) Code;
+    ushort Len where value == 1; // Length must be 1
+    AutoConfigureValueEnum  Value;
+}
+
+pattern AutoConfigureValueEnum = enum byte 
+{
+    DoNotAutoConfigue = 0, 
+    AutoConfigue = 1 
+};
+
+// http://tools.ietf.org/id/draft-ietf-wrec-wpad-01.txt
+type WPAD
+{
+    (byte where value == 252) Code;
+    ushort Len;
+    //string URL with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = Len};
+    array<byte> URL  with BinaryEncoding{Length = Len as uint};
+}
+
+type GenericOption
+{
+    (byte where value != 255) Code;
+    ushort Len where value > 0;
+    binary Value with BinaryEncoding{Length = Len as uint};
+}
+
+// RFC 3004
+type UserClassOption
+{
+    (byte where value == 77) Code;
+    ushort Len;
+    // WORKAROUND for Bug 18057 Support using "Width" attribtue in BinaryEncoding aspect to specify a field's size
+    (Blob[Len as uint] | array<UserClassData>) UserClassdata;
+}
+
+type UserClassData
+{
+    byte UCLen;
+    binary Data with BinaryEncoding{Length = UCLen as uint};
+}
+
+// RFC 2610
+type SLPDirectoryAgent
+{
+    (byte where value == 78) Code;
+    ushort Length where (value - 1) % 4 == 0 && value >= 5; // the Length minus one of the option MUST always be divisible by 4 and has a minimum value of 5
+    byte Mandatory where ValidationCheck((value == 1 || value == 0) && (value & 0x80) != 0x80, null, () => "DHCP: The Mandatory field in type SLPDirectoryAgent must be set to either zero or 1 for which the high order bit (0x80) is set, not " + DecToHexFormat(value) + ".");
+    array<IPv4Address> A with BinaryEncoding{Length = (Length - 1) / 4 as uint};
+}
+
+type SLPServiceScope
+{
+    (byte where value == 79) Code;
+    ushort Length where (value > 1); // The Length value must include one for the Mandator  byte
+    byte Mandatory where ValidationCheck((value == 1 || value == 0), null, () => "DHCP: The Mandatory field in type SLPServiceSCOPE must be set to zero or 1, not " + DecToHexFormat(value) + ".");
+    //string ScopeList with BinaryEncoding{TextEncoding = TextEncoding.UTF8, Length = (Len - 1) as uint};
+    // WORKAROUND FOR bug 23734 [ValueSystem] Stream Encoding does not support UTF8 as Text Encoding.
+    binary ScopeList with BinaryEncoding{Length = (Length - 1) as uint};
+}
+
+// RFC 4039
+type RapidCommit
+{
+    (byte where value == 80) Code;
+    ushort Len where value == 0; // Length must be 0
+}
+
+// RFC 4702
+type ClientFQDN
+{
+    (byte where value == 81) Code;
+    ushort Len where value >= 3; // Length must be equal or greater than 3
+    Flags Flag;
+    byte Rcode1;
+    byte Rcode2;
+    // WORKAROUND for capture.Based on RFC, it should use DomainStringNotCompressed where Flag.E == true to parsing.
+    ([|((Flags.E as ushort) & (Flag as ushort)) == (Flags.E as ushort)|] DNS.DomainStringNotCompressed | string) DomainName with BinaryEncoding{Length = (Len - 3) as uint, TextEncoding = TextEncoding.ASCII};
+}
+
+pattern Flags = flags byte
+{
+    MBZ = 0xF0,
+    N = 0x8,
+    E = 0x4,
+    O = 0x2,
+    S = 0x1
+};
+
+// RFC 4174
+type ISNS
+{
+    (byte where value == 83) Code;
+    ushort Length where value >= 14; // Length minimun is 14
+    ISNSFunctions IsnsFunction;
+    DDAccess DDAccess;
+    AdministrativeFlags AdministrativeFlag;
+    ISNSServerSecurityBitmap ISNSServerSecurityBitmap;
+    IPv4Address A;
+    optional [|(AdministrativeFlags.H & AdministrativeFlag) == AdministrativeFlags.H && Length >= 18|] IPv4Address B;
+    optional [|Length >18|] array<IPv4Address> AdditionalSecondaryiSNSServers with BinaryEncoding{Length = (Length - 18) / 4 as uint};
+}
+
+pattern ISNSFunctions = flags ushort 
+{
+    Reserved = 0xFFF8,
+    S = 0x4,
+    A = 0x2,
+    E = 0x1
+};
+
+pattern DDAccess = flags ushort
+{
+    Reserved = 0xFFC0,
+    IF = 0x20,
+    TF = 0x10,
+    IS = 0x8,
+    TS = 0x4,
+    C = 0x2,
+    E = 0x1
+};
+
+pattern AdministrativeFlags = flags ushort
+{
+    Reserved = 0xFFF0,
+    D = 0x8,
+    M = 0x4,
+    H = 0x2,
+    E = 0x1
+};
+
+pattern ISNSServerSecurityBitmap = flags uint
+{
+    Reserved = 0xFFFFFF80,
+    T = 0x40,
+    X = 0x20,
+    P = 0x10,
+    A = 0x8,
+    M = 0x4,
+    S = 0x2,
+    E = 0x1
+};
+
+
+// RFC 2241
+type NDSServer
+{
+    (byte where value == 85) Code;
+    ushort Len where value % 4 == 0 && value >= 4; // the Length MUST be a multiple of 4
+    array<IPv4Address> Address with BinaryEncoding{Length = Len / 4 as uint};
+}
+
+type NDSTreeName
+{
+    (byte where value == 86) Code;
+    ushort Len where (value + 2) <= 255; // The maximum length for each instance of this option is 255
+    string NDSTreeName with BinaryEncoding{TextEncoding = TextEncoding.UTF8, Length = Len as uint};
+}
+
+type NDSContext
+{
+    (byte where value == 87) Code;
+    ushort Len where (value +2 ) <= 255; // A single DHCP option can only contain 255 octets
+    string InitialNDSContext with BinaryEncoding{TextEncoding = TextEncoding.UTF8, Length = Len  as uint};
+}
+
+// RFC 4280
+type BCMCSControllerDomainNamelist
+{
+    (byte where value == 88) Code;
+    ushort Len;
+    DomainString BCMCSController;
+}
+
+type BCMCSControllerIPv4Address
+{
+    (byte where value == 89) Code;
+    ushort Len where value % 4 == 0 && value >= 4; // Its minimum length is 4, and the length MUST be a multiple of 4
+    array<IPv4Address> Address with BinaryEncoding{Length = Len / 4 as uint};
+}
+
+// RFC 3118
+type Authentication
+{
+    (byte where value == 90) Code;
+    ushort Length;
+    ProtocolField ProtocolField;
+    byte Algorithm;
+    byte RDM;
+    long ReplayDetection;
+    binary AuthenticationInfo with BinaryEncoding{Length = Length - 7 as uint};
+}
+
+
+pattern ProtocolField = enum byte
+{
+    ConfigurationToken = 0,
+    DelayedAuthentication = 1
+};
+
+// RFC 4388
+type ClientLastTransactionTime
+{
+    (byte where value == 91) Code;
+    ushort Len where value == 4; // The length must be 4
+    uint Seconds;
+}
+
+type AssociatedIp
+{
+    (byte where value == 92) Code;
+    ushort Len where value >= 4 && value % 4 == 0; // the Length MUST always be a multiple of 4
+    array<IPv4Address> Addresses with BinaryEncoding{Length = Len / 4 as uint};
+}
+
+// RFC 4578
+type ClientSystemArchitecture
+{
+    (byte where value == 93) Code;
+    ushort Len;
+    ArchitectureType Type with BinaryEncoding{Length = Len};
+}
+
+pattern ArchitectureType = enum ushort
+{
+    IntelX86PC = 0,
+    NECPC98 = 1,
+    EFIItanium = 2,
+    DECAlpha = 3,
+    Arcx86 = 4,
+    IntelLeanClient = 5,
+    EFIIA32 = 6,
+    EFIXBC = 7,
+    EFIXscale = 8,
+    EFIXsx8664 = 9
+};
+
+type ClientNetworkInterfaceIdentifier
+{
+    (byte where value == 94) Code;
+    ushort Len where value == 3;// The length must be 3
+    byte Type where ValidationCheck(value == 1, null,() => "DHCP: The Type field in type ClientNetworkInterfaceIdentifier must be set to 1, not " + DecToHexFormat(value) + ".");
+    byte Major;
+    byte Minor;
+}
+
+type ClientMachineIdentifier
+{
+    (byte where value == 97) Code;
+    ushort Len;
+    byte T;
+    binary MachineIdentifier with BinaryEncoding{Length = Len -1 as uint};
+}
+
+// RFC 2485
+type UserAuthentication
+{
+    (byte where value == 98) Code;
+    ushort Length;
+    string URLList with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = Length as uint};
+}
+
+// RFC 4776
+type Overall
+{
+    (byte where value == 99) Code;
+    ushort Len where value >= 3; // The minimum length is 3
+    byte What;
+    string CountryCode with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = 2 as uint};
+    // WORKAROUND for Bug 18057 Support using "Width" attribtue in BinaryEncoding aspect to specify a field's size
+    (Blob[Len as uint] | array<CivicAddress>) Address;
+}
+
+type CivicAddress
+{
+    byte CAtype;
+    byte CAlength;
+    string CAValue with BinaryEncoding{TextEncoding = TextEncoding.UTF8, Length = CAlength as uint};
+}
+
+// RFC 4833
+type NewTimezonePCode
+{
+    (byte where value == 100) Code;
+    ushort Len;
+    string TZPOSIXString with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = Len  as uint};
+}
+
+type NewTimezoneTCode
+{
+    (byte where value == 101) Code;
+    ushort Len;
+    string TimezonePCode with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = Len  as uint};
+}
+
+// RFC 2937
+type NameServiceSearch
+{
+    (byte where value == 117) Code;
+    ushort Len;
+    array<NameServiceSearchOrder> Ns with BinaryEncoding{Length = Len / 2 as uint};
+}
+
+pattern NameServiceSearchOrder = enum ushort
+{
+    DomainNameServerOption = 6,
+    NetworkInformationServersOption = 41,
+    NetBIOSTCPIPNameServerOption = 44,
+    NetworkInformatioice = 65
+};
+
+// RFC 3011
+type SubnetSelection
+{
+    (byte where value == 118) Code;
+    ushort Len where value == 4; // The Length should be four
+    IPv4Address Address;
+}
+
+// RFC 3397
+type DomainSearch
+{
+    (byte where value == 119) Code;
+    ushort Len;
+    DomainString SeachString;
+}
+
+// RFC 3361
+type DomainNameList
+{
+    (byte where value == 120) Code;
+    ushort Len;
+    byte Enc;
+    ([|Enc == 0|] DomainString
+    | [|Enc == 1|] array<IPv4Address>) Address with BinaryEncoding{Length = (Len - 1) as uint};
+}
+
+// RFC 3442
+type ClasslessStaticRoute
+{
+    (byte where value == 121) Code;
+    ushort Len where value >= 5; // its minimum length is 5 bytes
+    (Blob[Len as uint] | array<DestinationRouter>) DestinationRouter;
+}
+
+type DestinationRouter
+{
+    byte Width where ValidationCheck(value <= 32, null, () => "DHCP: The Width field in type DestinationRouter must be set to less than or equal to 32, not " + DecToHexFormat(value) + "."); 
+    array<byte> SubnetMask with BinaryEncoding{Length = (Width + 7) / 8 as uint};
+    IPv4Address Router;
+}
+
+// RFC 3495 
+type CableLabsClientConfiguration
+{
+    (byte where value ==122) Code;
+    ushort Length;
+    // WORKAROUND for Bug 18057 Support using "Width" attribtue in BinaryEncoding aspect to specify a field's size
+    (Blob[Length as uint] | array<SubOptions>) SubOptions;
+    
+}
+
+type SubOptions
+{
+    // WORKAROUND for bug 24279 [BinaryCodec] Not implemented: Unhandle enum type in Unions 
+    byte SubCode where ValidationCheck(value is SubCode, null, "DHCP: The SubCode 9-255 field in type SubOptions is reserved for future extensions.");
+    byte Length;
+    binary SubInformation with BinaryEncoding{Length = Length as uint};
+}
+
+pattern SubCode = enum byte
+{
+    TSPsPrimaryDHCPServerAddress = 1,
+    TSPsSecondaryDHCPServerAddress = 2,
+    TSPsProvisioningServerAddress = 3,
+    TSPsASREQASREPBackoffandRetry = 4,
+    TSPsAPREQAPREPBackoffandRetry = 5,
+    TSPsKerberosRealmName = 6,
+    TSPsTicketGrantingServerUtilization = 7,
+    TSPsProvisioningTimerValue = 8
+};
+
+// RFC 6225
+type GeoConf
+{
+    (byte where value == 123) Code;
+    ushort Length where value == 16; // Length is 16
+    byte LaRes with BinaryEncoding{Width = 6};
+    long Latitude with BinaryEncoding{Width = 34};
+    byte LoRes with BinaryEncoding{Width = 6};
+    long Longitude with BinaryEncoding{Width = 34};
+    byte AType with BinaryEncoding{Width = 4};
+    byte AltRes with BinaryEncoding{Width = 6};
+    uint Altitude with BinaryEncoding{Width = 30};
+    byte Res with BinaryEncoding{Width = 5};
+    byte Datum with BinaryEncoding{Width = 3};
+}
+
+type GeoLoc
+{
+    (byte where value == 144) Code;
+    ushort Length where value == 16; // Length is 16
+    byte LatUnc with BinaryEncoding{Width = 6};
+    long Latitude with BinaryEncoding{Width = 34};
+    byte LongUnc with BinaryEncoding{Width = 6};
+    long Longitude with BinaryEncoding{Width = 34};
+    byte AType with BinaryEncoding{Width = 4};
+    byte AltUnc with BinaryEncoding{Width = 6};
+    uint Altitude with BinaryEncoding{Width = 30};
+    byte Ver with BinaryEncoding{Width = 2};
+    byte Res with BinaryEncoding{Width = 3};
+    byte Datum with BinaryEncoding{Width = 3};
+}
+
+// RFC 3925
+type VIVendorClass
+{
+    (byte where value == 124) OptionCode;
+    byte OptionLength;
+    // WORKAROUND for Bug 18057 Support using "Width" attribtue in BinaryEncoding aspect to specify a field's size
+    (Blob[OptionLength as uint] | array<OptionData>) OptionData;
+}
+
+type OptionData
+{
+    ushort Enterprise;
+    byte DataLen;
+    VendorClassData ClassData;
+}
+
+type VendorClassData
+{
+    byte VendorClassLen;
+    binary OpaqueData with BinaryEncoding{Length = VendorClassLen as uint};
+}
+
+type VIVendorSpecificInformation
+{
+    (byte where value == 125) OptionCode;
+    byte OptionLength where ValidationCheck(value > 3 , null, () => "DHCP: The Enterprise number in type VIVendorSpecificInformation must be set to greater or equal to 1, not " + DecToHexFormat(value) + ".");
+   // WORKAROUND for Bug 18057 Support using "Width" attribtue in BinaryEncoding aspect to specify a field's size
+    (Blob[OptionLength as uint] | array<OptionData>) OptionData;
+}
+
+// RFC 5192
+type PANAAuthenticationAgent
+{
+    (byte where value == 136) OptionCode;
+    byte OptionLength where value >= 4 && value % 4 == 0; // The Length MUST always be a multiple of 4
+    array<IPv4Address> IPv4Address with BinaryEncoding{Length = OptionLength / 4 as uint};
+}
+
+// RFC 5223
+type LoSTServer
+{
+    (byte where value == 137) OptionCode;
+    byte OptionLength;
+    DomainString DomainName;
+}
+
+// RFC 5417
+type CAPWAPAccessController
+{
+    (byte where value == 138) OptionCode;
+    byte OptionLength where value % 4 == 0; // The Length MUST always be a multiple of 4
+    array<IPv4Address> ACIPv4Address with BinaryEncoding{Length = OptionLength / 4 as uint};
+}
+
+// RFC 5678
+type MoSIPv4Address
+{
+    (byte where value == 139) OptionCode;
+    ushort Length;
+    // WORKAROUND for Bug 18057 Support using "Width" attribtue in BinaryEncoding aspect to specify a field's size
+    (Blob[Length as uint] | array<SubOption>) SubOption;
+}
+
+type SubOption
+{
+    SubOptCode SubOptCode;
+    byte Length;
+    array<IPv4Address> IPAddress with BinaryEncoding{Length = Length as uint};
+}
+
+pattern SubOptCode = enum byte
+{
+    IS = 1,
+    CS = 2,
+    ES = 3
+};
+
+// RFC 6011
+type SIPUAConfigurationServiceDomains
+{
+    (byte where value == 141) Code;
+    ushort Len;
+    DomainString Searchstring;
+}
+
+// RFC 6153
+type IPv4AddressANDSF
+{
+    (byte where value == 142) OptionCode;
+    ushort Length;
+    array<IPv4Address> IPAddress with BinaryEncoding{Length = Length / 4 as uint};
+}
+
+// RFC 5859
+type TFTPServerAddress
+{
+    (byte where value == 150) Code;
+    ushort Len where value >= 4 && value % 4 == 0; // The option minimum length is 4 and the Length MUST always be a multiple of 4
+    array<IPv4Address> IPv4Address with BinaryEncoding{Length = Len / 4 as uint};
+}
+
+// RFC 5071
+type Magic
+{
+    (byte where value == 208) Code;
+    ushort Length where value == 4; // The length is always four
+    IPv4Address M where ValidationCheck(value.Octets == $[F100747E], null, "DHCP: The IPv4Address field in type Magic must be set to f1:00:74:7e.");
+}
+
+type ConfigurationFile
+{
+    (byte where value == 209) Code;
+    ushort Len;
+    string ConfigFile with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = Len as uint};
+}
+
+type PathPrefix
+{
+    (byte where value == 210) Code;
+    ushort Len;
+    string PathPrefix with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = Len as uint};
+}
+
+type RebootTime
+{
+    (byte where value == 211) Code;
+    ushort Len where value == 4; // The length is always 4
+    int RebootTime;
+}
+
+// RFC 5969
+type SixRd
+{
+    (byte where value == 212) OptionCode;
+    byte OpionLength;
+    byte IPv4MaskLen where ValidationCheck(value <= 32, null, () => "DHCP: The IPv4MaskLen field in type SixRd may be set to any value that is less than or equal to 32, not " + DecToHexFormat(value) + ".");
+    byte RdPrefixLen;
+    binary RdPrefix with BinaryEncoding{Length = 16};
+    array<IPv4Address> Address with BinaryEncoding{Length = (OpionLength - 18) / 4 as uint};
+}
+
+// RFC 5986
+type AccessNetworkDomainName
+{
+    (byte where value == 213) Code;
+    ushort Length;
+    DomainString DomainName;
+}
+
+// WORKAROUND for Bug 18057 Support using "Width" attribtue in BinaryEncoding aspect to specify a field's size
+optional DhcpMessage DhcpMessageDecoder(stream s, bool isRequest)
+{
+    optional DhcpMessage msg = BinaryDecoder<DhcpMessage>(s);
+    if (msg == nothing)
+    {
+        return nothing;
+    }    
+    DhcpMessage m = msg as DhcpMessage;
+    
+    AssignFieldEncodingInfo(m, "Options", s.BitPosition - 32, s.BitLength - s.BitPosition + 32);
+    optional OptionsType options = OptionsDecoder(m.Options, s, m, isRequest);
+    if (options == nothing)
+    {
+        return nothing;
+    }
+    m.Options = options as OptionsType;
+    return m;
+}
+
+///////////////////////////////////////////////
+// Options for DHCPE
+
+// Option is used to consume the data in stream.
+type ConsumeDataOption
+{
+    byte Code;
+    byte Len;
+    binary Data with BinaryEncoding{Length = Len as uint};
+}
+
+// MS-DHCPE Vendor-Specific Option - Microsoft Disable NetBIOS Option
+type DHCPEVendorSpecificInfoMicrosoftDisableNetBIOS
+{
+    (byte where value == 1) VendorSpecificOptionCode;
+    byte VendorSpecificOptionLength where ValidationCheckValue(value == 4, null, true, ReferenceType.Type, "DHCP", "VendorSpecificOptionLength", "DHCPEVendorSpecificInfoMicrosoftDisableNetBIOS", "0x04", value);
+    uint VendorSpecificOptionData;
+}
+
+// MS-DHCPE Vendor-Specific Option - Microsoft Release DHCP Lease on Shutdown Option
+type DHCPEVendorSpecificInfoMicrosoftReleaseDHCPLeaseOnShutdown
+{
+    (byte where value == 2) VendorSpecificOptionCode;
+    byte VendorSpecificOptionLength where ValidationCheckValue(value == 4, null, true, ReferenceType.Type, "DHCP", "VendorSpecificOptionLength", "DHCPEVendorSpecificInfoMicrosoftReleaseDHCPLeaseOnShutdown", "0x04", value);
+    uint VendorSpecificOptionData;
+}
+
+pattern CalculatedMetric  = enum ulong
+{
+    BasedOnLinkSpeed = 0,
+    GreaterThan200Mbps = 0x0000000A,
+    GreaterThan80Mbps = 0x00000014,
+    GreaterThan20Mbps = 0x00000019,
+    GreaterThan4Mbps = 0x0000001E,
+    GreaterThan500Kbps = 0x00000028,
+    LessThanOrEqualTo500Kbps = 0x00000032
+};
+
+// MS-DHCPE Vendor-Specific Option - Microsoft Default Router Metric Base Option
+type DHCPEVendorSpecificInfoMicrosoftDefaultRouterMetricBase
+{
+    (byte where value == 3) VendorSpecificOptionCode;
+    byte VendorSpecificOptionLength where ValidationCheckValue(value == 4, null, true, ReferenceType.Type, "DHCP", "VendorSpecificOptionLength", "DHCPEVendorSpecificInfoMicrosoftDefaultRouterMetricBase", "0x04", value);
+    uint VendorSpecificOptionData where ValidationCheckEnumValue(value is CalculatedMetric, null, false, ReferenceType.Type, "DHCP", "VendorSpecificOptionData", "DHCPEVendorSpecificInfoMicrosoftDefaultRouterMetricBase", "zero, 0x0000000A, 0x00000014, 0x00000019, 0x0000001E, 0x00000028, 0x00000032", value);
+}
+
+// MS-DHCPE Vendor-Specific Option - Rogue Detection Request Option
+type DHCPEVendorSpecificInfoRogueDetectionRequest
+{
+    (byte where value == 94) VendorSpecificOptionCode;
+    byte VendorSpecificOptionLength where ValidationCheckValue(value == 0, null, true, ReferenceType.Type, "DHCP", "VendorSpecificOptionLength", "DHCPEVendorSpecificInfoRogueDetectionRequest", "0x00", value);
+}
+
+// MS-DHCPE Vendor-Specific Option - Rogue Detection Reply Option
+type DHCPEVendorSpecificInfoRogueDetectionReply
+{
+    (byte where value == 95) VendorSpecificOptionCode;
+    byte VendorSpecificOptionLength;
+    string VendorSpecificOptionData with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = VendorSpecificOptionLength as uint};
+}
+
+// MS-DHCPE User Class Option Sent by DHCPv4 Client to DHCPv4 Server
+type DHCPEUserClassOptionClientToServer
+{
+    (byte where value == 77) OptionCode;
+    ushort OptionLength;
+    string UserClassdata with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = OptionLength as uint};
+}
+
+// MS-DHCPE User Class Option Sent by DHCPv4 Server to DHCPv4 Client
+type DHCPEUserClassOptionServerToClient
+{
+    (byte where value == 77) OptionCode;
+    ushort OptionLength;
+    ushort UserClassBinaryDataLength;
+    binary UserClassBinaryData with BinaryEncoding{Length = UserClassBinaryDataLength as uint};
+    optional [| UserClassBinaryDataLength % 4 != 0 |] array<byte> Padding with BinaryEncoding{Length = 4 - UserClassBinaryDataLength % 4 as uint};
+    ushort UserClassNameLength;
+    binary UserClassName with BinaryEncoding{Length = UserClassNameLength as uint};
+    ushort UserClassDescriptionLength;
+    binary UserClassDescription with BinaryEncoding{Length = UserClassDescriptionLength as uint};
+}
+
+// MS-DHCPE Microsoft Classless Static Route Option
+type DHCPEMicrosoftClasslessStaticRouteOption
+{
+    (byte where value == 249) OptionCode;
+    ushort OptionLength where value >= 5; // its minimum length is 5 bytes
+    (Blob[OptionLength as uint] | array<DestinationRouter>) DestinationRouter;
+}
+
+// MS-DHCPE Microsoft Encoding Long Options Packet 
+type DHCPEMicrosoftEncodingLongOptionsPacketOption
+{
+    (byte where value == 250) OptionCode;
+    byte OptionLength;
+    binary OptionData with BinaryEncoding{Length = OptionLength as uint};
+}
+
+type BinaryUINT
+{
+    uint Value with BinaryEncoding{Length = 4 as uint};
+}
+
+type BinaryString
+{
+    string Value with BinaryEncoding{TextEncoding = TextEncoding.ASCII};
+}
+
+optional OptionsType OptionsDecoder(OptionsType messageOptions, stream ss, any message msg, bool isRequest)
+{
+    int beginBitPosition = ss.BitPosition;
+    int currentBitPosition = ss.BitPosition;
+    array<OptionsChoice> arrOfOptionsChoice = [];
+    array<DataChunks> arrOfChunks = [];
+    bool isInsufficientData = false;
+    while (ss.BytePosition < ss.ByteLength)
+    {
+        if (currentBitPosition + 8 > ss.BitLength)
+        {
+            ReportInsufficientData(msg, DiagnosisLevel.Error, ReferenceType.Type, "DHCP", "Option", "OptionsType");
+            isInsufficientData = true;
+            break;
+        }
+        var currentOptionCode = ss.PeekByte(currentBitPosition);
+        //end of arrOfOptionsChoice
+        if ((currentOptionCode as byte) == 255)
+        {
+            // Exit the circle if current option is EndOption.
+            break;
+        }
+        
+        if (currentOptionCode == 0)
+        {
+            // Continue to decode next option if current option is PadOption
+            var padOption = BinaryDecoder<PadOption>(ss);
+            arrOfOptionsChoice += [new OptionsChoice{Option = padOption as PadOption}];
+            arrOfChunks += [new DataChunks{DataSource = ss, Chunks = [new BinaryChunk{BitPosition = currentBitPosition, BitLength = ss.BitPosition - currentBitPosition }]}];
+            AssignFieldEncodingInfo(arrOfOptionsChoice[arrOfOptionsChoice.Count - 1], "Option", currentBitPosition, ss.BitPosition - currentBitPosition);
+            currentBitPosition = ss.BitPosition;
+            continue;
+        }
+        
+        if (currentBitPosition + 16 > ss.BitLength)
+        {
+            ReportInsufficientData(msg, DiagnosisLevel.Error, ReferenceType.Type, "DHCP", "Option", "OptionsType");
+            isInsufficientData = true;
+            break;
+        }
+        uint currentOptionRealLength = 0;
+        var currentOptionLen = ss.PeekByte(currentBitPosition + 8);
+        
+        if (currentBitPosition + (1 + 1 + currentOptionLen as int) * 8 > ss.BitLength)
+        {
+            ReportInsufficientData(msg, DiagnosisLevel.Error, ReferenceType.Type, "DHCP", "Option", "OptionsType");
+            isInsufficientData = true;
+            break;
+        }
+        var nextOptionCode = ss.PeekByte(currentBitPosition + (1 + 1 + currentOptionLen as int) * 8);
+        
+        binary buffer = $[];
+        
+        if (nextOptionCode == 250)
+        {
+            /* MS-DHCPE: 2.2.9   DHCPv4 Option Code 250 (0xFA) - Microsoft Encoding Long Options Packet
+             * Copy buffer if next option is Microsoft Encoding Long Options Packet.
+             */
+            binary dataBuffer = $[];
+            uint dataLen = 0;
+            
+            optional ConsumeDataOption opt = BinaryDecoder<ConsumeDataOption>(ss);
+            ConsumeDataOption option = opt as ConsumeDataOption;
+            buffer = [option.Code] as binary;
+            dataLen = option.Len;
+            dataBuffer = option.Data;
+            
+            do
+            {
+                optional DHCPEMicrosoftEncodingLongOptionsPacketOption continueOption = BinaryDecoder<DHCPEMicrosoftEncodingLongOptionsPacketOption>(ss);
+                if (continueOption == nothing)
+                {
+                    break;
+                }
+                dataLen += (continueOption as DHCPEMicrosoftEncodingLongOptionsPacketOption).OptionLength;
+                dataBuffer += (continueOption as DHCPEMicrosoftEncodingLongOptionsPacketOption).OptionData;
+            } while (true);
+            
+            buffer += [((dataLen as ushort) >> 8) as byte] as binary;
+            buffer += [((dataLen as ushort) & 0x00FF) as byte] as binary;
+            buffer += dataBuffer;
+            
+            currentOptionRealLength = dataLen;
+        }
+        else
+        {
+            optional ConsumeDataOption opt = BinaryDecoder<ConsumeDataOption>(ss);
+            ConsumeDataOption option = opt as ConsumeDataOption;
+            buffer = [option.Code] as binary;
+            buffer += $[00];
+            buffer += [option.Len] as binary;
+            buffer += option.Data;
+            
+            currentOptionRealLength = option.Len;
+        }
+        
+        if (currentOptionCode == 77)
+        {
+            int sumVendorClassDataLength = 0;
+            array<byte> vendorClassDataLengths = [];
+            
+            do
+            {
+                if (sumVendorClassDataLength >= currentOptionRealLength)
+                {
+                    break;
+                }
+                byte vendorClassDataLength = buffer.PeekByte((3 + sumVendorClassDataLength) * 8);
+                sumVendorClassDataLength += 1;
+                sumVendorClassDataLength += (vendorClassDataLength as byte);
+                vendorClassDataLengths += [vendorClassDataLength as byte];
+            } while (true);
+            
+            if (sumVendorClassDataLength == currentOptionRealLength && !(0 in vendorClassDataLengths))
+            {
+                optional UserClassOption opt = BinaryDecoder<UserClassOption>(buffer);
+                UserClassOption option = opt as UserClassOption;
+                binary data = (option.UserClassdata as Blob).Data;
+                stream s = data as stream;
+                array<UserClassData> arr = [];
+                array<DataChunks> chunks = [];
+                int curBitPosition = s.BitPosition;
+                while (s.BytePosition < s.ByteLength)
+                {
+                    optional UserClassData u = BinaryDecoder<UserClassData>(s);
+                    if (u == nothing)
+                    {
+                        break;
+                    }
+                    UserClassData uc = u as UserClassData;
+                    AssignFieldEncodingInfo(uc, "UCLen", currentBitPosition + 16 + curBitPosition, 8);
+                    AssignFieldEncodingInfo(uc, "Data", currentBitPosition + 24 + curBitPosition, s.BitPosition - curBitPosition - 8);
+                    arr += [uc];
+                    chunks += [new DataChunks{DataSource = ss, Chunks = [new BinaryChunk{BitPosition = currentBitPosition + 16 + curBitPosition, BitLength = s.BitPosition - curBitPosition }]}];
+                    curBitPosition = s.BitPosition;
+                }
+                option.UserClassdata = arr as array<UserClassData>;
+                option.AssociateArrayField("UserClassdata", chunks);
+                arrOfOptionsChoice += [new OptionsChoice{ Option = option}];
+            }
+            else if (isRequest)
+            {
+                optional DHCPEUserClassOptionClientToServer dhcpeOption = BinaryDecoder<DHCPEUserClassOptionClientToServer>(buffer as stream);
+                if (dhcpeOption != nothing)
+                {
+                    arrOfOptionsChoice += [new OptionsChoice{ Option = dhcpeOption as DHCPEUserClassOptionClientToServer}];
+                }
+                else
+                {
+                    ReportInsufficientData(null, DiagnosisLevel.Warning, ReferenceType.Type, "DHCP", "DHCPEUserClassOptionClientToServer", "Options");
+                }
+            }
+            else
+            {
+                optional DHCPEUserClassOptionServerToClient dhcpeOption = BinaryDecoder<DHCPEUserClassOptionServerToClient>(buffer as stream);
+                if (dhcpeOption != nothing)
+                {
+                    arrOfOptionsChoice += [new OptionsChoice{ Option = dhcpeOption as DHCPEUserClassOptionServerToClient}];
+                }
+                else
+                {
+                    ReportInsufficientData(null, DiagnosisLevel.Warning, ReferenceType.Type, "DHCP", "DHCPEUserClassOptionServerToClient", "Options");
+                }
+            }
+            
+            arrOfChunks += [new DataChunks{DataSource = ss, Chunks = [new BinaryChunk{BitPosition = currentBitPosition, BitLength = ss.BitPosition - currentBitPosition }]}];
+            AssignFieldEncodingInfo(arrOfOptionsChoice[arrOfOptionsChoice.Count - 1], "Option", currentBitPosition, ss.BitPosition - currentBitPosition);
+            currentBitPosition = ss.BitPosition;
+        }
+        else
+        {
+            var optionsChoiceOptional = BinaryDecoder<OptionsChoice>(buffer);
+            var optionsChoice = optionsChoiceOptional as OptionsChoice;
+            switch (optionsChoice.Option)
+            {
+                case opt:Overall =>
+                binary data = (opt.Address as Blob).Data;
+                stream s = data;
+                array<CivicAddress> temp = [];
+                array<DataChunks> chunks = [];
+                int curBitPosition = s.BitPosition;
+                while (s.BytePosition < s.ByteLength)
+                {
+                    optional CivicAddress c = BinaryDecoder<CivicAddress>(s);
+                    if (c is nothing)
+                    {
+                        break;
+                    }
+                    CivicAddress ca = c as CivicAddress;                  
+                    AssignFieldEncodingInfo(ca, "CAtype", currentBitPosition + 40 + curBitPosition, 8);
+                    AssignFieldEncodingInfo(ca, "CAlength", currentBitPosition + 48 + curBitPosition, 8);
+                    AssignFieldEncodingInfo(ca, "CAValue", currentBitPosition + 56 + curBitPosition, s.BitPosition - curBitPosition - 16);
+                    temp += [ca];
+                    chunks += [new DataChunks{DataSource = ss, Chunks = [new BinaryChunk{BitPosition = currentBitPosition + 40 +  curBitPosition, BitLength = s.BitPosition - curBitPosition }]}];
+                    curBitPosition = s.BitPosition;
+                }
+                opt.Address = temp as array<CivicAddress>;
+                opt.AssociateArrayField("Address", chunks);
+                optionsChoice.Option = opt;
+                
+                case opt:CableLabsClientConfiguration =>
+                binary data = (opt.SubOptions as Blob).Data;
+                stream s = data;
+                array<SubOptions> temp = [];
+                array<DataChunks> chunks = [];
+                int curBitPosition = s.BitPosition;
+                while (s.BytePosition < s.ByteLength)
+                {
+                    optional SubOptions subo = BinaryDecoder<SubOptions>(s);
+                    if (subo is nothing)
+                    {
+                        break;
+                    }
+                    SubOptions sub = subo as SubOptions;
+                    AssignFieldEncodingInfo(sub, "SubCode", currentBitPosition + 16 + curBitPosition, 8);
+                    AssignFieldEncodingInfo(sub, "Length", currentBitPosition + 24 + curBitPosition, 8);
+                    AssignFieldEncodingInfo(sub, "SubInformation", currentBitPosition + 32 + curBitPosition, s.BitPosition - curBitPosition - 16);
+                    temp += [sub];
+                    chunks += [new DataChunks{DataSource = ss, Chunks = [new BinaryChunk{BitPosition = currentBitPosition + 16 +  curBitPosition, BitLength = s.BitPosition - curBitPosition }]}];
+                    curBitPosition = s.BitPosition;
+                }
+                opt.SubOptions = temp as array<SubOptions>;
+                opt.AssociateArrayField("SubOptions", chunks);
+                optionsChoice.Option = opt;               
+                
+                case opt:VIVendorClass =>
+                binary data = (opt.OptionData as Blob).Data;
+                stream s = data;
+                array<OptionData> temp = [];
+                array<DataChunks> chunks = [];
+                int curBitPosition = s.BitPosition;
+                while (s.BytePosition < s.ByteLength)
+                {
+                    optional OptionData d = BinaryDecoder<OptionData>(s);
+                    if (d is nothing)
+                    {
+                        break;
+                    }
+                    OptionData od = d as OptionData;
+                    AssignFieldEncodingInfo(od, "Enterprise", currentBitPosition + 16 + curBitPosition, 16);
+                    AssignFieldEncodingInfo(od, "DataLen", currentBitPosition + 32 + curBitPosition, 8);
+                    AssignFieldEncodingInfo(od, "ClassData", currentBitPosition + 40 + curBitPosition, s.BitPosition - curBitPosition - 24);
+                    temp += [od];
+                    chunks += [new DataChunks{DataSource = ss, Chunks = [new BinaryChunk{BitPosition = currentBitPosition + 16 +  curBitPosition, BitLength = s.BitPosition - curBitPosition }]}];
+                    curBitPosition = s.BitPosition;                   
+                }
+                ValidationCheck(temp.Count > 0, null, "Count must be at least 1.");
+                opt.OptionData = temp as array<OptionData>;
+                opt.AssociateArrayField("OptionData", chunks);
+                optionsChoice.Option = opt;    
+                
+                case opt:DHCPEMicrosoftClasslessStaticRouteOption =>
+                binary data = (opt.DestinationRouter as Blob).Data;
+                stream s = data;
+                array<DestinationRouter> temp = [];
+                array<DataChunks> chunks = [];
+                int curBitPosition = s.BitPosition;
+                while (s.BytePosition < s.ByteLength)
+                {
+                    optional DestinationRouter des = BinaryDecoder<DestinationRouter>(s);
+                    if (des is nothing)
+                    {
+                        break;
+                    }           
+                    DestinationRouter dr = des as DestinationRouter;
+                    AssignFieldEncodingInfo(dr, "Width", currentBitPosition + 16 + curBitPosition, 8);
+                    AssignFieldEncodingInfo(dr, "SubnetMask", currentBitPosition + 24 + curBitPosition, s.BitPosition - curBitPosition - 40);
+                    AssignFieldEncodingInfo(dr, "Router", currentBitPosition + s.BitPosition - 16, 32);
+                    temp += [dr];
+                    chunks += [new DataChunks{DataSource = ss, Chunks = [new BinaryChunk{BitPosition = currentBitPosition + 16 +  curBitPosition, BitLength = s.BitPosition - curBitPosition }]}];
+                    curBitPosition = s.BitPosition;         
+                }
+                opt.DestinationRouter = temp as array<DestinationRouter>;
+                opt.AssociateArrayField("DestinationRouter", chunks);
+                optionsChoice.Option = opt;               
+                
+                case opt:MoSIPv4Address =>
+                binary data = (opt.SubOption as Blob).Data;
+                stream s = data;
+                array<SubOption> temp = [];
+                array<DataChunks> chunks = [];
+                int curBitPosition = s.BitPosition;
+                while (s.BytePosition < s.ByteLength)
+                {
+                    optional SubOption subo = BinaryDecoder<SubOption>(s);
+                    if (subo is nothing)
+                    {
+                        break;
+                    }
+                    SubOption sub = subo as SubOption;
+                    AssignFieldEncodingInfo(sub, "SubOptCode", currentBitPosition + 16 + curBitPosition, 8);
+                    AssignFieldEncodingInfo(sub, "Length", currentBitPosition + 24 + curBitPosition, 8);
+                    AssignFieldEncodingInfo(sub, "IPAddress", currentBitPosition + 32 + curBitPosition, s.BitPosition - curBitPosition - 16);
+                    temp += [sub];
+                    chunks += [new DataChunks{DataSource = ss, Chunks = [new BinaryChunk{BitPosition = currentBitPosition + 16 +  curBitPosition, BitLength = s.BitPosition - curBitPosition }]}];
+                    curBitPosition = s.BitPosition;     
+                }
+                opt.SubOption = temp as array<SubOption>;
+                opt.AssociateArrayField("SubOption", chunks);
+                optionsChoice.Option = opt;
+                
+                case opt:ClasslessStaticRoute =>
+                binary data = (opt.DestinationRouter as Blob).Data;
+                stream s = data;
+                array<DestinationRouter> temp = [];
+                array<DataChunks> chunks = [];
+                int curBitPosition = s.BitPosition;
+                while (s.BytePosition < s.ByteLength)
+                {
+                    optional DestinationRouter des = BinaryDecoder<DestinationRouter>(s);
+                    if (des is nothing)
+                    {
+                        break;
+                    }           
+                    DestinationRouter dr = des as DestinationRouter;
+                    AssignFieldEncodingInfo(dr, "Width", currentBitPosition + 16 + curBitPosition, 8);
+                    AssignFieldEncodingInfo(dr, "SubnetMask", currentBitPosition + 24 + curBitPosition, s.BitPosition - curBitPosition - 40);
+                    AssignFieldEncodingInfo(dr, "Router", currentBitPosition + s.BitPosition - 16, 32);
+                    temp += [dr];
+                    chunks += [new DataChunks{DataSource = ss, Chunks = [new BinaryChunk{BitPosition = currentBitPosition + 16 +  curBitPosition, BitLength = s.BitPosition - curBitPosition }]}];
+                    curBitPosition = s.BitPosition;         
+                }
+                opt.DestinationRouter = temp as array<DestinationRouter>;
+                opt.AssociateArrayField("DestinationRouter", chunks);
+                optionsChoice.Option = opt;               
+                
+                case opt:VendorSpecificInformation =>
+                binary data = (opt.Value as Blob).Data;
+                stream s = data;
+                array<VendorSpecificInfo> temp = [];
+                array<DataChunks> chunks = [];
+                int curBitPosition = s.BitPosition;
+                while (s.BytePosition < s.ByteLength)
+                {
+                    optional VendorInfoData infoo = BinaryDecoder<VendorInfoData>(s);
+                    if (infoo is nothing)
+                    {
+                        break;
+                    }
+                    VendorInfoData vendorInfo = infoo as VendorInfoData;
+                    AssignFieldEncodingInfo(vendorInfo, "Code", currentBitPosition + 16 + curBitPosition, 8);
+                    AssignFieldEncodingInfo(vendorInfo, "Len", currentBitPosition + 24 + curBitPosition, 8);
+                    AssignFieldEncodingInfo(vendorInfo, "Data", currentBitPosition + 32 + curBitPosition, s.BitPosition - curBitPosition - 16);
+                    
+                    VendorSpecificInfo info = vendorInfo;
+                    switch (vendorInfo.Code)
+                    {
+                        case $1 =>
+                        if (vendorInfo.Len == 0x04)
+                        {
+                            optional BinaryUINT infoData = BinaryDecoder<BinaryUINT>((vendorInfo.Data as Blob).Data);
+                            
+                            DHCPEVendorSpecificInfoMicrosoftDisableNetBIOS vendorOption = new DHCPEVendorSpecificInfoMicrosoftDisableNetBIOS();
+                            vendorOption.VendorSpecificOptionCode = vendorInfo.Code;
+                            vendorOption.VendorSpecificOptionLength = vendorInfo.Len;
+                            vendorOption.VendorSpecificOptionData = (infoData as BinaryUINT).Value;
+                            info = vendorOption;
+                        }
+                        
+                        case $2 =>
+                        if (vendorInfo.Len == 0x04)
+                        {
+                            optional BinaryUINT infoData = BinaryDecoder<BinaryUINT>((vendorInfo.Data as Blob).Data);
+                            
+                            DHCPEVendorSpecificInfoMicrosoftReleaseDHCPLeaseOnShutdown vendorOption = new DHCPEVendorSpecificInfoMicrosoftReleaseDHCPLeaseOnShutdown();
+                            vendorOption.VendorSpecificOptionCode = vendorInfo.Code;
+                            vendorOption.VendorSpecificOptionLength = vendorInfo.Len;
+                            vendorOption.VendorSpecificOptionData = (infoData as BinaryUINT).Value;
+                            info = vendorOption;
+                        }
+                        
+                        case $3 =>
+                        if (vendorInfo.Len == 0x04)
+                        {
+                            optional BinaryUINT infoData = BinaryDecoder<BinaryUINT>((vendorInfo.Data as Blob).Data);
+                            
+                            DHCPEVendorSpecificInfoMicrosoftDefaultRouterMetricBase vendorOption = new DHCPEVendorSpecificInfoMicrosoftDefaultRouterMetricBase();
+                            vendorOption.VendorSpecificOptionCode = vendorInfo.Code;
+                            vendorOption.VendorSpecificOptionLength = vendorInfo.Len;
+                            vendorOption.VendorSpecificOptionData = (infoData as BinaryUINT).Value;
+                            info = vendorOption;
+                        }
+                        
+                        case $94 =>
+                        if (vendorInfo.Len == 0x0)
+                        {
+                            DHCPEVendorSpecificInfoRogueDetectionRequest vendorOption = new DHCPEVendorSpecificInfoRogueDetectionRequest();
+                            vendorOption.VendorSpecificOptionCode = vendorInfo.Code;
+                            vendorOption.VendorSpecificOptionLength = vendorInfo.Len;
+                            info = vendorOption;
+                        }
+                        
+                        case $95 =>
+                        optional BinaryString infoData = BinaryDecoder<BinaryString>((vendorInfo.Data as Blob).Data);
+                        
+                        DHCPEVendorSpecificInfoRogueDetectionReply vendorOption = new DHCPEVendorSpecificInfoRogueDetectionReply();
+                        vendorOption.VendorSpecificOptionCode = vendorInfo.Code;
+                        vendorOption.VendorSpecificOptionLength = vendorInfo.Len;
+                        vendorOption.VendorSpecificOptionData = (infoData as BinaryString).Value;
+                        info = vendorOption;
+                    }
+                    temp += [info];
+                    chunks += [new DataChunks{DataSource = ss, Chunks = [new BinaryChunk{BitPosition = currentBitPosition + 16 + curBitPosition, BitLength = s.BitPosition - curBitPosition }]}];
+                    curBitPosition = s.BitPosition;
+                }
+                opt.Value = temp as array<VendorSpecificInfo>;
+                opt.AssociateArrayField("Value", chunks);
+                optionsChoice.Option = opt;
+            }
+            arrOfOptionsChoice += [optionsChoice as OptionsChoice];
+            arrOfChunks += [new DataChunks{DataSource = ss, Chunks = [new BinaryChunk{BitPosition = currentBitPosition, BitLength = ss.BitPosition - currentBitPosition }]}];
+            AssignFieldEncodingInfo(arrOfOptionsChoice[arrOfOptionsChoice.Count - 1], "Option", currentBitPosition, ss.BitPosition - currentBitPosition);
+            currentBitPosition = ss.BitPosition;
+        }
+    }
+    messageOptions.Option = arrOfOptionsChoice;            
+    AssignFieldEncodingInfo(messageOptions, "Option", beginBitPosition, ss.BitPosition - beginBitPosition);
+    messageOptions.AssociateArrayField("Option", arrOfChunks);
+    
+    if (!isInsufficientData)
+    {                    
+        messageOptions.End = BinaryDecoder<EndOption>(ss);
+        AssignFieldEncodingInfo(messageOptions, "End", currentBitPosition, ss.BitPosition - currentBitPosition);
+        currentBitPosition = ss.BitPosition;                
+    
+        messageOptions.Pad = ss.PeekBytes(currentBitPosition);
+        AssignFieldEncodingInfo(messageOptions, "Pad", currentBitPosition, ss.BitLength - currentBitPosition);
+    }
+    
+    return messageOptions;
+}

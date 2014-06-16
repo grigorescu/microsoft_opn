@@ -1,0 +1,978 @@
+protocol ICMP with 
+BinaryEncodingDefaults{Endian = Endian.Big},
+Documentation
+{
+    ProtocolName = "Internet Control Message Protocol",
+    ShortName = "ICMP",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+    [
+        new Reference{Name = "RFC 777"},
+        new Reference{Name = "RFC 792"},
+        new Reference{Name = "RFC 950"},
+        new Reference{Name = "RFC 1191"},
+        new Reference{Name = "RFC 1256"},
+        new Reference{Name = "RFC 1393"},
+        new Reference{Name = "RFC 1475"},
+        new Reference{Name = "RFC 1788"},
+        new Reference{Name = "RFC 1812"},
+        new Reference{Name = "RFC 2521"},
+        new Reference{Name = "RFC 4065"},
+    ],
+    RevisionSummary = 
+    [
+        new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "09/02/2011"}
+    ]
+};
+
+using IPv4;
+using IPv6;
+using Standard;
+using IANA;
+using Utility;
+using WFPCapture;
+using CommonResources;
+using Diagnostics;
+
+endpoint Node[binary LocalAddress, binary RemoteAddress]
+    consumes OperationContract provides OperationContract;
+
+autostart actor ICMPOverIPv4(IPv4.Node node)
+{
+    process node accepts p:IPv4.Datagram where p.Protocol == ProtocolType.ICMP 
+    {
+        DecodeDatagram(p.SourceAddress.FlatAddress, p.DestinationAddress.FlatAddress, p.Payload, false);
+    }
+}
+
+autostart actor ICMPOverIPv6(IPv6.Node node)
+{
+    optional bool isWFP = nothing;
+    
+    process node accepts d:IPv6.Datagram where d.NextProtocol == ProtocolType.ICMP 
+    {
+        // Whether the data is from the firewall provider.
+        if (isWFP == nothing)
+        {
+            isWFP = node.GetTransport<WFPCapture.WFPFrame>() != null;
+        }
+        DecodeDatagram(d.SourceAddress.FlatAddress, d.DestinationAddress.FlatAddress, d.Payload, isWFP as bool);
+    }
+}
+
+contract OperationContract
+{
+    // RFC 777 and 792
+    accepts EchoRequestMessage : MessageHeader
+    {
+        ushort Identifier;
+        ushort SequenceNumber;
+        binary Data;
+        invariant Type == 8 && ValidationCheck(Code == 0, null, Diagnostics.Format(CommonResources.COMMON_STR_CHECK_VALUE, 
+            ["ICMP", "Code", CommonResources.COMMON_STR_MESSAGE, "EchoRequestMessage", CommonResources.COMMON_STR_MUST, CommonResources.COMMON_STR_ZERO, Code]));
+
+        override string ToString()
+        {
+            return MessageNaming(Type, Code);
+        }
+    }
+
+    // RFC 777 and 792
+    accepts EchoReplyMessage : MessageHeader
+    {
+        ushort Identifier;
+        ushort SequenceNumber;
+        binary Data;
+        invariant Type == 0 && ValidationCheck(Code == 0, null, Diagnostics.Format(CommonResources.COMMON_STR_CHECK_VALUE, 
+            ["ICMP", "Code", CommonResources.COMMON_STR_MESSAGE, "EchoReplyMessage", CommonResources.COMMON_STR_MUST, CommonResources.COMMON_STR_ZERO, Code]));
+    }
+
+    virtual operation EchoOp
+    {
+        in ushort ReqIdentifier = identifier;
+        in ushort ReqSequenceNumber = sequenceNumber;
+        in binary ReqData = data;
+        out ushort ResIdentifier = identifier;
+        out ushort ResSequenceNumber = sequenceNumber;
+        out binary ResData = resData;
+        
+        override string ToString()
+        {
+            return "Echo Operation";
+        }
+    } =
+    accepts OperationContract.EchoRequestMessage{Identifier is identifier:ushort, SequenceNumber is sequenceNumber:ushort, Data is data:binary}
+    accepts OperationContract.EchoReplyMessage{Identifier == identifier, SequenceNumber == sequenceNumber, Data is resData:binary};
+
+    // RFC 777 and 792
+    accepts TimestampMessage : MessageHeader
+    {
+        ushort Identifier;
+        ushort SequenceNumber;
+        uint OriginateTimestamp;
+        uint ReceiveTimestamp;
+        uint TransmitTimestamp;
+        invariant Type == 13 && Code == 0;
+    }
+
+    // RFC 777 and 792
+    accepts TimestampReplyMessage : MessageHeader
+    {
+        ushort Identifier;
+        ushort SequenceNumber;
+        uint OriginateTimestamp;
+        uint ReceiveTimestamp;
+        uint TransmitTimestamp;
+        invariant Type == 14 && Code == 0;
+    }
+
+    virtual operation TimestampOp
+    {
+        in ushort ReqIdentifier = identifier;
+        in ushort ReqSequenceNumber = sequenceNumber;
+        in uint ReqOriginateTimestamp = reqOriginateTimestamp;
+        in uint ReqReceiveTimestamp = reqReceiveTimestamp;
+        in uint ReqTransmitTimestamp = reqTransmitTimestamp;
+        out ushort ResIdentifier = identifier;
+        out ushort ResSequenceNumber = sequenceNumber;
+        out uint ResOriginateTimestamp = resOriginateTimestamp;
+        out uint ResReceiveTimestamp = resReceiveTimestamp;
+        out uint ResTransmitTimestamp = resTransmitTimestamp;
+        
+        override string ToString()
+        {
+            return "TimeStamp Operation";
+        }
+    } =
+    accepts OperationContract.TimestampMessage{Identifier is identifier:ushort, SequenceNumber is sequenceNumber:ushort, OriginateTimestamp is reqOriginateTimestamp:uint,
+        ReceiveTimestamp is reqReceiveTimestamp:uint, TransmitTimestamp is reqTransmitTimestamp:uint}
+    accepts OperationContract.TimestampReplyMessage{Identifier == identifier, SequenceNumber == sequenceNumber, OriginateTimestamp is resOriginateTimestamp:uint,
+        ReceiveTimestamp is resReceiveTimestamp:uint, TransmitTimestamp is resTransmitTimestamp:uint};
+
+    // RFC 792
+    accepts InformationRequestMessage : MessageHeader
+    {
+        ushort Identifier;
+        ushort SequenceNumber;
+        invariant Type == 15 && Code == 0;
+    }
+
+    // RFC 792
+    accepts InformationReplyMessage : MessageHeader
+    {
+        ushort Identifier;
+        ushort SequenceNumber;
+        invariant Type == 16 && Code == 0;
+    }
+
+    virtual operation InformationOp
+    {
+        in ushort ReqIdentifier = identifier;
+        in ushort ReqSequenceNumber = sequenceNumber;
+        out ushort ResIdentifier = identifier;
+        out ushort ResSequenceNumber = sequenceNumber;
+        
+        override string ToString()
+        {
+            return "Information Operation";
+        }
+    } =
+    accepts OperationContract.InformationRequestMessage{Identifier is identifier:ushort, SequenceNumber is sequenceNumber:ushort}
+    accepts OperationContract.InformationReplyMessage{Identifier == identifier, SequenceNumber == sequenceNumber};
+
+    // RFC 950
+    accepts AddressMaskRequestMessage : MessageHeader
+    {
+        ushort Identifier;
+        ushort SequenceNumber;
+        IPv4Address AddressMask;
+        invariant Type == 17 && Code == 0;
+    }
+
+    // RFC 950
+    accepts AddressMaskReplyMessage : MessageHeader
+    {
+        ushort Identifier;
+        ushort SequenceNumber;
+        IPv4Address AddressMask;
+        invariant Type == 18 && Code == 0;
+    }
+
+    virtual operation AddressMaskOp
+    {
+        in ushort ReqIdentifier = identifier;
+        in ushort ReqSequenceNumber = sequenceNumber;
+        in IPv4Address ReqAddressMask = reqAddressMask;
+        out ushort ResIdentifier = identifier;
+        out ushort ResSequenceNumber = sequenceNumber;
+        out IPv4Address ResAddressMask = resAddressMask;
+        
+        override string ToString()
+        {
+            return "AddressMask Operation";
+        }
+    } =
+    accepts OperationContract.AddressMaskRequestMessage{Identifier is identifier:ushort, SequenceNumber is sequenceNumber:ushort, AddressMask is reqAddressMask:IPv4Address}
+    accepts OperationContract.AddressMaskReplyMessage{Identifier == identifier, SequenceNumber == sequenceNumber, AddressMask is resAddressMask:IPv4Address};
+
+    // RFC 777 and 792
+    message DestinationUnreachableMessage : MessageHeader
+    {
+        uint Unused;
+        optional InternetHeaderFormat InternetHeader;
+        optional [|InternetHeader == nothing|] binary Data;
+        invariant Type == 3 && Code in {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}; // RFC 1812, section 5.2.7.1
+    }
+
+    // RFC 777 and 792
+    message SourceQuenchMessage : MessageHeader
+    {
+        uint Unused;
+        optional InternetHeaderFormat InternetHeader;
+        optional [|InternetHeader == nothing|] binary Data;
+        invariant Type == 4 && Code == 0;
+    }
+
+    // RFC 777 and 792
+    message RedirectMessage : MessageHeader
+    {
+        IPv4Address GatewayInternetAddress;
+        optional InternetHeaderFormat InternetHeader;
+        optional [|InternetHeader == nothing|] binary Data;
+        invariant Type == 5 && Code in {0, 1, 2, 3};
+    }
+
+    // RFC 1256
+    message RouterAdvertisementMessage : MessageHeader
+    {
+        byte NumAddrs;
+        byte AddrEntrySize where ValidationCheck(value == 2, null, "ICMP: The AddrEntrySize in message RouterAdvertisementMessage should be set to 2.");
+        ushort Lifetime;
+        array<Array> RouterAddressandPreferenceLevel with BinaryEncoding{Length = NumAddrs};
+        invariant Type == 9 && Code == 0;
+    }
+
+    // RFC 1256
+    message RouterSolicitationMessage : MessageHeader
+    {
+        uint Reserved;
+        invariant Type == 10 && Code == 0;
+    }
+
+    // RFC 777 and 792
+    message TimeExceededMessage : MessageHeader
+    {
+        uint Unused;
+        optional InternetHeaderFormat InternetHeader;
+        optional [|InternetHeader == nothing|] binary Data;
+        invariant Type == 11 && Code in {0, 1};
+    }
+
+    // RFC 777 and 792
+    message ParameterProblemMessage : MessageHeader
+    {
+        byte Pointer;
+        array<byte> Unused with BinaryEncoding{Length = 3};
+        optional InternetHeaderFormat InternetHeader;
+        optional [|InternetHeader == nothing|] binary Data;
+        invariant Type == 12 && Code == 0;
+    }
+
+    // RFC 1393
+    message TracerouteMessage : MessageHeader
+    {
+        ushort IDNumber;
+        ushort Unused;
+        ushort OutboundHopCount;
+        ushort ReturnHopCount;
+        uint OutputLinkSpeed;
+        uint OutputLinkMTU;
+        invariant Type == 30 && Code in {0, 1};
+    }
+
+    // RFC 1475
+    message ConversionFailedMessage : MessageHeader
+    {
+        uint PointerToProblemArea;
+        binary Data;
+        invariant Type == 31 && Code in {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
+    }
+
+    // RFC 1788
+    message DomainNameRequestMessage : MessageHeader
+    {
+        ushort Identifier;
+        ushort SequenceNumber;
+        invariant Type == 37 && Code == 0;
+    }
+
+    // RFC 1788
+    message DomainNameReplyMessage : MessageHeader
+    {
+        ushort Identifier;
+        ushort SequenceNumber;
+        uint TimeToLive;
+        array<DomainNameType | PointerType | binary> Names with Encoding{Ignore = true}; // The length of this field is determined from the total length of the datagram.
+        invariant Type == 38 && Code == 0;
+    }
+
+    // RFC 2521
+    message SecurityFailuresMessage : MessageHeader
+    {
+        ushort Reserved;
+        ushort Pointer;
+        optional InternetHeaderFormat InternetHeader;
+        optional [|InternetHeader == nothing|] binary Data;
+        invariant Type == 40 && Code in {0, 1, 2, 3, 4, 5};
+    }
+
+    // RFC 4065
+    message ExperimentalMobilitySubtypeFormatandRegistryMessage : MessageHeader
+    {
+        byte Subtype;
+        array<byte> Reserved with BinaryEncoding{Length = 3};
+        binary Options;
+        invariant Type == 41 || Type == 150;
+    }
+
+    message ReservedMessage : MessageHeader
+    {
+        binary Data;
+        invariant (Type > 41 && Type < 150) || (Type > 150 && Type <= 255);
+    }
+}
+
+message MessageHeader
+{
+    byte Type;
+    byte Code where ErrorCodeIf(Type in {MessageType.DestinationUnreachable, MessageType.Redirect, MessageType.RouterAdvertisement, MessageType.TimeExceeded, 
+        MessageType.ParameterProblem, MessageType.Traceroute, MessageType.ConversionError, MessageType.SecurityFailures}, this, MessageNaming(Type, value));
+    ushort Checksum;
+
+    override string ToString()
+    {
+        return  MessageNaming(Type, Code);
+    }
+}
+
+// RFC 1256
+type Array
+{
+    IPv4Address RouterAddress;
+    IPv4Address PreferenceLevel;
+}
+
+// RFC 1475
+type InternetHeaderFormat
+{
+    (byte where value == 4) Version with BinaryEncoding{Width = 4};
+    byte IHL with BinaryEncoding{Width = 4};
+    (TypeofServiceField where value.DSCP == 0 && value.CU == 0) TypeofService;
+    ushort TotalLength where ValidationCheck(value >= 20, null, "ICMP: The TotalLength in type InternetHeaderFormat should be at least 20.");
+    ushort Identification;
+    byte Reserved with BinaryEncoding{Width = 1};
+    byte DF with BinaryEncoding{Width = 1};
+    byte MF with BinaryEncoding{Width = 1};
+    ushort FragmentOffset with BinaryEncoding{Width = 13};
+    byte TimeToLive;
+    (byte where value == 1) Protocol;
+    ushort HeaderChecksum;
+    IPv4Address  SourceAddress;
+    IPv4Address  DestinationAddress;
+    optional [| IHL > 5 |] array<IPv4Option> Options with BinaryEncoding{ WidthForComposedType = (IHL * 4 - 20) * 8};
+    optional binary OriginalIPPayload;
+}
+
+// RFC 791
+type TypeofServiceField
+{
+    byte DSCP with BinaryEncoding{Width = 6};
+    byte CU with BinaryEncoding{Width = 2};
+}
+
+// RFC 777 and 792
+pattern MessageType = enum byte
+{
+    EchoReply = 0,
+    DestinationUnreachable = 3,
+    SourceQuench = 4,
+    Redirect = 5,
+    Echo = 8,
+    RouterAdvertisement = 9,
+    RouterSolicitation = 10,
+    TimeExceeded = 11,
+    ParameterProblem = 12,
+    Timestamp = 13,
+    TimestampReply = 14,
+    InformationRequest = 15,
+    InformationReply = 16,
+    AddressMaskRequest = 17,
+    AddressMaskReply = 18,
+    Traceroute = 30,
+    ConversionError = 31,
+    DomainNameRequest = 37,
+    DomainNameReply = 38,
+    SecurityFailures = 40,
+    ExperimentalMobilitySubtypeFormatandRegistry = 41
+};
+
+type DomainNameType
+{
+    byte Length;
+    binary Value with BinaryEncoding{Length = Length};
+}
+
+type PointerType
+{
+    byte Flag with BinaryEncoding{Width = 2};
+    ushort Offset with BinaryEncoding{Width = 14};
+}
+
+// ICMP outbound message type observed on source host.
+const set<byte> OutBoundMessageType = {MessageType.Echo,
+                        MessageType.Timestamp,
+                        MessageType.InformationRequest,
+                        MessageType.AddressMaskRequest,
+                        MessageType.DomainNameRequest};
+
+// Decode ICMP segment and dispatch to ICMP layer
+void DecodeDatagram(binary sourceAddress, binary destinationAddress, stream s, bool isWFP)
+{
+    switch (s.CurrentByte) 
+    {
+        case 0 =>
+            switch (s)
+            {
+                case d:OperationContract.EchoReplyMessage from BinaryDecoder<OperationContract.EchoReplyMessage> =>
+                    Dispatch(sourceAddress, destinationAddress, s, d, isWFP);
+                default => 
+                    ThrowDecodingException("ICMP", "EchoReplyMessage");
+            }
+        case 3 =>
+            switch (s)
+            {
+                case d:OperationContract.DestinationUnreachableMessage from BinaryDecoder<OperationContract.DestinationUnreachableMessage> =>
+                    Dispatch(sourceAddress, destinationAddress, s, d, isWFP);
+                default => 
+                    ThrowDecodingException("ICMP", "DestinationUnreachableMessage");
+            }
+        case 4 =>
+            switch (s)
+            {
+                case d:OperationContract.SourceQuenchMessage from BinaryDecoder<OperationContract.SourceQuenchMessage> =>
+                    Dispatch(sourceAddress, destinationAddress, s, d, isWFP);
+                default => 
+                    ThrowDecodingException("ICMP", "SourceQuenchMessage");
+            }
+        case 5 =>
+            switch (s)
+            {
+                case d:OperationContract.RedirectMessage from BinaryDecoder<OperationContract.RedirectMessage> =>
+                    Dispatch(sourceAddress, destinationAddress, s, d, isWFP);
+                default => 
+                    ThrowDecodingException("ICMP", "RedirectMessage");
+            }
+        case 8 =>
+            switch (s)
+            {
+                case d:OperationContract.EchoRequestMessage from BinaryDecoder<OperationContract.EchoRequestMessage> =>
+                    Dispatch(sourceAddress, destinationAddress, s, d, isWFP);
+                default => 
+                    ThrowDecodingException("ICMP", "EchoRequestMessage");
+            }
+        case 9 =>
+            switch (s)
+            {
+                case d:OperationContract.RouterAdvertisementMessage from BinaryDecoder<OperationContract.RouterAdvertisementMessage> =>
+                    Dispatch(sourceAddress, destinationAddress, s, d, isWFP);
+                default => 
+                    ThrowDecodingException("ICMP", "RouterAdvertisementMessage");
+            }
+        case 10 =>
+            switch (s)
+            {
+                case d:OperationContract.RouterSolicitationMessage from BinaryDecoder<OperationContract.RouterSolicitationMessage> =>
+                    Dispatch(sourceAddress, destinationAddress, s, d, isWFP);
+                default => 
+                    ThrowDecodingException("ICMP", "RouterSolicitationMessage");
+            }
+        case 11 =>
+            switch (s)
+            {
+                case d:OperationContract.TimeExceededMessage from BinaryDecoder<OperationContract.TimeExceededMessage> =>
+                    Dispatch(sourceAddress, destinationAddress, s, d, isWFP);
+                default => 
+                    ThrowDecodingException("ICMP", "TimeExceededMessage");
+            }
+        case 12 =>
+            switch (s)
+            {
+                case d:OperationContract.ParameterProblemMessage from BinaryDecoder<OperationContract.ParameterProblemMessage> =>
+                    Dispatch(sourceAddress, destinationAddress, s, d, isWFP);
+                default => 
+                    ThrowDecodingException("ICMP", "ParameterProblemMessage");
+            }
+        case 13 =>
+            switch (s)
+            {
+                case d:OperationContract.TimestampMessage from BinaryDecoder<OperationContract.TimestampMessage> =>
+                    Dispatch(sourceAddress, destinationAddress, s, d, isWFP);
+                default => 
+                    ThrowDecodingException("ICMP", "TimestampMessage");
+            }
+        case 14 =>
+            switch (s)
+            {
+                case d:OperationContract.TimestampReplyMessage from BinaryDecoder<OperationContract.TimestampReplyMessage> =>
+                    Dispatch(sourceAddress, destinationAddress, s, d, isWFP);
+                default => 
+                    ThrowDecodingException("ICMP", "TimestampReplyMessage");
+            }
+        case 15 =>
+            switch (s)
+            {
+                case d:OperationContract.InformationRequestMessage from BinaryDecoder<OperationContract.InformationRequestMessage> =>
+                    Dispatch(sourceAddress, destinationAddress, s, d, isWFP);
+                default => 
+                    ThrowDecodingException("ICMP", "InformationRequestMessage");
+            }
+        case 16 =>
+            switch (s)
+            {
+                case d:OperationContract.InformationReplyMessage from BinaryDecoder<OperationContract.InformationReplyMessage> =>
+                    Dispatch(sourceAddress, destinationAddress, s, d, isWFP);
+                default => 
+                    ThrowDecodingException("ICMP", "InformationReplyMessage");
+            }
+        case 17 =>
+            switch (s)
+            {
+                case d:OperationContract.AddressMaskRequestMessage from BinaryDecoder<OperationContract.AddressMaskRequestMessage> =>
+                    Dispatch(sourceAddress, destinationAddress, s, d, isWFP);
+                default => 
+                    ThrowDecodingException("ICMP", "AddressMaskRequestMessage");
+            }
+        case 18 =>
+            switch (s)
+            {
+                case d:OperationContract.AddressMaskReplyMessage from BinaryDecoder<OperationContract.AddressMaskReplyMessage> =>
+                    Dispatch(sourceAddress, destinationAddress, s, d, isWFP);
+                default => 
+                    ThrowDecodingException("ICMP", "AddressMaskReplyMessage");
+            }
+        case 30 =>
+            switch (s)
+            {
+                case d:OperationContract.TracerouteMessage from BinaryDecoder<OperationContract.TracerouteMessage> =>
+                    Dispatch(sourceAddress, destinationAddress, s, d, isWFP);
+                default => 
+                    ThrowDecodingException("ICMP", "TracerouteMessage");
+            }
+        case 31 =>
+            switch (s)
+            {
+                case d:OperationContract.ConversionFailedMessage from BinaryDecoder<OperationContract.ConversionFailedMessage> =>
+                    Dispatch(sourceAddress, destinationAddress, s, d, isWFP);
+                default => 
+                    ThrowDecodingException("ICMP", "ConversionFailedMessage");
+            }
+        case 37 =>
+            switch (s)
+            {
+                case d:OperationContract.DomainNameRequestMessage from BinaryDecoder<OperationContract.DomainNameRequestMessage> =>
+                    Dispatch(sourceAddress, destinationAddress, s, d, isWFP);
+                default => 
+                    ThrowDecodingException("ICMP", "DomainNameRequestMessage");
+            }
+        case 38 =>
+            switch (s)
+            {
+                case d:OperationContract.DomainNameReplyMessage from BinaryDecoder<OperationContract.DomainNameReplyMessage> =>
+                    while (s.BytePosition < s.ByteLength)
+                    {
+                        if ((s.PeekByte(s.BitPosition) & 0xC0) == 0x00)
+                        {
+                            var domainName = BinaryDecoder<DomainNameType>(s);
+                            if (domainName != nothing)
+                            {
+                                d.Names += [domainName as DomainNameType];
+                            }
+                        }
+                        else if ((s.PeekByte(s.BitPosition) & 0xC0) == 0xC0)
+                        {
+                            optional PointerType pointer = BinaryDecoder<PointerType>(s);
+                            if (pointer != nothing)
+                            {
+                                d.Names += [pointer as PointerType];
+                                break;
+                            }
+                        }
+                        else
+                        {
+                            d.Names += [s.PeekBytes(s.BytePosition * 8)];
+                            break;
+                        }
+                    }
+                    Dispatch(sourceAddress, destinationAddress, s, d, isWFP);
+                default => 
+                    ThrowDecodingException("ICMP", "DomainNameReplyMessage");
+            }
+        case 40 =>
+            switch (s)
+            {
+                case d:OperationContract.SecurityFailuresMessage from BinaryDecoder<OperationContract.SecurityFailuresMessage> =>
+                    Dispatch(sourceAddress, destinationAddress, s, d, isWFP);
+                default => 
+                    ThrowDecodingException("ICMP", "SecurityFailuresMessage");
+            }
+        case 41 =>
+        case 150 =>
+            switch (s)
+            {
+                case d:OperationContract.ExperimentalMobilitySubtypeFormatandRegistryMessage from BinaryDecoder<OperationContract.ExperimentalMobilitySubtypeFormatandRegistryMessage> =>
+                    Dispatch(sourceAddress, destinationAddress, s, d, isWFP);
+                default => 
+                    ThrowDecodingException("ICMP", "ExperimentalMobilitySubtypeFormatandRegistryMessage");
+            }
+        default =>
+            switch (s)
+            {
+                case d:OperationContract.ReservedMessage from BinaryDecoder<OperationContract.ReservedMessage> =>
+                    Dispatch(sourceAddress, destinationAddress, s, d, isWFP);
+                default => 
+                    ThrowDecodingException("ICMP", "ReservedMessage");
+            }
+    }
+}
+
+void Dispatch(binary sourceAddress, binary destinationAddress, stream s, MessageHeader d, bool isWFP)
+{
+    // Packets captured by the firewall provider order and opportunity for outbound messages the validationchecksum is unuseful. It need to disable the checksum validation for outbound message
+    if (!(isWFP && OutBoundMessageType[d.Type]))
+    {
+        ValidationCheck(Utility.ValidateCheckSum(s.PeekBytes(0), d.Checksum), d, "ICMP: ICMP Checksum is invalid.");
+    }
+    
+    if (sourceAddress < destinationAddress)
+    {
+        dispatch endpoint Node[sourceAddress, destinationAddress] accepts d;
+    }
+    else
+    {
+        dispatch endpoint Node[destinationAddress, sourceAddress] accepts d;
+    }
+}
+
+string MessageNaming(byte messageType, byte messageCode)
+{
+    if (messageType == MessageType.EchoReply)
+    {
+        return "Echo Reply";
+    }
+    else if (messageType == MessageType.DestinationUnreachable)
+    {
+        switch (messageCode)
+        {
+            case 0  => return "Destination Unreachable, Network unreachable error.";
+            case 1  => return "Destination Unreachable, Host unreachable error.";
+            case 2  => return "Destination Unreachable, Protocol unreachable error.";
+            case 3  => return "Destination Unreachable, Port unreachable error.";
+            case 4  => return "Destination Unreachable, The datagram is too big.";
+            case 5  => return "Destination Unreachable, Source route failed error.";
+            case 6  => return "Destination Unreachable, Destination network unknown error.";
+            case 7  => return "Destination Unreachable, Destination host unknown error.";
+            case 8  => return "Destination Unreachable, Source host isolated error.";
+            case 9  => return "Destination Unreachable, The destination network is administratively prohibited.";
+            case 10 => return "Destination Unreachable, The destination host is administratively prohibited.";
+            case 11 => return "Destination Unreachable, The network is unreachable for Type Of Service.";
+            case 12 => return "Destination Unreachable, The host is unreachable for Type Of Service.";
+            case 13 => return "Destination Unreachable, Communication Administratively Prohibited.";
+            case 14 => return "Destination Unreachable, Host precedence violation.";
+            case 15 => return "Destination Unreachable, Precedence cutoff in effect.";
+            default => return "Destination Unreachable, Code: Unknown (" + (messageCode as string) + ")";
+        }
+    }
+    else if (messageType == MessageType.SourceQuench)
+    {
+        return "Source Quench";
+    }
+    else if (messageType == MessageType.Redirect)
+    {
+        switch (messageCode)
+        {
+            case 0  => return "Redirect, Network error.";
+            case 1  => return "Redirect, Host error.";
+            case 2  => return "Redirect, TOS and network error.";
+            case 3  => return "Redirect, TOS and host error.";
+            default => return "Redirect, Code: Unknown (" + (messageCode as string) + ")";
+        }
+    }
+    else if (messageType == MessageType.Echo)
+    {
+        return "Echo Request";
+    }
+    else if (messageType == MessageType.RouterAdvertisement)
+    {
+        switch (messageCode)
+        {
+            case 0  => return "Router Advertisement, Normal router advertisement.";
+            case 16 => return "Router Advertisement, Does not route common traffic.";
+            default => return "Router Advertisement, Code: Unknown (" + (messageCode as string) + ")";
+        }
+    }
+    else if (messageType == MessageType.RouterSolicitation)
+    {
+        return "Router Solicitation";
+    }
+    else if (messageType == MessageType.TimeExceeded)
+    {
+        switch (messageCode)
+        {
+            case 0  => return "Time Exceeded, Time to live (TTL) equals 0 during transit.";
+            case 1  => return "Time Exceeded, Fragment reassembly timeout.";
+            default => return "Time Exceeded, Code: Unknown (" + (messageCode as string) + ")";
+        }
+    }
+    else if (messageType == MessageType.ParameterProblem)
+    {
+        switch (messageCode)
+        {
+            case 0  => return "Parameter Problem, Invalid IP header.";
+            case 1  => return "Parameter Problem, A required option is missing.";
+            default => return "Parameter Problem, Code: Unknown (" + (messageCode as string) + ")";
+        }
+    }
+    else if (messageType == MessageType.Timestamp)
+    {
+        return "Timestamp";
+    }
+    else if (messageType == MessageType.TimestampReply)
+    {
+        return "Timestamp Reply";
+    }
+    else if (messageType == MessageType.InformationRequest)
+    {
+        return "Information Request";
+    }
+    else if (messageType == MessageType.InformationReply)
+    {
+        return "Information Reply";
+    }
+    else if (messageType == MessageType.AddressMaskRequest)
+    {
+        return "Address Mask Request";
+    }
+    else if (messageType == MessageType.AddressMaskReply)
+    {
+        return "Address Mask Reply";
+    }
+    else if (messageType == MessageType.Traceroute)
+    {
+        switch (messageCode)
+        {
+            case 0  => return "Traceroute, Outbound Packet successfully forwarded.";
+            case 1  => return "Traceroute, No route for Outbound Packet. The packet was discarded.";
+            default => return "Traceroute, Code: Unknown (" + (messageCode as string) + ")";
+        }
+    }
+    else if (messageType == MessageType.ConversionError)
+    {
+        switch (messageCode)
+        {
+            case 0  => return "Conversion Error, Unknown or unspecified error.";
+            case 1  => return "Conversion Error, Don't convert option present.";
+            case 2  => return "Conversion Error, Unknown mandatory option present.";
+            case 3  => return "Conversion Error, Known unsupported option present.";
+            case 4  => return "Conversion Error, Unsupported transport protocol.";
+            case 5  => return "Conversion Error, Overall length exceeded.";
+            case 6  => return "Conversion Error, IP header length exceeded.";
+            case 7  => return "Conversion Error, Transport protocol > 255.";
+            case 8  => return "Conversion Error, Port conversion out of range.";
+            case 9  => return "Conversion Error, Transport header length exceeded.";
+            case 10 => return "Conversion Error, 32-bit rollover missing and ACK set.";
+            case 11 => return "Conversion Error, Unknown mandatory transport option present.";
+            default => return "Conversion Error, Code: Unknown (" + (messageCode as string) + ")";
+        }
+    }
+    else if (messageType == MessageType.DomainNameRequest)
+    {
+        return "Domain Name Request";
+    }
+    else if (messageType == MessageType.DomainNameReply)
+    {
+        return "Domain Name Reply";
+    }
+    else if (messageType == MessageType.SecurityFailures)
+    {
+        switch (messageCode)
+        {
+            case 0  => return "Security Failures, Bad SPI.";
+            case 1  => return "Security Failures, Authentication Failed.";
+            case 2  => return "Security Failures, Decompression Failed.";
+            case 3  => return "Security Failures, Decryption Failed.";
+            case 4  => return "Security Failures, Need Authentication.";
+            case 5  => return "Security Failures, Need Authorization.";
+            default => return "Security Failures, Code: Unknown (" + (messageCode as string) + ")";
+        }
+    }
+    else if (messageType == MessageType.ExperimentalMobilitySubtypeFormatandRegistry)
+    {
+        return "Experimental Mobility Subtype Formatand Registry";
+    }
+    else
+    {
+        return "Reserved";
+    }
+}
+
+string ErrorCodeString(byte messageType, byte messageCode)
+{
+    if (messageType == MessageType.DestinationUnreachable)
+    {
+        switch (messageCode)
+        {
+            case 0  =>
+                return "Destination Unreachable, Network unreachable error.";
+            case 1  =>
+                return "Destination Unreachable, Host unreachable error.";
+            case 2  => 
+                return "Destination Unreachable, Protocol unreachable error.";
+            case 3  => 
+                return "Destination Unreachable, Port unreachable error.";
+            case 4  => 
+                return "Destination Unreachable, The datagram is too big.";
+            case 5  =>
+                return "Destination Unreachable, Source route failed error.";
+            case 6  => 
+                return "Destination Unreachable, Destination network unknown error.";
+            case 7  => 
+                return "Destination Unreachable, Destination host unknown error.";
+            case 8  => 
+                return "Destination Unreachable, Source host isolated error.";
+            case 9  => 
+                return "Destination Unreachable, The destination network is administratively prohibited.";
+            case 10 => 
+                return "Destination Unreachable, The destination host is administratively prohibited.";
+            case 11 => 
+                return "Destination Unreachable, The network is unreachable for Type Of Service.";
+            case 12 => 
+                return "Destination Unreachable, The host is unreachable for Type Of Service.";
+            case 13 => 
+                return "Destination Unreachable, Communication Administratively Prohibited.";
+            case 14 => 
+                return "Destination Unreachable, Host precedence violation.";
+            case 15 => 
+                return "Destination Unreachable, Precedence cutoff in effect.";
+            default => 
+                return "Destination Unreachable, Code: Unknown (" + (messageCode as string) + ")";
+        }
+    }
+    else if (messageType == MessageType.Redirect)
+    {
+        switch (messageCode)
+        {
+            case 0  => 
+                return "Redirect, Network error.";
+            case 1  => 
+                return "Redirect, Host error.";
+            case 2  => 
+                return "Redirect, TOS and network error.";
+            case 3  => 
+                return "Redirect, TOS and host error.";
+            default => 
+                return "";
+        }
+    }
+    else if (messageType == MessageType.TimeExceeded)
+    {
+        switch (messageCode)
+        {
+            case 0  => 
+                return "Time Exceeded, Time to live (TTL) equals 0 during transit.";
+            case 1  => 
+                return "Time Exceeded, Fragment reassembly timeout.";
+            default => 
+                return "Time Exceeded, Code: Unknown (" + (messageCode as string) + ")";
+        }
+    }
+    else if (messageType == MessageType.ParameterProblem)
+    {
+        switch (messageCode)
+        {
+            case 0  => 
+                return "Parameter Problem, Invalid IP header.";
+            case 1  => 
+                return "Parameter Problem, A required option is missing.";
+            default => 
+                return "Parameter Problem, Code: Unknown (" + (messageCode as string) + ")";
+        }
+    }
+    else if (messageType == MessageType.Traceroute)
+    {
+        switch (messageCode)
+        {
+            case 1  => 
+                return "Traceroute, No route for Outbound Packet. The packet was discarded.";
+            default => 
+                return "";
+        }
+    }
+    else if (messageType == MessageType.ConversionError)
+    {
+        switch (messageCode)
+        {
+            case 0  => 
+                return "Conversion Error, Unknown or unspecified error.";
+            case 1  => 
+                return "Conversion Error, Don't convert option present.";
+            case 2  => 
+                return "Conversion Error, Unknown mandatory option present.";
+            case 3  => 
+                return "Conversion Error, Known unsupported option present.";
+            case 4  => 
+                return "Conversion Error, Unsupported transport protocol.";
+            case 5  => 
+                return "Conversion Error, Overall length exceeded.";
+            case 6  => 
+                return "Conversion Error, IP header length exceeded.";
+            case 7  => 
+                return "Conversion Error, Transport protocol > 255.";
+            case 8  => 
+                return "Conversion Error, Port conversion out of range.";
+            case 9  => 
+                return "Conversion Error, Transport header length exceeded.";
+            case 10 => 
+                return "Conversion Error, 32-bit rollover missing and ACK set.";
+            case 11 => 
+                return "Conversion Error, Unknown mandatory transport option present.";
+            default => 
+                return "Conversion Error, Code: Unknown (" + (messageCode as string) + ")";
+        }
+    }
+    else if (messageType == MessageType.SecurityFailures)
+    {
+        switch (messageCode)
+        {
+            case 0  => 
+                return "Security Failures, Bad SPI.";
+            case 1  => 
+                return "Security Failures, Authentication Failed.";
+            case 2  => 
+                return "Security Failures, Decompression Failed.";
+            case 3  => 
+                return "Security Failures, Decryption Failed.";
+            case 4  => 
+                return "Security Failures, Need Authentication.";
+            case 5  => 
+                return "Security Failures, Need Authorization.";
+            default => 
+                return "Security Failures, Code: Unknown (" + (messageCode as string) + ")";
+        }
+    }
+    else
+        return "";
+}

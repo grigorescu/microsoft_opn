@@ -1,0 +1,556 @@
+protocol TURN with 
+BinaryEncodingDefaults{Endian = Endian.Big},
+Documentation
+{
+    ProtocolName = "Traversal Using Relays around NAT (TURN)",
+    ShortName = "TURN",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+            new Reference{Name = "RFC 5766"},
+            new Reference{Name = "RFC 5389"},
+        ],
+    RevisionSummary =
+        [
+            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "11/03/2011"}
+        ]
+};
+
+using Standard;
+using Ethernet;
+using IPv4;
+using IANA;
+using IPv6;
+using Utility;
+using UDP;
+using TCP;
+using VirtualTransport;
+
+endpoint Server
+    over UDP.Host | over VirtualTransport.Server
+    accepts Message issues Message
+    accepts ChannelDataMessage issues ChannelDataMessage;
+
+client endpoint Client connected to Server;
+
+autostart actor TURNOverUDP(UDP.Host host)
+{
+    process host accepts d:UDP.Datagram where d.DestinationPort == Port.TURN && IsTurn(d.Payload, false)//request
+    {
+        Server server = endpoint Server over host;
+        TURNOverUDPDecoder(d.Payload, false, server);
+    }
+    
+    process host accepts d:UDP.Datagram where d.SourcePort == Port.TURN && IsTurn(d.Payload, false)  // response
+    {
+        Server server = endpoint Server over host;
+        TURNOverUDPDecoder(d.Payload, true, server);
+    }
+}
+
+autostart actor TURNOverTCP(VirtualTransport.Server server)
+{
+    process server accepts d:VirtualTransport.VirtualDataSegment where (!(d.DestinationPort is Port) && IsTurn(d.Payload, true)) || (!(d.DestinationPort is Port.TURN) && IsTurn(d.Payload, true))// request
+    {
+        TURN.Server turnserver = endpoint TURN.Server over server;
+        TURNOverTCPDecoder(d.Payload, false, turnserver, d);
+        
+    }
+    
+    process server issues d:VirtualTransport.VirtualDataSegment where (!(d.SourcePort is Port) && IsTurn(d.Payload, true)) || (!(d.SourcePort is Port.TURN) && IsTurn(d.Payload, true))// response
+    {
+        TURN.Server turnserver = endpoint TURN.Server over server;
+        TURNOverTCPDecoder(d.Payload, true, turnserver, d);
+    }
+    
+    // Below rules are added in case that TCP mistakes the Client for Server by port number for the trace without TCP 3-way handshake.
+    process server issues d:VirtualTransport.VirtualDataSegment where server.isMissingThreeWayHandshake && ((!(d.DestinationPort is Port) && IsTurn(d.Payload, true)) || (!(d.DestinationPort is Port.TURN) && IsTurn(d.Payload, true)))// request
+    {
+        TURN.Server turnserver = endpoint TURN.Server over server;
+        TURNOverTCPDecoder(d.Payload, false, turnserver, d);
+    }
+    
+    process server accepts d:VirtualTransport.VirtualDataSegment where server.isMissingThreeWayHandshake && ((!(d.SourcePort is Port) && IsTurn(d.Payload, true)) || (!(d.SourcePort is Port.TURN) && IsTurn(d.Payload, true)))// response
+    {
+        TURN.Server turnserver = endpoint TURN.Server over server;
+        TURNOverTCPDecoder(d.Payload, true, turnserver, d);
+    }
+}
+
+bool IsTurn(binary binVal, bool isTCP)
+{
+    if (binVal.Count < 8)
+    {
+        return false;
+    }
+    else 
+    {
+        ushort mType = (binVal[0] * 256 + binVal[1]) as ushort;
+        ushort mType1 = (binVal[4] * 256 + binVal[5]) as ushort;
+        ushort length = (binVal[2]* 256 + binVal[3]) as ushort;
+        ushort length1 = (binVal[6]* 256 + binVal[7]) as ushort;
+        if (mType <= 0x7FFF && !isTCP)
+        {
+            return (binVal.Count - 20) == length || (binVal.Count == length + 2);
+        }
+        else if (mType == 0x0300 && isTCP)
+        {
+            return (binVal.Count - 4) == length;
+        }
+        else if (mType == 0x0200 && isTCP && mType1 <= 0x7FFF)
+        {
+            return (binVal.Count - 4) == length || (binVal.Count - 24) == length1;
+        }
+        else
+        {
+            return false;
+        }
+    }
+}
+
+bool DecoderAndDispatcher(binary binValue, bool isIssued, Server server, ref string msgName, bool IsTcp)
+{
+    byte b = binValue[0];
+    byte c = binValue[4];
+    bool IsTcpType3 = false;
+    // Stun message 
+    // 0b00
+    if ((b & 0xC0) == 0x00 || (c & 0xC0) == 0x00)
+    {
+        if (IsTcp && b == 3)
+        {
+            IsTcpType3 = true;
+        }
+        else
+        {
+            IsTcpType3 = false;
+        }
+        optional Message om = BinaryDecoder<Message[IsTcp, IsTcpType3]>(binValue);
+        if (om != nothing)
+        {
+            Message msg = om as Message;
+            if (isIssued)
+            {
+                dispatch server issues msg;
+                return true;
+            }
+            else 
+            {
+                dispatch server accepts msg;
+                return true;
+            }
+        }
+        else
+        {
+            msgName = "TURN";
+            return false;
+        }
+        
+    }
+    // Channel message of Turn message
+    // 0b01
+    else if ((b & 0xC0) == 0x40 || (c & 0xC0) == 0x40)
+    {
+        optional ChannelDataMessage om = BinaryDecoder<ChannelDataMessage>(binValue);
+        if (om != nothing)
+        {
+            ChannelDataMessage msg = om as ChannelDataMessage;
+            if (isIssued)
+            {
+                dispatch server issues msg;
+                return true;
+            }
+            else 
+            {
+                dispatch server accepts msg;
+                return true;
+            }
+        }
+        else
+        {
+            msgName = "Channel Data";
+            return false;
+        }
+    }
+    return false;
+}
+
+void TURNOverTCPDecoder(binary binValue, bool isIssued, Server server, VirtualTransport.VirtualDataSegment d)
+{
+    string msgName = "";
+    if (!DecoderAndDispatcher(binValue, isIssued, server, ref msgName, true))
+    {
+        ThrowDecodingExceptionForTCP("TURN", msgName, d#IsIncomplete, d#SegmentLost);
+    }
+}
+
+void TURNOverUDPDecoder(binary binValue, bool isIssued, Server server)
+{
+    string msgName = "";
+    if (!DecoderAndDispatcher(binValue, isIssued, server, ref msgName, false))
+    {
+        if (msgName == "Channel Data")
+        {
+            ThrowDecodingException("TURN Channel Data");
+        }
+        else
+        {
+            ThrowDecodingException("TURN");
+        }
+    }
+}
+
+message Message[bool IsTcp, bool IsTcpType3]
+{
+    optional ([|IsTcp|] TCPFramingHeader) TCPFramingHeader;
+    optional ([|IsTcpType3|] binary) EndtoEndData with BinaryEncoding{Length = (TCPFramingHeader as TCPFramingHeader).Length};
+    optional ([|!IsTcpType3|] MessageHeader) MessageHeader;
+    optional ([|!IsTcpType3|] array<Attributes>) Attributes;
+
+    override string ToString()
+    {
+        if (MessageHeader is nothing)
+        {
+            return "End to End Data";
+        }
+        else
+        {
+            var header = MessageHeader as MessageHeader;
+            string summary = "Message Type = ";
+            if ((header.MessageType & 0xfeef) == 0x000)
+            {
+                summary += "Reserved ";
+            }
+            if ((header.MessageType & 0xfeef) == 0x001)
+            {
+                summary += "Binding ";
+            }
+            if ((header.MessageType & 0xfeef) == 0x002)
+            {
+                summary += "Reserved as SharedSecret ";
+            }
+            if ((header.MessageType & 0xfeef) == 0x003)
+            {
+                summary += "Allocate ";
+            }
+            if ((header.MessageType & 0xfeef) == 0x004)
+            {
+                summary += "Refresh ";
+            }
+            if ((header.MessageType & 0xfeef) == 0x006)
+            {
+                summary += "Send ";
+            }
+            if ((header.MessageType & 0xfeef) == 0x007)
+            {
+                summary += "Data ";
+            }
+            if ((header.MessageType & 0xfeef) == 0x008)
+            {
+                summary += "CreatePermission ";
+            }
+            if ((header.MessageType & 0xfeef) == 0x009)
+            {
+                summary += "ChannelBind ";
+            }
+            if ((header.MessageType & 0x0110) == 0)
+            {
+                summary += "Request";
+            }
+            else if ((header.MessageType & 0x0110) == 0x0010)
+            {
+                summary += "Indication";
+            }
+            else if ((header.MessageType & 0x0110) == 0x0100)
+            {
+                summary += "Success Response";
+            }
+            else if ((header.MessageType & 0x0110) == 0x0110)
+            {
+                summary += "error Response";
+            }
+            else
+            {
+                summary += "Unknown Message Type";
+            }
+            return summary;
+        }
+    } 
+}
+
+
+message ChannelDataMessage
+{
+    ushort ChannelNumber where value >= 0x4000 && value <= 0x7FFF;
+    ushort Length;
+    array<Attributes> Attributes;
+    override string ToString()
+    {
+        return "Message Type = ChannelDataMessage";
+    }
+}
+
+type TCPFramingHeader
+{
+    byte Type;
+    byte Reserved where ValidationCheck(value == 0, null, DiagnosisLevel.Error, "TURN: The Reserved in type TCPFramingHeader must be zero, not " + (value as string) + ".");
+    ushort Length;
+}
+
+type MessageHeader
+{
+    byte Significant where value == 0 with BinaryEncoding{Width = 2};
+    ushort MessageType with BinaryEncoding{Width = 14};
+    ushort MessageLength;
+    uint MagicCookie;
+    binary TransactionID with BinaryEncoding{Length = 12};
+}
+
+pattern Attributes = ( MappedAddress     
+                        | XorMappedAddress  
+                        | AlternateServer  
+                        | UserName          
+                        | MessageIntegrity  
+                        | Fingerprint       
+                        | ErrorCode         
+                        | Realm             
+                        | Nonce             
+                        | UnknownAttributes 
+                        | Software          
+                        | AlternateServer   
+                        | ChannelNumber     
+                        | LifeTime          
+                        | XorPeerAddress    
+                        | Data              
+                        | XorRelayedAddress 
+                        | EvenPort          
+                        | RequestedTransport
+                        | DontFragment      
+                        | ReservationToken  
+                        | GenericAttribute);
+
+type MappedAddress
+{
+    (ushort where value ==0x0001) Type;
+    ushort Length;
+    byte Reserved where value == 00000000;
+    Family Family;
+    ushort Port;
+    (IPv4Address | IPv6Address) Address;
+}
+
+pattern Family = enum byte
+{
+    IPv4 = 0x01,
+    IPv6 = 0x02
+};
+
+type XorMappedAddress
+{
+    (ushort where value == 0x0020) Type;
+    ushort Length;
+    byte Reserved;
+    Family Family;
+    ushort Xport;
+    (IPv4Address | IPv6Address) XorAddress;
+}
+
+type UserName
+{
+    (ushort where value == 0x0006) Type;
+    ushort Length;
+    binary UserName with BinaryEncoding{Length = Length as uint};
+    // Have confirmed about the padding, ignore the alignment at this point.
+    //optional [|Length % 4 != 0|] array<byte> Padding with BinaryEncoding{Length = (4 - Length % 4) as uint};
+}
+
+type MessageIntegrity
+{
+    (ushort where value == 0x0008) Type;
+    ushort Length where ValidationCheck(value == 20, null, DiagnosisLevel.Warning, "TURN: The Length in type MessageIntegrity should be 20 bytes.");
+    binary HMACSHA1Hash with BinaryEncoding{Length = Length as uint};
+    // Have confirmed about the padding, ignore the alignment at this point.
+    //optional [|Length % 4 != 0|] array<byte> Padding with BinaryEncoding{Length = (4 - Length % 4) as uint};
+}
+
+type Fingerprint
+{
+    (uint where value == 0x8028) Type;
+    uint Length;
+    binary Crc with BinaryEncoding{Length = Length as uint};
+}
+
+type ErrorCode
+{
+    (ushort where value == 0x0009) Type;
+    ushort Length;
+    uint Reserved where ValidationCheck(value == 0, null, DiagnosisLevel.Warning, "TURN: The Reserved in type ErrorCode should be zero.") with BinaryEncoding{Width = 21};
+    byte Class where ValidationCheck(value >= 3 && value <= 6, null, DiagnosisLevel.Error, "TURN: The Class in type ErrorCode must be between 3 and 6.") with BinaryEncoding{Width = 3};
+    byte Number where ValidationCheck(value >= 0 && value <= 99, null, DiagnosisLevel.Error, "TURN: The Number in type ErrorCode must be between zero and 99.");
+    // Future Reference:TextEncoding.ASCII should be TextEncoding.UTF8,but UTF8 can't work properly for bug 23734
+    string ReasonPhrase with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = (Length - 4) as uint};
+    // Have confirmed about the padding, ignore the alignment at this point.
+    //optional [|Length % 4 != 0|] array<byte> Padding with BinaryEncoding{Length = (4 - Length % 4) as uint};
+}
+
+type Realm
+{
+    (ushort where value == 0x0014) Type;
+    ushort Length where ValidationCheck(value <= 763, null, DiagnosisLevel.Warning, "TURN: The Length in type Realm should be less than 128 characters.");
+    // Future Reference:TextEncoding.ASCII should be TextEncoding.UTF8,but UTF8 can't work properly for bug 23734
+    string Realm with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = Length as uint};
+    // Have confirmed about the padding, ignore the alignment at this point.
+    //optional [|Length % 4 != 0|] array<byte> Padding with BinaryEncoding{Length = (4 - Length % 4) as uint};
+}
+
+type Nonce
+{
+    (ushort where value == 0x0015) Type;
+    ushort Length where ValidationCheck(value <= 763, null, DiagnosisLevel.Warning, "TURN: The Length in type Nonce should be less than 128 characters.");
+    binary Nonce with BinaryEncoding{Length = Length as uint};
+    // Have confirmed about the padding, ignore the alignment at this point.
+    //optional [|Length % 4 != 0|] array<byte> Padding with BinaryEncoding{Length = (4 - Length % 4) as uint};
+}
+
+type UnknownAttributes
+{
+    (ushort where value == 0x000A) Type;
+    ushort Length; 
+    array<ushort> AttributType with BinaryEncoding{Length = Length / 16 as uint};
+}
+
+type Software
+{
+    (ushort where value == 0x8022) Type;
+    ushort Length where ValidationCheck(value <= 763, null, DiagnosisLevel.Warning, "TURN: The Length in type Software should be less than 128 characters."); 
+    binary Software with BinaryEncoding{Length = Length / 2 as uint};
+    // Have confirmed about the padding, ignore the alignment at this point.
+    //optional [|Length % 4 != 0|] array<byte> Padding with BinaryEncoding{Length = (4 - Length % 4) as uint};
+}
+
+type AlternateServer
+{
+    (ushort where value == 0x8023) Type;
+    ushort Length;
+    byte Reserved;
+    Family Family;
+    uint Port;
+    (IPv4Address | IPv6Address) Address;
+}
+
+// rfc 5766
+type ChannelNumber
+{
+    (ushort where value == 0x000C) Type;
+    ushort Length;
+    ushort ChannelNumber;
+    ushort RFFU where ValidationCheck(value == 0, null, DiagnosisLevel.Error, "TURN: The RFFU in type ChannelNumber must be set to zero.");
+}
+
+type LifeTime
+{
+    (ushort where value == 0x000D) Type;
+    ushort Length;
+    uint LifeTime;
+}
+
+type XorPeerAddress
+{
+    (ushort where value == 0x0012) Type;
+    ushort Length;
+    byte Reserved;
+    Family Family;
+    uint Xport;
+    (IPv4Address | IPv6Address) XorAddress;
+}
+
+type Data
+{
+    (ushort where value == 0x0013) Type;
+    ushort Length;
+    binary Data with BinaryEncoding{Length = Length as uint};
+}
+
+type XorRelayedAddress
+{
+    (ushort where value == 0x0016) Type;
+    ushort Length;
+    byte Reserved;
+    Family Family;
+    uint Xport;
+    (IPv4Address | IPv6Address) XorAddress;
+}
+
+type EvenPort
+{
+    (ushort where value == 0x0013) Type;
+    ushort Length;
+    byte R with BinaryEncoding{Width = 1};
+    byte RFFU where ValidationCheck(value == 0, null, DiagnosisLevel.Error, "TURN: The RFFU in type EvenPort must be set to zero.") with BinaryEncoding{Width = 7};
+}
+
+type RequestedTransport
+{
+    (ushort where value == 0x0019) Type;
+    ushort Length;
+    byte Protocol;
+    uint RFFU where ValidationCheck(value == 0, null, DiagnosisLevel.Error, "TURN: The RFFU in type RequestedTransport must be set to zero.") with BinaryEncoding{Width = 24};
+}
+
+type DontFragment
+{
+    (ushort where value == 0x001A) Type;
+    ushort Length where ValidationCheck(value == 0, null, DiagnosisLevel.Warning, "TURN: The Length in type DontFragment should be zero.");
+}
+
+type ReservationToken
+{
+    (ushort where value == 0x0022) Type;
+    ushort Length;
+    binary TokenValue with BinaryEncoding{Length = 8};
+}
+
+type GenericAttribute
+{
+    ushort Type where !(value is AttributeType);
+    ushort Length where value > 0;
+    array<byte> URL  with BinaryEncoding{Length = Length as uint};
+}
+
+// rfc 5389 and rfc 5766
+pattern AttributeType = enum uint
+{
+    Reserved           = 0x0000,
+    MAPPEDADDRESS      = 0x0001,
+    //RESPONSEADDRESS  = 0x0002,
+    //CHANGEADDRESS    = 0x0003,
+    //SOURCEADDRESS    = 0x0004,
+    //CHANGEDADDRESS   = 0x0005,
+    UserName           = 0x0006,
+    //PASSWORD         = 0x0007,
+    MESSAGEINTEGRITY   = 0x0008,
+    ERRORCODE          = 0x0009,
+    UNKNOWNATTRIBUTES  = 0x000A,
+    //REFLECTEDFROM    = 0X000B,
+    CHANNELNUMBER      = 0x000C,
+    LIFETIME           = 0X000D,
+    //BANDWIDTH        = 0X0010,
+    XORPEERADDRESS     = 0X0012,
+    DATA               = 0X0013,
+    REALM              = 0X0014,
+    NONCE              = 0X0015,
+    XORRELAYEDADDRESS  = 0X0016,
+    EVENPORT           = 0X0018,
+    REQUESTEDTRANSPORT = 0X0019,
+    DONTFRAGMENT       = 0X001A,
+    XORMAPPEDADDRESS   = 0X0020,
+    //TIMERVAL         = 0X0021,
+    SOFTWARE           = 0X8022,
+    ALTERNATESERVER    = 0X8023,
+    RESERVATIONTOKEN   = 0X0022,
+    FINGERPRINT        = 0X8028, 
+};

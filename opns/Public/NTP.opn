@@ -1,0 +1,340 @@
+protocol NTP with
+BinaryEncodingDefaults{Endian = Endian.Big},
+Documentation
+{
+    ProtocolName = "Network Time Protocol",
+    ShortName = "NTP",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References =
+        [
+            new Reference{Name = "RFC 1305"},
+            new Reference{Name = "RFC 2030"},
+            new Reference{Name = "RFC 5905"},
+        ],
+    RevisionSummary =
+        [
+            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "11/14/2011"}
+        ]
+};
+
+using Standard;
+using Utility;
+using IANA;
+using UDP;
+using IPv4;
+
+endpoint Node 
+    over UDP.Host 
+    accepts Message;
+
+autostart actor NTPOverUDP(UDP.Host host)
+{
+    process host accepts p:UDP.Datagram where p.DestinationPort == Port.NTP | p.SourcePort == Port.NTP
+    {
+        switch (p.Payload)
+        {
+            case m:Message from NTPDecoder =>
+                dispatch (endpoint NTP.Node over host) accepts m;
+            default =>
+                ThrowDecodingException("NTP");
+        }
+    }
+}
+
+message Message
+{
+    byte Leap    with BinaryEncoding {Width = 2};
+    byte Version where ValidationCheck(value <= 4 && value > 0, this,"NTP: The Version in message Message should be less than or equal to 4.") with BinaryEncoding {Width = 3};
+    byte Mode    where ValidationCheck(value < 7 && value > 0, this, "Zero and 7 are reserved for Mode.") with BinaryEncoding {Width = 3};
+    byte Stratum;
+    sbyte Poll;
+    sbyte Precision;
+    int RootDelay;
+    uint RootDispersion;
+    ([|Stratum == 0 || Stratum == 1|] ReferenceID | [|Stratum >= 2|] IPv4Address) ReferenceIdentifier;
+    long ReferenceTimestamp;
+    long OriginateTimestamp;
+    long ReceiveTimestamp;
+    long TransmitTimestamp;
+    optional (MD5key | MD5keyPlus | ExtendedAuthenticator | Autokey) ExtensionField with Encoding{Ignore = true};
+    
+    override string ToString()
+    {
+        return "Leap: " + GetLeap(Leap) + ", Version: " + (Version as string) + ", Mode: " + GetMode(Mode) + ", Stratum: " + GetStratum(Stratum);
+    }
+}
+
+optional Message NTPDecoder(stream binaryValue)
+{
+    stream s = binaryValue;
+    
+    optional Message msg = BinaryDecoder<Message>(s);
+    if (msg == nothing)
+    {
+        return nothing;
+    }
+    
+    Message m = msg as Message;   
+    
+    // rfc 5906:
+    // If the remaining length is 20 (128-bit digest plus 4-octet key ID) or
+    // 22 (160-bit digest plus 4-octet key ID), the remaining data are the
+    // MAC and parsing is complete.  If the remaining length is greater than
+    // 22, an extension field is present.
+    if (s.ByteLength == 48)
+    {
+        return m;
+    }
+    
+    if (s.ByteLength - s.BytePosition == 20)
+    {
+        var a = BinaryDecoder<MD5key>(s);
+        if (a == nothing)
+        {
+            return nothing;
+        }
+        else
+        {
+            m.ExtensionField = a;
+            m.AssignFieldEncodingInfo("ExtensionField", 384, 20 * 8);
+        }
+    }
+    else if (s.ByteLength - s.BytePosition == 24)
+    {
+        var a = BinaryDecoder<MD5keyPlus>(s);
+        if (a == nothing)
+        {
+            return nothing;
+        }
+        else
+        {
+            m.ExtensionField = a;
+            m.AssignFieldEncodingInfo("ExtensionField", 384, 24 * 8);
+        }
+    }
+    else if (s.ByteLength - s.BytePosition == 72 && m.Version == 3)
+    {
+        var a = BinaryDecoder<ExtendedAuthenticator>(s);
+        if (a == nothing)
+        {
+            return nothing;
+        }
+        else
+        {
+            m.ExtensionField = a;
+            m.AssignFieldEncodingInfo("ExtensionField", 384, 72 * 8);
+        }
+    }
+    else if (s.ByteLength - s.BytePosition > 26 && m.Version == 4)
+    {
+            var a = BinaryDecoder<Autokey>(s);
+            if (a == nothing)
+            {
+                return nothing;
+            }
+            else
+            {
+                m.ExtensionField = a;
+                m.AssignFieldEncodingInfo("ExtensionField", 384, (a as Autokey).Length * 8);
+            }
+    }
+
+    return m;
+}
+
+type ExtendedAuthenticator
+{
+    KeyIdentifierFlags KeyIdentifier;
+    byte Reserved where ValidationCheck(value == 0, null, "Reserved: Must be set to zero and must be ignored upon receipt.");
+    byte Flags;
+    byte ClientHashIDHints;
+    byte SignatureHashID;
+    Blob[64] CryptoChecksum;
+}
+
+// RFC 5906: In Autokey the 8-bit Field Type field is interpreted as the version
+// number, currently 2.  For future versions, values 1-7 have been
+// reserved for Autokey; other values may be assigned for other
+// applications.
+type Autokey
+{
+    byte R    with BinaryEncoding{Width = 1};
+    byte E    with BinaryEncoding{Width = 1};
+    byte Code with BinaryEncoding{Width = 6};
+    byte FieldType where ValidationCheck(value == 2, null, "Field Type field should be 2.");
+    ushort Length;
+    int AssociationID;
+    int TimeStamp;
+    int FileStamp;
+    uint ValueLength;
+    binary Value with BinaryEncoding{Length = ValueLength as uint};
+    uint SignatureLength;
+    binary Signature with BinaryEncoding{Length = SignatureLength as uint};
+    binary Padding with BinaryEncoding{Length = 4 - ((Length - 24 - ValueLength - SignatureLength) % 4) as uint};
+}
+
+
+type MD5key
+{
+    KeyIdentifierFlags KeyIdentifier;
+    binary MsgDgt with BinaryEncoding{Length = 16};
+}
+
+type MD5keyPlus
+{
+    KeyIdentifierFlags KeyIdentifier;
+    binary MsgDgt with BinaryEncoding{Length = 20};
+}
+
+type KeyIdentifierFlags
+{
+    int Rid  with BinaryEncoding {Width = 31};
+    int Sign with BinaryEncoding {Width = 1};
+}
+
+type ReferenceID
+{
+    string ReferenceIdentifier with BinaryEncoding{TextEncoding = TextEncoding.ASCII,Length = 4};
+    override string ToString()
+    {
+        switch (ReferenceIdentifier)
+        {
+            case "ACTS" =>
+                return "NIST telephone modem";
+            case "ATOM" =>
+                return "Atomic clock (calibrated)";
+            case "callsign" =>
+                return "Generic radio";
+            case "CHU" =>
+                return "HF Radio CHU Ottawa, Ontario";
+            case "DCF" =>
+                return "LF Radio DCF77 Mainflingen, DE 77.5 kHz";
+            case "DCN" =>
+                return "DCN routing protocol";
+            case "DTS" =>
+                return "Digital Time Service";
+            case "GAL" =>
+                return "Galileo Positioning System";
+            case "GOES" =>
+                return "GOES UHF environment satellite";
+            case "GPS" =>
+                return "GPS UHF satellite positioning";
+            case "HBG" =>
+                return "LF Radio HBG Prangins, HB 75 kHz";
+            case "IRIG" =>
+                return "Inter-Range Instrumentation Group";
+            case "JJY" =>
+                return "LF Radio JJY Fukushima, JP 40 kHz, Saga, JP 60 kHz";
+            case "LORC" =>
+                return "LORAN-C radionavigation";
+            case "LOCL" =>
+                return "Uncalibrated Local Clock";
+            case "MSF" =>
+                return "LF Radio MSF Anthorn, UK 60 kHz";
+            case "NIST" =>
+                return "NIST public modem";
+            case "PTB" =>
+                return "European telephone modem";
+            case "PPS" =>
+                return "Generic pulse-per-second";
+            case "TDF" =>
+                return "MF Radio Allouis, FR 162 kHz";
+            case "TSP" =>
+                return "TSP time protocol";
+            case "USNO" =>
+                return "USNO telephone modem";
+            case "VLF" =>
+                return "VLF radio";
+            case "VMTP" =>
+                return "The client is utilizing the virtualization host's hardware as a time source.";
+            case "WWV" =>
+                return "HF Radio WWV Ft. Collins, CO";
+            case "WWVB" =>
+                return "LF Radio WWVB Ft. Collins, CO 60 kHz";
+            // default value is "WWVH"
+            default =>
+                return "HF Radio WWVH Kauai, HI";
+        }
+    }
+}
+
+string GetStratum(byte s)
+{
+    switch (s)
+    {
+        case 0 =>
+            return "unspecified or invalid";
+        case 1 =>
+            return "primary reference";
+        case 2 =>
+            return "secondary server(via NTP)";
+        case 3 =>
+            return "secondary server(via NTP)";
+        case 4 =>
+            return "secondary server(via NTP)";
+        case 5 =>
+            return "secondary server(via NTP)";
+        case 6 =>
+            return "secondary server(via NTP)";
+        case 7 =>
+            return "secondary server(via NTP)";
+        case 8 =>
+            return "secondary server(via NTP)";
+        case 9 =>
+            return "secondary server(via NTP)";
+        case 10 =>
+            return "secondary server(via NTP)";
+        case 11 =>
+            return "secondary server(via NTP)";
+        case 12 =>
+            return "secondary server(via NTP)";
+        case 14 =>
+            return "secondary server(via NTP)";
+        case 15 =>
+            return "secondary server(via NTP)";
+        case 16 =>
+            return "unsynchronized";
+        default =>
+            return "reserved";
+    }
+}
+
+string GetLeap(byte s)
+{
+    switch (s)
+    {
+        case 0 =>
+            return "no warning";
+        case 1 =>
+            return "last minute has 61 seconds";
+        case 2 =>
+            return "last minute has 59 seconds";
+        default =>
+            return "alarm condition (clock not synchronized)";
+    }
+}
+
+string GetMode(byte s)
+{
+    switch (s)
+    {
+        case 1 =>
+            return "symmetric active";
+        case 2 =>
+            return "symmetric passive";
+        case 3 =>
+            return "client";
+        case 4 =>
+            return "server";
+        case 5 =>
+            return "broadcast";
+        case 6 =>
+            return "NTP control messages";
+        default =>
+            return "reserved for private use";
+    }
+}

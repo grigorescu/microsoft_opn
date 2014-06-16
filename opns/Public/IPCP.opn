@@ -1,0 +1,153 @@
+﻿protocol IPCP 
+    with BinaryEncodingDefaults{Endian = Endian.Big},
+Documentation
+{
+    ProtocolName = "Internet Protocol Control Protocol",
+    ShortName = "IPCP",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+            new Reference{Name = "RFC 1332"},
+            new Reference{Name = "RFC 1877"},
+            new Reference{Name = "RFC 2153"},
+            new Reference{Name = "RFC 2290"},
+            new Reference{Name = "RFC 3241"},
+            new Reference{Name = "RFC 3544"},
+        ],
+    RevisionSummary = 
+        [
+            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "11/28/2011"}
+        ]
+};
+
+using Standard;
+using PPP;
+using Utility;
+using IPv4;
+
+endpoint Node
+    over PPP.Node
+    accepts Datagram;
+
+autostart actor IPCPOverPPP(PPP.Node node)
+{
+    process node accepts f:PPP.Frame where GetPacketTypeValue(f.PacketType) == 32801
+    {
+        switch (f.Payload)
+        { 
+            case d:Datagram from BinaryDecoder<Datagram> => 
+                var n = endpoint IPCP.Node over node;
+                dispatch n accepts d;
+            default => 
+                ThrowDecodingException("IPCP");
+        }
+    }
+}
+
+message Datagram
+{
+    byte Code;
+    byte Identifier;
+    ushort Length;
+    optional array<OptionType> Options;
+
+    override string ToString()
+    {
+        string display;
+        switch (Code)
+        {
+            case 0 => display = "Vendor Specific";
+            case 1 => display = "Configure-Request";
+            case 2 => display = "Configure-Ack";
+            case 3 => display = "Configure-Nak";
+            case 4 => display = "Configure-Reject";
+            case 5 => display = "Terminate-Request";
+            case 6 => display = "Terminate-Ack";
+            case 7 => display = "Code-Reject";
+            default => display = "Unknown Packet (Code = " + (Code as string) + ")";
+        }
+        display = "Code = " + display + ", Length = " + (Length as string);
+        return display;
+    }
+}
+
+type OptionType
+{
+    (IPCompressionProtocol
+        | IPAddress
+        | MobileIPv4
+        | PrimaryDNSServerAddress
+        | PrimaryNBNSServerAddress
+        | SecondaryDNSServerAddress
+        | SecondaryNBNSServerAddress
+        | IPAddresses
+        | DefaultOption) Option;
+}
+
+type DefaultOption
+{
+    byte Option;
+    (byte where value >= 2) Length;
+    binary Data with BinaryEncoding{Length = (Length - 2) as uint};
+}
+
+type IPAddresses
+{
+    (byte where value == 1) Option;
+    byte Length where ValidationCheck(value == 6, null, "IPCP: The Length in type IPAddresses must be set to 6.");
+    IPv4Address IPAddresses;
+}
+
+type IPCompressionProtocol
+{
+    (byte where value == 2) Option;
+    byte Length where ValidationCheck(value >= 4, null, "IPCP: The Length in type IPCompressionProtocol must be greater than or equal to 4.");
+    ushort IPCompressionProtocoltype;
+    optional [|Length - 4 > 0|] array<byte> Data with BinaryEncoding{Length = (Length - 4) as uint};
+}
+
+type IPAddress
+{
+    (byte where value == 3) Option;
+    byte Length where ValidationCheck(value == 6, null, "IPCP: The Length in type IPAddress must be set to 6.");
+    IPv4Address IPAddress;
+}
+
+type MobileIPv4
+{
+    (byte where value == 4) Option;
+    byte Length where ValidationCheck(value == 6, null, "IPCP: The Length in type MobileIPv4 must be set to 6.");
+    IPv4Address MobileNodeHomeAddress;
+}
+
+type PrimaryDNSServerAddress
+{
+    (byte where value == 129) Option;
+    byte Length where ValidationCheck(value == 6, null, "IPCP: The Length in type PrimaryDNSServerAddress must be set to 6.");
+    IPv4Address PrimaryDNSAddress;
+}
+
+type PrimaryNBNSServerAddress
+{
+    (byte where value == 130) Option;
+    byte Length where ValidationCheck(value == 6, null, "IPCP: The Length in type PrimaryNBNSServerAddress must be set to 6.");
+    IPv4Address PrimaryNBNSAddress;
+}
+
+type SecondaryDNSServerAddress
+{
+    (byte where value == 131) Option;
+    byte Length where ValidationCheck(value == 6, null, "IPCP: The Length in type SecondaryDNSServerAddress must be set to 6.");
+    IPv4Address SecondaryDNSAddress;
+}
+
+type SecondaryNBNSServerAddress
+{
+    (byte where value == 132) Option;
+    byte Length where ValidationCheck(value == 6, null, "IPCP: The Length in type SecondaryNBNSServerAddress must be set to 6.");
+    IPv4Address SecondaryNBNSAddress;
+}

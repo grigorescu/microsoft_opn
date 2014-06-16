@@ -1,0 +1,297 @@
+﻿protocol FTP with 
+BinaryEncodingDefaults{Endian = Endian.Big},
+Documentation
+{
+    ProtocolName = "File Transfer Protocol",
+    ShortName = "FTP",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+            new Reference{Name = "RFC 959"},
+        ],
+    RevisionSummary =
+        [
+            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "09/8/2011"}
+        ]
+};
+
+using Standard;
+using IANA;
+using Utility;
+using TCP;
+using VirtualTransport;
+
+// Initialize the Data Port number. When entering into to PASV command, Data Port number would change by using GetPort method.
+int pasvDataport = -1;
+
+endpoint Server over VirtualTransport.Server accepts DataToServer issues DataToClient accepts CommandToServer issues CommandToClient;
+
+client endpoint Client connected to Server;
+
+autostart actor FTPOverTCP(VirtualTransport.Server server)
+{
+    // Client listens on the default data port 20
+    process server issues s:VirtualTransport.VirtualDataSegment where s.DestinationPort == Port.FTPData || s.DestinationPort == pasvDataport
+    {
+        switch (s.Payload)
+        {
+            case d:DataToClient from BinaryDecoder<DataToClient> =>
+                dispatch (endpoint Server over server) issues d;
+            default => 
+                ThrowDecodingExceptionForTCP("FTP", "DataToClient", s#IsIncomplete, s#SegmentLost);
+        }
+    }
+    process server accepts s:VirtualTransport.VirtualDataSegment where s.DestinationPort == Port.FTPData || s.DestinationPort == pasvDataport
+    {
+        switch (s.Payload)
+        {
+            case d:DataToServer from BinaryDecoder<DataToServer> =>
+                dispatch (endpoint Server over server) accepts d;
+            default => 
+                ThrowDecodingExceptionForTCP("FTP", "DataToServer", s#IsIncomplete, s#SegmentLost);
+        }
+    }
+    
+    // Server listens on the default data port 20
+    process server accepts s:VirtualTransport.VirtualDataSegment where s.SourcePort== Port.FTPData || s.SourcePort == pasvDataport
+    {
+        switch (s.Payload)
+        {
+            case d:DataToServer from BinaryDecoder<DataToServer> =>
+                dispatch (endpoint Server over server) accepts d;
+            default => 
+                ThrowDecodingExceptionForTCP("FTP", "DataToServer", s#IsIncomplete, s#SegmentLost);
+        }
+    }
+    process server issues s:VirtualTransport.VirtualDataSegment where s.SourcePort== Port.FTPData || s.SourcePort == pasvDataport
+    {
+        switch (s.Payload)
+        {
+            case d:DataToClient from BinaryDecoder<DataToClient> =>
+                dispatch (endpoint Server over server) issues d;
+            default => 
+                ThrowDecodingExceptionForTCP("FTP", "DataToClient", s#IsIncomplete, s#SegmentLost);
+        }
+    }
+
+    // Server listens on control port
+    process server issues s:VirtualTransport.VirtualDataSegment{SourcePort is Port.FTPControl}
+    {
+        switch (s.Payload)
+        {
+            case c:CommandToClient from BinaryDecoder<CommandToClient> =>
+                if (c.Response is ResponseType)
+                {
+                    var v = c.Response as ResponseType;
+                    CommandToClientDecoder(ref v);
+                }
+                else if (c.Response is ResponseMultipleLineType)
+                {
+                    var v = c.Response as ResponseMultipleLineType;
+                    CommandToClientDecoder(ref v);
+                }
+                dispatch (endpoint Server) issues c;
+            default =>
+                ThrowDecodingExceptionForTCP("FTP", "CommandToClient", s#IsIncomplete, s#SegmentLost);
+        }
+    }
+
+    process server accepts s:VirtualTransport.VirtualDataSegment{DestinationPort is Port.FTPControl}
+    {
+        switch (s.Payload)
+        {
+            case c:CommandToServer from BinaryDecoder<CommandToServer> =>
+                dispatch (endpoint Server over server) accepts c;
+            default => 
+                ThrowDecodingExceptionForTCP("FTP", "CommandToServer", s#IsIncomplete, s#SegmentLost);
+        }
+    }
+}
+
+message DataToClient
+{
+    binary PayLoadToClient;
+
+    override string ToString()
+    {
+        return "Data Transfer To Client, size = " + (PayLoadToClient.Count as string) + " bytes";
+    }
+}
+
+message DataToServer
+{
+    binary PayLoadToServer;
+
+    override string ToString()
+    {
+        return "Data Transfer To Server, size = " + (PayLoadToServer.Count as string) + " bytes";
+    }
+}
+
+// [RFC 959    Page 35    4.2.  FTP REPLIES]
+message CommandToClient
+{
+    (ResponseType | ResponseMultipleLineType) Response;
+
+    override string ToString()
+    {
+        if (Response is ResponseType)
+        {
+            var v = Response as ResponseType;
+            return v.ReplyCode + " " + v.ReplyMessage;
+        }
+        else if (Response is ResponseMultipleLineType)
+        {
+            var v = Response as ResponseMultipleLineType;
+            string msg = null;
+            if (v.Reply != nothing)
+            {
+                var reply = v.Reply as ResponseType;
+                msg = reply.ReplyCode + " " + reply.ReplyMessage;
+            }
+            return (v.MessageArray as array<ResponseMultipleLine>)[0].Message + " " + msg;
+        }
+        return "";
+    }
+}
+
+type ResponseType
+{
+    string ReplyCode where (((value as array<char>)[0] >= 0x31 && (value as array<char>)[0] <= 0x36)
+        && ((value as array<char>)[1] >= 0x30 && (value as array<char>)[1] <= 0x35)
+        && ((value as array<char>)[2] >= 0x30 && (value as array<char>)[2] <= 0x39)) with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = 3};
+    string ReplyMessage with BinaryEncoding{TextEncoding = TextEncoding.ASCII};
+    optional array<string> ReplyMessagePlus with Encoding{Ignore = true};
+}
+
+type ResponseMultipleLineType
+{
+    optional string Messages with BinaryEncoding{TextEncoding = TextEncoding.ASCII};
+    optional array<ResponseMultipleLine> MessageArray with Encoding{Ignore = true};
+    optional ResponseType Reply with Encoding{Ignore = true};
+}
+
+type ResponseMultipleLine
+{
+    string Message where (((value as array<char>)[0] < 0x31 || (value as array<char>)[0] > 0x36)
+        || ((value as array<char>)[1] < 0x30 || (value as array<char>)[1] > 0x35)
+        || ((value as array<char>)[2] < 0x30 || (value as array<char>)[2] > 0x39)) with BinaryEncoding{TextEncoding = TextEncoding.ASCII};
+}
+
+syntax CRLF = "\r\n";
+syntax Line = s:regex{[^\r\n]+} CRLF => s;
+
+//Sample: Entering Passive Mode (192,136,34,93,122,189).
+syntax Digit = s:regex{[0-9]+} => s;
+syntax PortNum = " Entering Passive Mode (" Digit "," Digit "," Digit "," Digit "," s1:Digit "," s2:Digit ")" => GetPort(s1, s2);
+
+int GetPort(string PortC1, string PortC2)
+{
+    int portC1L = PortC1.ToInt(false) as int;
+    int portC2L = PortC2.ToInt(false) as int;
+    int pasvDataPort = portC1L * 256 + portC2L;
+    return pasvDataPort;
+}
+
+void CommandToClientDecoder(ref ResponseType v)
+{
+    string rpCode = v.ReplyCode as string;
+    stream s = v.ReplyMessage;
+    int count = v.ReplyMessage.Count;
+    string first = Line(s) as string;
+    if (rpCode == "227")
+    {
+        pasvDataport = PortNum(first) as int;
+    }
+    if (s.BytePosition < count)
+    {
+        v.ReplyMessagePlus = [];
+    }
+    while (s.BytePosition < count)
+    {
+        string msg = Line(s) as string;
+        v.ReplyMessagePlus = (v.ReplyMessagePlus as array<string>) + [msg];
+    }
+}
+
+void CommandToClientDecoder(ref ResponseMultipleLineType v)
+{
+    stream s = v.Messages as string;
+    int count = (v.Messages as string).Count;
+
+    v.MessageArray = [];
+    while (s.BytePosition < count)
+    {
+        string msg = Line(s) as string;
+        optional ResponseMultipleLine multiple = BinaryDecoder<ResponseMultipleLine>(msg as stream);
+        if (multiple != nothing)
+        {
+            v.MessageArray = (v.MessageArray as array<ResponseMultipleLine>) + [multiple as ResponseMultipleLine];
+        }
+        else if (v.Reply == nothing)
+        {
+            v.Reply = BinaryDecoder<ResponseType>(msg as stream);
+            if (s.BytePosition < count && v.Reply != nothing)
+            {
+                var reply = v.Reply as ResponseType;
+                reply.ReplyMessagePlus = [];
+            }
+        }
+        else
+        {
+            var reply = v.Reply as ResponseType;
+            reply.ReplyMessagePlus = (reply.ReplyMessagePlus as array<string>) + [msg];
+        }
+    }
+
+    v.Messages = nothing;
+}
+
+// [RFC 959    Page 45    5.3.  COMMANDS]
+message CommandToServer
+{
+    (Request3NoParam | Request4NoParam | RequestWithParameter) Request;
+
+    override string ToString()
+    {
+        if (Request is Request3NoParam)
+        {
+            var v = Request as Request3NoParam;
+            return v.Command;
+        }
+        else if (Request is Request4NoParam)
+        {
+            var v = Request as Request4NoParam;
+            return v.Command;
+        }
+        else if (Request is RequestWithParameter)
+        {
+            var v = Request as RequestWithParameter;
+            return v.Command + " " + v.CommandParameter;
+        }
+        return "";
+    }
+}
+
+type Request3NoParam
+{
+    string Command where ((value as array<char>)[3] == 0x0D && (value as array<char>)[4] == 0x0A) with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = 5};
+    optional binary FTPPayLoad;
+}
+
+type Request4NoParam
+{
+    string Command where ((value as array<char>)[4] == 0x0D && (value as array<char>)[5] == 0x0A) with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = 6};
+    optional binary FTPPayLoad;
+}
+
+type RequestWithParameter
+{
+    string Command with BinaryEncoding{TextEncoding = TextEncoding.ASCII, TextTerminator = " "};
+    string CommandParameter with BinaryEncoding{TextEncoding = TextEncoding.ASCII};
+    optional binary FTPPayLoad;
+}

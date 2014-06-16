@@ -1,0 +1,529 @@
+protocol DFSC with 
+BinaryEncodingDefaults{Endian = Endian.Little},
+Documentation
+{
+    ProtocolName = "Distributed File System (DFS): Referral Protocol",
+    ShortName = "DFSC",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+            new Reference{Name = "MS-DFSC", Version = "20.0", ProgramName = ProgramName.WSPP},
+        ],
+    RevisionSummary = 
+        [
+            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "03/12/2012"}
+        ]
+};
+
+using Standard;
+using SMB2;
+using SMB;
+using Utility;
+
+// -------------------------------------------
+// Endpoints
+
+endpoint Server over SMB2.Server accepts REQ_GET_DFS_REFERRAL accepts REQ_GET_DFS_REFERRAL_EX issues RESP_GET_DFS_REFERRAL;
+client endpoint Client connected to Server;
+// -------------------------------------------
+// Actors
+
+// Since Bug 36618, change all the "binding" to actor temporarily.
+//binding DFSCServerOverSMB2: DFSC.Server over server:SMB2.Server
+//{
+    //rule server accepts SMB2.Messages.IoctlRequest
+    //{
+        //Request is SMB2IoctlRequest
+        //{
+            //CtlCode is SMB2IoctlCtlCode.FsctlDfsGetReferrals,
+            //Buffer is Blob{Data is rq:DFSC.Request from BinaryDecoder<DFSC.Request>}
+        //}
+    //} =>
+        //DFSC.Server accepts rq;
+    //rule server issues res:SMB2.Messages.IoctlResponse
+    //{
+        //Response is SMB2IoctlResponse
+        //{
+            //CtlCode is SMB2IoctlCtlCode.FsctlDfsGetReferrals,
+            //Buffer is Blob{Data is rs:DFSC.Response from DFSCDecoder}
+        //}
+    //} =>
+        //DFSC.Server issues rs;
+//}
+
+const set<SMB2IoctlCtlCode> IoctlResponseCtlCode = {SMB2IoctlCtlCode.FsctlDfsGetReferrals, SMB2IoctlCtlCode.FsctlDfsGetReferralsEx};
+
+autostart actor DFSCServerOverSMB2NamedPipeServer(SMB2.NamedPipeServer server)
+{
+    process server accepts m:SMB2.Messages.IoctlRequest where (m.Request.CtlCode is SMB2IoctlCtlCode.FsctlDfsGetReferrals && m.Request.Buffer is binary)
+    {
+        switch (m.Request.Buffer as binary)
+        {
+            case rq:DFSC.REQ_GET_DFS_REFERRAL from BinaryDecoder<DFSC.REQ_GET_DFS_REFERRAL> =>
+                dispatch (endpoint DFSC.Server over server) accepts rq;
+            default => 
+                ThrowDecodingException("DFSC", "REQ_GET_DFS_REFERRAL");
+        }
+    }
+    
+    process server accepts m:SMB2.Messages.IoctlRequest where (m.Request.CtlCode is SMB2IoctlCtlCode.FsctlDfsGetReferralsEx && m.Request.Buffer is binary)
+    {
+        switch (m.Request.Buffer as binary)
+        {
+            case rq:DFSC.REQ_GET_DFS_REFERRAL_EX from BinaryDecoder<DFSC.REQ_GET_DFS_REFERRAL_EX> =>
+                dispatch (endpoint DFSC.Server over server) accepts rq;
+            default => 
+                ThrowDecodingException("DFSC", "REQ_GET_DFS_REFERRAL_EX");
+        }
+    }
+    
+    process server issues m:SMB2.Messages.IoctlResponse where (IoctlResponseCtlCode[m.Response.CtlCode] && m.Response.Buffer is binary)
+    {
+        switch (m.Response.Buffer as binary)
+        {
+            case rs:DFSC.RESP_GET_DFS_REFERRAL from DFSCDecoder =>
+                dispatch (endpoint DFSC.Server over server) issues rs;
+            default => 
+                ThrowDecodingException("DFSC", "RESP_GET_DFS_REFERRAL");
+        }
+    }
+}
+
+autostart actor DFSCServerOverSMB2FileServer(SMB2.FileServer server)
+{
+    process server accepts m:SMB2.Messages.IoctlRequest where (m.Request.CtlCode is SMB2IoctlCtlCode.FsctlDfsGetReferrals && m.Request.Buffer is binary)
+    {
+        switch (m.Request.Buffer as binary)
+        {
+            case rq:DFSC.REQ_GET_DFS_REFERRAL from BinaryDecoder<DFSC.REQ_GET_DFS_REFERRAL> =>
+                dispatch (endpoint DFSC.Server over server) accepts rq;
+            default => 
+                ThrowDecodingException("DFSC", "REQ_GET_DFS_REFERRAL");
+        }
+    }
+    
+    process server accepts m:SMB2.Messages.IoctlRequest where (m.Request.CtlCode is SMB2IoctlCtlCode.FsctlDfsGetReferralsEx && m.Request.Buffer is binary)
+    {
+        switch (m.Request.Buffer as binary)
+        {
+            case rq:DFSC.REQ_GET_DFS_REFERRAL_EX from BinaryDecoder<DFSC.REQ_GET_DFS_REFERRAL_EX> =>
+                dispatch (endpoint DFSC.Server over server) accepts rq;
+            default => 
+                ThrowDecodingException("DFSC", "REQ_GET_DFS_REFERRAL_EX");
+        }
+    }
+    
+    process server issues m:SMB2.Messages.IoctlResponse where (IoctlResponseCtlCode[m.Response.CtlCode] && m.Response.Buffer is binary)
+    {
+        switch (m.Response.Buffer as binary)
+        {
+            case rs:DFSC.RESP_GET_DFS_REFERRAL from DFSCDecoder =>
+                dispatch (endpoint DFSC.Server over server) issues rs;
+            default => 
+                ThrowDecodingException("DFSC", "RESP_GET_DFS_REFERRAL");
+        }
+    }
+}
+
+autostart actor DFSCServerOverSMB(SMB.Server server)
+{
+    map<uint, ushort> smbSubcommand = {};
+    process server accepts m:SMB.Messages.ComTransaction2Request where (m.Request.Subcommand == 0x10 && m.Request.Trans2Parameters != nothing)
+    {
+        uint smbSubcommandKey = ((m.Tid << 16)  + m.Mid) as uint;
+        switch (((m.Request.Trans2Parameters as Trans2SubcommandRequestParameters).Parameters as Blob).Data)
+        {
+            case rq:DFSC.REQ_GET_DFS_REFERRAL from BinaryDecoder<DFSC.REQ_GET_DFS_REFERRAL> =>
+                smbSubcommand[smbSubcommandKey] = m.Request.Subcommand;
+                dispatch (endpoint DFSC.Server over server) accepts rq;
+            default => 
+                ThrowDecodingException("DFSC", "REQ_GET_DFS_REFERRAL");
+        }
+    }
+    
+    process server issues m:SMB.Messages.ComTransaction2Response where (((((m.Tid << 16)  + m.Mid) as uint) in smbSubcommand) && smbSubcommand[(((m.Tid << 16)  + m.Mid) as uint)] == 0x10 && m.Response is SmbComTransaction2Response && (m.Response as SmbComTransaction2Response).Trans2Data != nothing)
+    {
+        uint smbSubcommandKey = ((m.Tid << 16)  + m.Mid) as uint;
+        switch ((m.Response as SmbComTransaction2Response).Trans2Data as binary)
+        {
+            case rs:DFSC.RESP_GET_DFS_REFERRAL from DFSCDecoder =>
+                smbSubcommand = smbSubcommand.Remove(smbSubcommandKey);
+                dispatch (endpoint DFSC.Server over server) issues rs;
+            default => 
+                ThrowDecodingException("DFSC", "RESP_GET_DFS_REFERRAL");
+        }
+    }
+}
+
+// -------------------------------------------
+// Interface
+
+// 2.2.2 REQ_GET_DFS_REFERRAL
+message REQ_GET_DFS_REFERRAL
+{
+    ushort MaxReferralLevel;
+    string RequestFileName;
+    override string ToString()
+    {
+        return "Get DFS Referral Request, MaxReferralLevel: " + (MaxReferralLevel as string) + ", RequestFileName: " + RequestFileName;
+    }
+}
+
+// 2.2.4 RESP_GET_DFS_REFERRAL
+message RESP_GET_DFS_REFERRAL
+{
+    ushort PathConsumed;
+    ushort NumberOfReferrals;
+    ReferralHeaderFlags ReferralHeaderFlags;
+    (array<DFS_REFERRAL_V1> | array<DFS_REFERRAL_V2> | array<DFS_REFERRAL_V3> | array<DFS_REFERRAL_V4>) ReferralEntries with BinaryEncoding {Length = NumberOfReferrals};
+    override string ToString()
+    {
+        string summary = "Get DFS Referral Response, NumberOfReferrals: " + (NumberOfReferrals as string);
+        if (NumberOfReferrals > 0)
+        {
+            summary += ", Version: ";
+            switch (ReferralEntries)
+            {
+                case array<DFS_REFERRAL_V1> =>
+                    summary += "1";
+                case array<DFS_REFERRAL_V2> =>
+                    summary += "2";
+                case array<DFS_REFERRAL_V3> =>
+                    summary += "3";
+                case array<DFS_REFERRAL_V4> =>
+                    summary += "4";
+                default =>
+                    summary += "Unknown";
+            }
+        }
+        return summary;
+    }
+}
+
+// 2.2.3 REQ_GET_DFS_REFERRAL_EX
+message REQ_GET_DFS_REFERRAL_EX
+{
+    ushort MaxReferralLevel;
+    ushort RequestFlags where ValidationCheck(value is REQ_GET_DFS_REFERRAL_EX_RequestFlags, null, () => "DFSC: The RequestFlags field in type REQ_GET_DFS_REFERRAL_EX must be set to zero or 0x0001, not " + DecToHexFormat(value) + ".");
+    uint RequestDataLength;
+    RequestData[(RequestFlags & REQ_GET_DFS_REFERRAL_EX_RequestFlags.SiteName) as bool] RequestData;
+    override string ToString()
+    {
+        string summary = "Get DFS Referral Request Ex, MaxReferralLevel: " + (MaxReferralLevel as string) + ", RequestFileName: " + RequestData.RequestFileName;
+        
+        if(RequestData.SiteName != nothing)
+        {
+            summary += ", SiteName: " + (RequestData.SiteName as string);
+        }
+        
+        return summary;
+    }
+}
+
+pattern REQ_GET_DFS_REFERRAL_EX_RequestFlags = flags ushort
+{
+	SiteName = 0x0001,
+};
+
+optional RESP_GET_DFS_REFERRAL DFSCDecoder(binary binaryValue)
+{
+    stream s = binaryValue as stream;
+    optional RESP_GET_DFS_REFERRAL res1 = BinaryDecoder<RESP_GET_DFS_REFERRAL>(s);
+    if (res1 == nothing)
+    {
+        return nothing;
+    }
+    RESP_GET_DFS_REFERRAL res = res1 as RESP_GET_DFS_REFERRAL;
+    if (res.NumberOfReferrals > 0 && res.ReferralEntries is array<DFS_REFERRAL_V2>)
+    {
+        array<DFS_REFERRAL_V2> r2s = res.ReferralEntries as array<DFS_REFERRAL_V2>;
+        for(int i = 0; i < res.NumberOfReferrals; i++)
+        {
+            DFS_REFERRAL_V2 r2 = r2s[i];
+            // DFSPathOffset is the string DFSPath offset, the offset start is the beginning of this referral entry
+            if (r2.DFSPathOffset > 0)
+            {
+                r2.DFSPath = BinaryDecoder<string>(s.PeekBytes((r2.DFSPathOffset + i * 22 + 8) * 8 as int));
+                r2.AssignFieldEncodingInfo("DFSPath", (r2.DFSPathOffset + i * 22 + 8) * 8 as int, ((r2.DFSPath as string).Count + 1) * 16 as int);
+            }
+            else
+            {
+                r2.DFSPath = nothing;
+            }
+            if (r2.DFSAlternatePathOffset > 0)
+            {
+                r2.DFSAlternatePath = BinaryDecoder<string>(s.PeekBytes((r2.DFSAlternatePathOffset + i * 22 + 8) * 8 as int));
+                r2.AssignFieldEncodingInfo("DFSAlternatePath", (r2.DFSAlternatePathOffset + i * 22 + 8) * 8 as int, ((r2.DFSAlternatePath as string).Count + 1) * 16 as int);
+            }
+            else
+            {
+                r2.DFSAlternatePath = nothing;
+            }
+            if (r2.NetworkAddressOffset > 0)
+            {
+                r2.NetworkAddress = BinaryDecoder<string>(s.PeekBytes((r2.NetworkAddressOffset + i * 22 + 8) * 8 as int));
+                r2.AssignFieldEncodingInfo("NetworkAddress", (r2.NetworkAddressOffset + i * 22 + 8) * 8 as int, ((r2.NetworkAddress as string).Count + 1) * 16 as int);
+            }
+            else
+            {
+                r2.NetworkAddress = nothing;
+            }
+        }
+    }
+    else if (res.NumberOfReferrals > 0 && res.ReferralEntries is array<DFS_REFERRAL_V3>)
+    {
+        array<DFS_REFERRAL_V3> r3s = res.ReferralEntries as array<DFS_REFERRAL_V3>;
+        for(int i = 0; i < res.NumberOfReferrals; i++)
+        {
+            DFS_REFERRAL_V3 r3 = r3s[i];
+            if (r3.ReferralEntryFlags.NameListReferral == 0)
+            {
+                DfsReferralRemainder0 rem0 = r3.Remainder as DfsReferralRemainder0;
+                if (rem0.DFSPathOffset > 0)
+                {
+                    rem0.DFSPath = BinaryDecoder<string>(s.PeekBytes((rem0.DFSPathOffset + i * 34 + 8) * 8 as int));
+                    rem0.AssignFieldEncodingInfo("DFSPath", (rem0.DFSPathOffset + i * 34 + 8) * 8 as int, ((rem0.DFSPath as string).Count + 1) * 16 as int);
+                }
+                else
+                {
+                    rem0.DFSPath = nothing;
+                }
+                if (rem0.DFSAlternatePathOffset > 0)
+                {
+                    rem0.DFSAlternatePath = BinaryDecoder<string>(s.PeekBytes((rem0.DFSAlternatePathOffset + i * 34 + 8) * 8 as int));
+                    rem0.AssignFieldEncodingInfo("DFSAlternatePath", (rem0.DFSAlternatePathOffset + i * 34 + 8) * 8 as int, ((rem0.DFSAlternatePath as string).Count + 1) * 16 as int);
+                }
+                else
+                {
+                    rem0.DFSAlternatePath = nothing;
+                }
+                if (rem0.NetworkAddressOffset > 0)
+                {
+                    rem0.NetworkAddress = BinaryDecoder<string>(s.PeekBytes((rem0.NetworkAddressOffset + i * 34 + 8) * 8 as int));
+                    rem0.AssignFieldEncodingInfo("NetworkAddress", (rem0.NetworkAddressOffset + i * 34 + 8) * 8 as int, ((rem0.NetworkAddress as string).Count + 1) * 16 as int);
+                }
+                else
+                {
+                    rem0.NetworkAddress = nothing;
+                }
+            }
+            else
+            {
+                DfsReferralRemainder1 rem1 = r3.Remainder as DfsReferralRemainder1;
+                if (rem1.SpecialNameOffset > 0)
+                {
+                    rem1.SpecialName = BinaryDecoder<string>(s.PeekBytes((rem1.SpecialNameOffset + i * 18 + 8) * 8 as int));
+                    rem1.AssignFieldEncodingInfo("SpecialName", (rem1.SpecialNameOffset + i * 18 + 8) * 8 as int, ((rem1.SpecialName as string).Count + 1) * 16 as int);
+                }
+                else
+                {
+                    rem1.SpecialName = nothing;
+                }
+                if (rem1.ExpandedNameOffset > 0)
+                {
+                    rem1.ExpandedName = BinaryDecoder<string>(s.PeekBytes((rem1.ExpandedNameOffset + i * 18 + 8) * 8 as int));
+                    rem1.AssignFieldEncodingInfo("ExpandedName", (rem1.ExpandedNameOffset + i * 18 + 8) * 8 as int, ((rem1.ExpandedName as string).Count + 1) * 16 as int);
+                }
+                else
+                {
+                    rem1.ExpandedName = nothing;
+                }
+            }
+        }
+    }
+    else if (res.NumberOfReferrals > 0 && res.ReferralEntries is array<DFS_REFERRAL_V4>)
+    {
+        array<DFS_REFERRAL_V4> r4s = res.ReferralEntries as array<DFS_REFERRAL_V4>;
+        for(int i = 0; i < res.NumberOfReferrals; i++)
+        {
+            DFS_REFERRAL_V4 r4 = r4s[i];
+            if (r4.ReferralEntryFlags.NameListReferral == 0)
+            {
+                DfsReferralRemainder0 rem0 = r4.Remainder as DfsReferralRemainder0;
+                if (rem0.DFSPathOffset > 0)
+                {
+                    rem0.DFSPath = BinaryDecoder<string>(s.PeekBytes((rem0.DFSPathOffset + i * 34 + 8) * 8 as int));
+                    rem0.AssignFieldEncodingInfo("DFSPath", (rem0.DFSPathOffset + i * 34 + 8) * 8 as int, ((rem0.DFSPath as string).Count + 1) * 16 as int);
+                }
+                else
+                {
+                    rem0.DFSPath = nothing;
+                }
+                if (rem0.DFSAlternatePathOffset > 0)
+                {
+                    rem0.DFSAlternatePath = BinaryDecoder<string>(s.PeekBytes((rem0.DFSAlternatePathOffset + i * 34 + 8) * 8 as int));
+                    rem0.AssignFieldEncodingInfo("DFSAlternatePath", (rem0.DFSAlternatePathOffset + i * 34 + 8) * 8 as int, ((rem0.DFSAlternatePath as string).Count + 1) * 16 as int);
+                }
+                else
+                {
+                    rem0.DFSAlternatePath = nothing;
+                }
+                if (rem0.NetworkAddressOffset > 0)
+                {
+                    rem0.NetworkAddress = BinaryDecoder<string>(s.PeekBytes((rem0.NetworkAddressOffset + i * 34 + 8) * 8 as int));
+                    rem0.AssignFieldEncodingInfo("NetworkAddress", (rem0.NetworkAddressOffset + i * 34 + 8) * 8 as int, ((rem0.NetworkAddress as string).Count + 1) * 16 as int);
+                }
+                else
+                {
+                    rem0.NetworkAddress = nothing;
+                }
+            }
+            else
+            {
+                DfsReferralRemainder1 rem1 = r4.Remainder as DfsReferralRemainder1;
+                if (rem1.SpecialNameOffset > 0)
+                {
+                    rem1.SpecialName = BinaryDecoder<string>(s.PeekBytes((rem1.SpecialNameOffset + i * 18 + 8) * 8 as int));
+                    rem1.AssignFieldEncodingInfo("SpecialName", (rem1.SpecialNameOffset + i * 18 + 8) * 8 as int, ((rem1.SpecialName as string).Count + 1) * 16 as int);
+                }
+                else
+                {
+                    rem1.SpecialName = nothing;
+                }
+                if (rem1.ExpandedNameOffset > 0)
+                {
+                    rem1.ExpandedName = BinaryDecoder<string>(s.PeekBytes((rem1.ExpandedNameOffset + i * 18 + 8) * 8 as int));
+                    rem1.AssignFieldEncodingInfo("ExpandedName", (rem1.ExpandedNameOffset + i * 18 + 8) * 8 as int, ((rem1.ExpandedName as string).Count + 1) * 16 as int);
+                }
+                else
+                {
+                    rem1.ExpandedName = nothing;
+                }
+            }
+        }
+    }
+    return res;
+}
+
+// -------------------------------------------
+// Data types
+
+//2.2.4 RESP_GET_DFS_REFERRAL
+type ReferralHeaderFlags
+{
+    byte Reserved1 with BinaryEncoding {Width = 5};
+    bool TargetFailback with BinaryEncoding {Width = 1};
+    bool StorageServers with BinaryEncoding {Width = 1};
+    bool ReferralServers with BinaryEncoding {Width = 1};
+    uint Reserved2 with BinaryEncoding {Width = 24};
+}
+
+// 2.2.5.1 DFS_REFERRAL_V1
+type DFS_REFERRAL_V1
+{
+    (ushort where value == 1) VersionNumber;
+    ushort Size;
+    ushort ServerType;
+    ushort ReferralEntryFlags where ValidationCheck(value == 0, null, () => "DFSC: The ReferralEntryFlags field in type DFS_REFERRAL_V1 must always be set to 0x0000, not " + DecToHexFormat(value) + ".");
+    string ShareName with BinaryEncoding{Length = ((Size as uint) - 8) / 2};
+}
+
+// 2.2.5.2 DFS_REFERRAL_V2
+type DFS_REFERRAL_V2
+{
+    (ushort where value == 2) VersionNumber;
+    ushort Size;
+    ushort ServerType;
+    ushort ReferralEntryFlags where ValidationCheck(value == 0, null, () => "DFSC: The ReferralEntryFlags field in type DFS_REFERRAL_V2 must always be set to 0x0000, not " + DecToHexFormat(value) + ".");
+    uint Proximity where ValidationCheck(value == 0, null, () => "DFSC: The Proximity field in type DFS_REFERRAL_V2 must be set to 0x00000000, not " + DecToHexFormat(value) + ".");
+    uint TimeToLive;
+    ushort DFSPathOffset;
+    ushort DFSAlternatePathOffset;
+    ushort NetworkAddressOffset;
+    optional string DFSPath with Encoding{Ignore = true};
+    optional string DFSAlternatePath with Encoding{Ignore = true};
+    optional string NetworkAddress with Encoding{Ignore = true};
+}
+
+// 2.2.5.3 DFS_REFERRAL_V3
+type DFS_REFERRAL_V3
+{
+    (ushort where value == 3) VersionNumber;
+    ushort Size;
+    ushort ServerType;
+    ReferralEntryFlags3 ReferralEntryFlags;
+    uint TimeToLive;
+    ([|ReferralEntryFlags.NameListReferral == 0|] DfsReferralRemainder0 | [|ReferralEntryFlags.NameListReferral == 1|] DfsReferralRemainder1[Size as uint]) Remainder;
+}
+
+// 2.2.5.3 DFS_REFERRAL_V3
+type ReferralEntryFlags3
+{
+    byte Reserved1 with BinaryEncoding {Width = 6};
+    byte NameListReferral with BinaryEncoding {Width = 1};
+    byte Reserved2 with BinaryEncoding {Width = 1};
+    byte Reserved;
+}
+
+// 2.2.5.3.1 NameListReferral Flag Set to 0
+type DfsReferralRemainder0
+{
+    ushort DFSPathOffset;
+    ushort DFSAlternatePathOffset;
+    ushort NetworkAddressOffset;
+    guid ServiceSiteGuid where ValidationCheck(value == {00000000-0000-0000-0000-000000000000}, null, () => "DFSC: The ServiceSiteGuid field in type DfsReferralRemainder0 must be set to zero, not " + DecToHexFormat(value) + ".");
+    optional string DFSPath with Encoding{Ignore = true};
+    optional string DFSAlternatePath with Encoding{Ignore = true};
+    optional string NetworkAddress with Encoding{Ignore = true};
+}
+
+// 2.2.5.3.2 NameListReferral Flag Set to 1
+type DfsReferralRemainder1[uint size]
+{
+    ushort SpecialNameOffset;
+    ushort NumberOfExpandedNames;
+    ushort ExpandedNameOffset;
+    optional [|size - 18 > 0|] binary Padding with BinaryEncoding{Length = size - 18};
+    optional string SpecialName with Encoding{Ignore = true};
+    optional string ExpandedName with Encoding{Ignore = true};
+}
+
+// 2.2.5.4 DFS_REFERRAL_V4
+type DFS_REFERRAL_V4
+{
+    (ushort where value == 4) VersionNumber;
+    ushort Size;
+    ushort ServerType;
+    ReferralEntryFlags4 ReferralEntryFlags;
+    uint TimeToLive;
+    ([|ReferralEntryFlags.NameListReferral == 0|] DfsReferralRemainder0 | [|ReferralEntryFlags.NameListReferral == 1|] DfsReferralRemainder1[Size as uint]) Remainder;
+}
+
+// 2.2.5.4 DFS_REFERRAL_V4
+type ReferralEntryFlags4
+{
+    byte Reserved1 with BinaryEncoding {Width = 5};
+    byte TargetSetBoundary with BinaryEncoding {Width = 1};
+    byte NameListReferral with BinaryEncoding {Width = 1};
+    byte Reserved2 with BinaryEncoding {Width = 1};
+    byte Reserved;
+}
+
+// 2.2.3.1 RequestData
+type RequestData[bool siteName]
+{
+    ushort RequestFileNameLength;
+    string RequestFileName with BinaryEncoding{Length = RequestFileNameLength / 2 as uint};
+    optional [|siteName|] ushort SiteNameLength;
+    optional [|siteName|] string SiteName with BinaryEncoding{Length = (SiteNameLength as ushort) / 2 as uint};
+    
+    override string ToString()
+    {
+        string summary = "{RequestFileNameLength=" + (RequestFileNameLength as string)
+            + ", RequestFileName=" + RequestFileName;
+        if (!(SiteNameLength is nothing))
+        {
+            summary += ", SiteNameLength=" + (SiteNameLength as string);
+            if(!(SiteName is nothing))
+            {
+                summary += ", SiteName=" + (SiteName as string);
+            }
+        }
+        summary += "}";
+        return summary;
+    }
+}

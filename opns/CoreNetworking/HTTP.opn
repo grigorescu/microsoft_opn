@@ -1,0 +1,2778 @@
+protocol HTTP with
+StreamEncodingDefaults{Encoding = TextEncoding.ASCII},
+Documentation
+{
+    ProtocolName = "Hypertext Transfer Protocol",
+    ShortName = "HTTP",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References =
+        [
+            new Reference{Name = "RFC 2616"},
+            new Reference{Name = "RFC 2617"},
+            new Reference{Name = "RFC 3986"},
+            new Reference{Name = "RFC 5322"},
+            new Reference{Name = "RFC 6585"},
+        ],
+    RevisionSummary =
+        [
+            new Revision{Class=RevisionClass.Major, Version="1.0.0", Date="09/02/2011"}
+        ]
+};
+
+using Standard;
+using IANA;
+using TCP;
+using Utility;
+using ABNF;
+using VirtualTransport;
+using IPv4;
+using IPv6;
+
+annotation string HttpContract.Request#SoapAction;
+annotation UriType HttpContract.Response#Uri;
+
+// Indicate if current message is from Web Proxy.
+annotation bool HttpContract.Request#IsRequestOverWebProxy;
+annotation bool HttpContract.Response#IsResponseOverWebProxy;
+
+// Keep Source and Destination, they are only use for setting columns in UI.
+annotation string HttpContract.Request#DestinationStr;
+annotation string HttpContract.Response#SourceStr;
+
+// Below four annotations are used for carrying IP source/destination address.
+// Currently only be used under truncation situation.
+annotation (IPv4Address | IPv6Address) HttpContract.Request#SourceAddress;
+annotation (IPv4Address | IPv6Address) HttpContract.Request#DestinationAddress;
+annotation (IPv4Address | IPv6Address) HttpContract.Response#SourceAddress;
+annotation (IPv4Address | IPv6Address) HttpContract.Response#DestinationAddress;
+string MODULE_NAME = "HTTP";
+
+// The type for value of Http headers map.
+// We have to specify possible types explicilty here, to make it possible to use fields of nested types in Filter language.
+pattern HttpHeaderFieldValueType = (HeaderFieldType | array<string> | array<HeaderFieldType> | string | any);
+pattern HttpHeadersType = map<string, HttpHeaderFieldValueType>;
+
+endpoint Server
+    over HTTP.SetOriginsServer
+    accepts HttpContract.Request
+    issues HttpContract.Response
+{
+    UriType uri = new UriType();
+
+    observe this accepts req:HttpContract.Request
+    {
+        uri = req.FullUri;
+
+        if ("Content-Type" in req.Headers
+                && req.Headers["Content-Type"] is HeaderFieldType
+                && (req.Headers["Content-Type"] as HeaderFieldType).Parameters != nothing
+                && "action" in ((req.Headers["Content-Type"] as HeaderFieldType).Parameters as map<string, optional string>).Keys)
+        {
+            req#SoapAction = ((req.Headers["Content-Type"] as HeaderFieldType).Parameters as map<string, optional string>)["action"];
+        }
+        else
+        {
+            req#SoapAction = nothing;
+        }
+    }
+
+    observe this issues res:HttpContract.Response
+    {
+        res#Uri = uri;
+    }
+}
+
+/* endpoint for setting origins for 100-continue message.
+ *
+ * Situation 1: (case #1, #2)
+ *      Request with 100-continue expectation in header.
+ *          TCP origins
+ *          Response 100
+ *      Final Response(non 100)
+ *
+ * Situation 2: (case #4)
+ *      Request with 100-continue expectation in header.
+ *          TCP origins
+ *          Request Body parts
+ *      Final Response(non 100)
+ * 
+ * 100-continue cases:
+ *  case 1:
+ *      > 100-continue expectation request
+ *      < 100 response
+ *      > Body part
+ *      < Final response (non-100)
+ *  case 2:
+ *      > 100-continue expectation request
+ *      > Body part
+ *      < 100 response
+ *      < Final response (non-100)
+ *  case 3:
+ *      > 100-continue expectation request
+ *      < Final response (non-100)
+ *      ---- end
+ *  case 4:
+ *      > 100-continue expectation request
+ *      < Final resonse (non-100)
+ *      > Body part
+ *      ---- end
+ */
+endpoint SetOriginsServer[any endpoint ConnectionEndpoint]
+    accepts HttpContract.Request 
+    issues HttpContract.Response
+    issues HttpContract.Operation
+{
+    // If server sent 100-continue before received compelete request, do not diapatch 100-continue response, only remember it in buffer.
+    array<any message> continue100Responses = [];
+
+    // If server received complete request before sending 100-continue, dispatch request and remember request message in buffer.
+    HttpContract.Request requestExpectingContinue100 = null;
+
+    process this accepts request:HttpContract.Request
+    {
+        if (("Expect" in request.Headers)
+            && ("100-continue" in (request.Headers["Expect"] as array<HeaderFieldType>)))
+        {
+            // 100-continue expected request is prior to the response with 100, keep the request to buffer.
+            if (continue100Responses.Count > 0)
+            {
+                request.Origins += continue100Responses;
+                continue100Responses = [];
+            }
+            // 100-continue expected request is later than the response with 100.
+            else
+            {
+                requestExpectingContinue100 = request;
+            }
+        }
+        dispatch (endpoint HTTP.Server over this) accepts request;
+    }
+
+    process this issues response:HttpContract.Response
+    {
+        if (response.StatusCode == 100)
+        {
+            if (requestExpectingContinue100 != null)
+            {
+                // If 100-continue expected request is in buffer, update Origins.
+                requestExpectingContinue100.Origins += [response];
+            }
+            else
+            {
+                // If 100-continue expected request is not in buffer, keep response to buffer
+                continue100Responses += [response];
+            }
+            // Do not dispatch response whose StatusCode is 100, since it has already been the origins
+            // of the request.
+        }
+        else
+        {
+            // clear cache
+            Clear();
+            
+            // only dispatch response if the payload is not compressed
+            if(!IsResponseCompressed(response))
+            {
+                // Dispatch response whose StatusCode is not 100.
+                dispatch (endpoint HTTP.Server over this) issues response;
+            }
+            else
+            {
+                reject;
+            }
+        }
+    }
+    
+    void Clear()
+    {
+        if (continue100Responses.Count > 0)
+        {
+            foreach (var m in continue100Responses)
+            {
+                ValidationCheck(false, m, "HTTP: There is no corresponding request message that expects 100-continue response.");
+                DisplayTopLevelMessage(m);
+            }
+            continue100Responses = [];
+        }
+        requestExpectingContinue100 = null;
+    }
+}
+
+autostart actor SetOriginsServerActor(SetOriginsServer server)
+{
+    ~endpoint(SetOriginsServer server)
+    {
+        server.Clear();
+    }
+}
+
+type HttpDecodingCache
+{
+    binary SourceData;
+    binary Buffer;
+    bool HasIncompleteSegments = false;
+    array<any message> Origins;
+
+    void Add(VirtualDataSegment seg)
+    {
+        Buffer += seg.Payload;
+        SourceData += seg.Payload;
+        if (Origins == null)
+            Origins = [seg];
+        else
+            Origins += [seg];
+        if (seg#IsIncomplete != nothing && seg#IsIncomplete as bool)
+        {
+            HasIncompleteSegments = true;
+        }
+    }
+
+    // When ignoreOrigins is true, indicates the decoding of HTTP message is successful and Origins 
+    // will be ignored since they are already assigned as origins of the decoded HTTP message;
+    // When ignoreOrigins is false, indicates the decoding of HTTP message is failed and Origins will
+    // be released, and validation check error will be attached to them.
+    void Reset(stream s, bool ignoreOrigins, string validationDescription)
+    {
+        SourceData = null;
+    
+        if (!ignoreOrigins)
+        {
+            foreach (var origin in Origins)
+            {
+                ValidationCheck(false, origin, validationDescription);
+                DisplayTopLevelMessage(origin);
+            }
+        }
+        
+        if (s == null || s.BytePosition >= s.ByteLength || !ignoreOrigins)
+        {
+            Buffer = null;
+            Origins = [];
+        }
+        else
+        {
+            Buffer = s.PeekBytes(s.BitPosition);
+            if (Origins.Count > 0)
+            {
+                Origins = [Origins[Origins.Count - 1]];
+            }
+        }
+        
+        HasIncompleteSegments = false;
+    }
+    
+    void Clear()
+    {
+        SourceData = null;
+        Buffer = null;
+        HasIncompleteSegments = false;
+        if (Origins != null && Origins.Count > 0)
+        {
+            foreach (var msg in Origins)
+            {
+                DisplayTopLevelMessage(msg);
+            }
+            Origins = [];
+        }
+    }
+}
+
+endpoint ReassemblyServer[any endpoint ep]
+    accepts VirtualDataSegment issues VirtualDataSegment
+{
+    // #Part 1: Variables
+    // Temporarily holds the decoded request/response header
+    RequestHeaderType requestHeader = null;
+    ResponseHeaderType responseHeader = null;
+    // Temporarily holds the decoded non 100-continue response if there is no 100-continure response recieved and the request is not completed
+    // It will be dispatched right after the request is completed and dispatched.
+    HttpContract.Response httpNon100Response = null;
+    // Indicate whether a 100-expected request is recieved or not
+    bool received100ContinueRequest = false;
+    // The cache used for decoding
+    HttpDecodingCache inboundCache = new HttpDecodingCache{};
+    HttpDecodingCache outboundCache = new HttpDecodingCache{};
+
+    // Indicate response to HEAD method.
+    // RFC 2616, section 9.4: Response to HEAD request MUST NOT have a body, even though header has Content-Length and value is not equal to zero.
+    bool isHeadMethod = false;
+
+    // This field is for temporarily keeping host in Request's header, then assign it to response#SourceStr.
+    string host = "";
+    int requestHeaderLen;
+    int requestBodyLen;
+    int responseHeaderLen;
+    int responseBodyLen;
+
+    // Variables for HTTP tunneling
+    bool isTunnel = false;
+    bool tunnelResponseDecoded = false;
+    // Target host in HTTP tunneling.
+    string tunnelServerHost;
+    // Target port in HTTP tunneling.
+    ushort tunnelServerPort;
+            
+    // #Part 2: Functions
+    bool TryDecodeRequestHeader()
+    {
+        assert requestHeader == null;
+
+        stream str = inboundCache.Buffer;
+        
+        int preLen = str.BytePosition;
+        var h = RequestHeader(str);
+        requestHeaderLen = str.BytePosition - preLen;
+        
+        if (h == nothing)
+        {
+            if (inboundCache.HasIncompleteSegments)
+            {
+                DecodeIncompletePayloadAndDispatch(inboundCache, "Incomplete HTTP response due to incomplete TCP segments.");
+            }
+            else if (Method(inboundCache.Buffer) == nothing)
+            {
+                DecodeIncompletePayloadAndDispatch(inboundCache, "Incomplete HTTP response due to invalid request header.");
+            }
+            // 0x0D is '\r', and 0x0A is '\n'.
+            // When '\r' or '\n' appears in inboundCache.Buffer, data for requestline is enough. If RequestLine decoding fails, it's invalid HTTP request.
+            else if (((0x0D in inboundCache.Buffer) || (0x0A in inboundCache.Buffer)) && (RequestLine(inboundCache.Buffer) == nothing))
+            {
+                DecodeIncompletePayloadAndDispatch(inboundCache, "HTTP: Invalid HTTP request.");
+            }
+            return false;
+        }
+        // Adjust buffer after decoding
+        inboundCache.Buffer = str.PeekBytes(str.BitPosition);
+        requestHeader = h as RequestHeaderType;
+
+        // Decode HTTP Headers in request header
+        requestHeader.Uri = ParseUri(requestHeader.Uri.Host as string);
+        requestHeader.Headers = ParseHeaderFields(requestHeader.Headers);
+
+        return true;
+    }
+    
+    void UpdateVariablesRelatedToRequestHeader()
+    {
+        assert requestHeader != null;
+
+        var method = requestHeader.Method.ToUpper();
+        if (method == "CONNECT")
+        {
+            isTunnel = true;
+            tunnelServerHost = requestHeader.Uri.Host as string;
+            if (requestHeader.Uri.Port == nothing)
+            {
+                tunnelServerPort = 80;
+            }
+            else
+            {
+                tunnelServerPort = (requestHeader.Uri.Port as string) as ushort;
+            }
+        }
+        else if (method == "HEAD")
+        {
+            isHeadMethod = true;
+        }
+        if (("Expect" in requestHeader.Headers)
+            && ("100-continue" in (requestHeader.Headers["Expect"] as array<HeaderFieldType>)))
+        {
+            if (httpNon100Response != null)
+            {
+                DisplayTopLevelMessage(httpNon100Response);
+                httpNon100Response = null;
+            }
+            received100ContinueRequest = true;
+        }
+    }
+
+    bool TryDecodeRequestBodyAndDispatch(bool checkPayload)
+    {
+        assert requestHeader != null;
+        
+        // "Host" is required in request header
+        host = ("Host" in requestHeader.Headers) ? (requestHeader.Headers["Host"] as string) : "";
+
+        stream s = inboundCache.Buffer;
+        int preLen = s.BytePosition;
+        bool parseSuccess = false;
+        optional MessageBodyType body = BodyDecoder(s, requestHeader.Headers, false, out parseSuccess);
+        requestBodyLen = s.BytePosition - preLen;
+        if (!parseSuccess && !inboundCache.HasIncompleteSegments && checkPayload)
+        {
+            return false;
+        }
+            
+        // If the body is decoded successfully, reassemble the message and dispatch
+        var request = new HttpContract.Request
+        {
+            Method = requestHeader.Method,
+            Uri = requestHeader.Uri,
+            Version = requestHeader.Version,
+            Headers = requestHeader.Headers,
+            ChunkedMessageBody = parseSuccess && IsChunkedBody(requestHeader.Headers) ? body : nothing,
+            Payload = parseSuccess ? body.Reassemble() : inboundCache.Buffer,
+        };
+        
+        if (!parseSuccess)
+        {
+            ReportInsufficientData(request, DiagnosisLevel.Warning, "HTTP: Incomplete HTTP payload for full reassembly, due to missing contiguous messages.");
+        }
+        // Set SourceData and clear buffer.
+        request.SourceData = inboundCache.SourceData;
+        // set fields offset
+        AssociateRequest(request, requestHeaderLen, requestBodyLen);
+        
+        ValidationCheckEnumValue(request.Version.Major == 1 && request.Version.Minor in {0,1}, null, true, ReferenceType.Message, "HTTP", "Version", "Request", "HTTP/1.1, HTTP/1.0", request.Version.ToString());
+
+        // Assign host in header to request#DestinationStr.
+        host = request.HTTPHost;
+        request#DestinationStr = host;
+
+        request.Origins = inboundCache.Origins;
+        
+        dispatch (endpoint HTTP.SetOriginsServer[this]) accepts request;
+
+        if (received100ContinueRequest)
+        {
+            if (httpNon100Response != null)
+            {
+                dispatch (endpoint HTTP.SetOriginsServer[this]) issues httpNon100Response;
+                httpNon100Response = null;
+            }
+            // Completed 100-continue request.
+            received100ContinueRequest = false;
+        }
+        
+        requestHeader = null;
+        inboundCache.Reset(parseSuccess ? s : null, true, null);
+        return true;
+    }
+    
+
+    void TryDecodeResponseHeader()
+    {
+        assert responseHeader == null;
+
+        stream str = outboundCache.Buffer;
+        
+        int preLen = str.BytePosition;
+        var h = ResponseHeader(str);
+        responseHeaderLen = str.BytePosition - preLen;
+        
+        if (h == nothing)
+        {
+            if (outboundCache.HasIncompleteSegments)
+            {
+                DecodeIncompletePayloadAndDispatch(outboundCache, "HTTP: Incomplete HTTP response due to incomplete TCP segments.");
+            }
+            else if ((outboundCache.Buffer.Count() >= 8) && (Version(outboundCache.Buffer) == nothing))
+            {
+                DecodeIncompletePayloadAndDispatch(outboundCache, "HTTP: Incomplete HTTP response due to invalid HTTP response header.");
+            }
+            // 0x0D is '\r', and 0x0A is '\n'.
+            // When '\r' or '\n' appears outboundCache.Buffer, data for StatusLine is enough. If StatusLine decoding fails, it's invalid HTTP response.
+            else if (((0x0D in outboundCache.Buffer) || (0x0A in outboundCache.Buffer)) && (StatusLine(outboundCache.Buffer) == nothing))
+            {
+                DecodeIncompletePayloadAndDispatch(outboundCache, "HTTP: Invalid HTTP response.");
+            }
+            return;
+        }
+
+        // Adjust buffer after decoding
+        outboundCache.Buffer = str.PeekBytes(str.BitPosition);
+        // Decode HTTP Headers in response header
+        var headers = ParseHeaderFields((h as ResponseHeaderType).Headers);
+        // If we have header Connection with value close: Regist event into tcp
+        // endpoint to reassembly HTTP response message when tcp connection is closed
+        if ("Connection" in headers
+            && ArrayContains(headers["Connection"] as array<string>, "close"))
+        {
+            if (ep is VirtualTransport.Server)
+            {
+                VirtualTransport.Server tcp = ep as VirtualTransport.Server;
+                
+                var e = new Event{Handler = DecodeOnTcpConnClose, Arguments = []};
+                tcp.RegisterEventOnConnClose(e);
+            }
+        }
+        responseHeader = h as ResponseHeaderType;
+        responseHeader.Headers = headers;
+    }
+
+    void DecodeIncompletePayloadAndDispatch(HttpDecodingCache decodingCache, string errorDiscription)
+    {
+        assert decodingCache != null;
+        assert decodingCache.Buffer != null;
+        
+        stream s = decodingCache.Buffer;
+        
+        var lines = IncompletePayloadLine(s);
+        if (lines == nothing)
+        {
+            throw "HTTP: Failed to decode HTTP incomplete message due to invalid data.";
+        }
+        else
+        {
+            var msg = new HttpContract.IncompletePayload { PayloadLines = lines as array<string> };
+            msg.SourceData = decodingCache.SourceData;
+            msg.Origins = decodingCache.Origins;
+            
+            ReportInsufficientData(msg, DiagnosisLevel.Warning, errorDiscription);
+            
+            DisplayTopLevelMessage(msg);
+            
+            decodingCache.Reset(null, true, null);
+        } 
+    }
+    
+    bool TryDecodeResponseBodyAndDispatch(bool checkPayload)
+    {
+        assert responseHeader != null;
+        
+        optional MessageBodyType body;
+        stream s = outboundCache.Buffer;
+        int preLen = s.BytePosition;
+        bool parseSuccess;
+        if (isHeadMethod || StatusCodeCarryNoPayload(responseHeader.StatusCode))
+        {
+            body = nothing;
+            parseSuccess = true;
+            if (isHeadMethod)
+            {
+                isHeadMethod = false;
+            }
+        }
+        else
+        {
+            body = BodyDecoder(s, responseHeader.Headers, false, out parseSuccess);
+        }
+        responseBodyLen = s.BytePosition - preLen;
+        if (!parseSuccess && !outboundCache.HasIncompleteSegments && checkPayload)
+        {
+            return false;
+        }
+        
+        // If the body is decoded successfully, reassemble the message and dispatch
+        HttpContract.Response response = new HttpContract.Response
+        {
+            Version = responseHeader.Version,
+            StatusCode = responseHeader.StatusCode,
+            ReasonPhrase = responseHeader.ReasonPhrase,
+            Headers = responseHeader.Headers,
+            ChunkedMessageBody = parseSuccess && IsChunkedBody(responseHeader.Headers) ? body : nothing,
+            Payload = parseSuccess ? body.Reassemble() : outboundCache.Buffer,
+        };
+        if (!parseSuccess)
+        {
+            // Has incomplete segments
+            ReportInsufficientData(response, DiagnosisLevel.Warning, "HTTP: Incomplete HTTP payload for full reassembly, due to missing continuous message.");
+        }
+        // Set SourceData and clear buffer.
+        response.SourceData = outboundCache.SourceData;
+        // set fields offset
+        AssociateResponse(response, responseHeaderLen, responseBodyLen);
+        
+        response#SourceStr = host;
+
+        ValidationCheckEnumValue(response.Version.Major == 1 && response.Version.Minor in {0,1}, null, true, ReferenceType.Message, "HTTP", "Version", "Response", "HTTP/1.1, HTTP/1.0", response.Version.ToString());
+
+        response.Origins = outboundCache.Origins;
+
+        responseHeader = null;
+        
+        outboundCache.Reset(parseSuccess ? s : null, true, null);
+        if (isTunnel)
+        {
+            tunnelResponseDecoded = true;
+        }
+        
+        if (response.StatusCode == 100)
+        {
+            host = response#SourceStr as string;
+        }
+        else if (received100ContinueRequest)
+        {
+            // Response to 100-continue expected request with a non-100 message.
+            // cache the decoded response and disptach when the request is completed
+            httpNon100Response = response;
+            return true;
+        }
+
+        dispatch (endpoint HTTP.SetOriginsServer[this]) issues response;
+        return true;
+    }
+
+    // Only deal with the response has header Connection: Close
+    // In request, if it has header Connection: Close, indicate what
+    // type of connection the user-agent would prefer
+    void DecodeOnTcpConnClose(array<any> args)
+    {
+        // If connection close/reset, set the flags for Tunnel as false
+        if (isTunnel)
+        {
+            isTunnel = false;
+            tunnelResponseDecoded = false;
+        }
+
+        // If the header is decoded successfully, continue trying to decode body
+        if (responseHeader != null && outboundCache.Buffer != null) 
+        {
+            bool parseSuccess = false;
+            optional MessageBodyType body = BodyDecoder(outboundCache.Buffer, responseHeader.Headers, true, out parseSuccess);
+
+            // If the body is decoded successfully, reassemble the message and dispatch
+            if (parseSuccess)
+            {
+                HttpContract.Response response = new HttpContract.Response
+                {
+                    Version = responseHeader.Version,
+                    StatusCode = responseHeader.StatusCode,
+                    ReasonPhrase = responseHeader.ReasonPhrase,
+                    Headers = responseHeader.Headers,
+                    ChunkedMessageBody = IsChunkedBody(responseHeader.Headers) ? body : nothing,
+                    Payload = body.Reassemble(),
+                };
+                // Set SourceData and clear buffer.
+                response.SourceData = outboundCache.SourceData;
+                outboundCache.SourceData = $[];
+
+                // set fields offset
+                AssociateResponse(response, responseHeaderLen, responseBodyLen);
+                response#SourceStr = host;
+
+                ValidationCheckEnumValue(response.Version.Major == 1 && response.Version.Minor <= 1, null, true, ReferenceType.Message, "HTTP", "Version", "Response", "HTTP/1.1, HTTP/1.0", response.Version.ToString());
+
+                response.Origins = outboundCache.Origins;
+                outboundCache.Origins = [];
+
+                responseHeader = null;
+
+                dispatch (endpoint HTTP.SetOriginsServer[this]) issues response;
+                
+                outboundCache.Reset(null, true, null);
+                return;
+            }
+        }
+        outboundCache.Reset(null, false, "HTTP response is not decoded successfully on TCP connection closed.");
+    }
+    
+    // #Part 3: processing rules
+    process this accepts s:VirtualDataSegment
+    {
+        if (isTunnel)
+        {
+            s.DestinationPort = tunnelServerPort;
+            var e = endpoint VirtualTransport.Server[
+                    ConvertStringToBinary(tunnelServerHost),
+                    s#SourceAddrBin as binary,
+                    tunnelServerPort,
+                    s.SourcePort];
+            s#UnderlyingProtocol = "HTTP Tunneling";
+            dispatch e accepts s;
+            return;
+        }
+
+        inboundCache.Add(s);
+
+        // Try decode Header
+        if (requestHeader == null && inboundCache.Buffer.Count > 0)
+        {
+            if (TryDecodeRequestHeader())
+            {
+                UpdateVariablesRelatedToRequestHeader();
+            }
+        }
+
+        // Try decode Body
+        if (requestHeader != null)
+        {
+            TryDecodeRequestBodyAndDispatch(true);
+        }
+    }
+
+    process this issues s:VirtualDataSegment
+    {
+        if (isTunnel && tunnelResponseDecoded)
+        {
+            s.SourcePort = tunnelServerPort;
+            var e = endpoint VirtualTransport.Server[
+                    ConvertStringToBinary(tunnelServerHost),
+                    s#SourceAddrBin as binary,
+                    tunnelServerPort,
+                    s.DestinationPort];
+            s#UnderlyingProtocol = "HTTP Tunneling";
+            dispatch e issues s;
+            return;
+        }
+
+        outboundCache.Add(s);
+
+                // Try decode Header
+        if (responseHeader == null && outboundCache.Buffer.Count > 0)
+        {
+            TryDecodeResponseHeader();
+        }
+
+        // Try decode Body
+        if (responseHeader != null)
+        {
+            TryDecodeResponseBodyAndDispatch(true);
+        }
+    }
+    // destructor
+    ~endpoint(ReassemblyServer server)
+    {
+        // Try decode request Header
+        if (server.requestHeader == null
+            && server.inboundCache.Buffer != null
+            && server.inboundCache.Buffer.Count > 0)
+        {
+            if (server.TryDecodeRequestHeader())
+            {
+                server.UpdateVariablesRelatedToRequestHeader();
+            }
+        }
+        // Try decode request Body
+        if (server.requestHeader != null)
+        {
+            server.TryDecodeRequestBodyAndDispatch(false);
+        }
+        server.inboundCache.Clear();
+        
+        // Try decode response Header
+        if (server.responseHeader == null
+            && server.outboundCache.Buffer != null
+            && server.outboundCache.Buffer.Count > 0)
+        {
+            server.TryDecodeResponseHeader();
+        }
+        // Try decode response Body
+        if (server.responseHeader != null)
+        {
+            server.TryDecodeResponseBodyAndDispatch(false);
+        }
+        server.outboundCache.Clear();
+    }
+}
+
+// WSDAPI uses TCP port 5357 for HTTP traffic. http://msdn.microsoft.com/en-us/library/windows/desktop/bb736556(v=vs.85).aspx
+const set<ushort> HTTPPort = {IANA.Port.HTTP, IANA.Port.HTTPAlternate, 5357};
+    
+pattern ConnectionKind = enum
+{
+    // The TCP connection is transfering HTTP message.
+    HTTP,
+    // The TCP connection is not transfering HTTP message.
+    NonHTTP,
+    // It doesn't know whether the TCP connection is transfering HTTP message.
+    // In this state, pre-check TCP payload to see if HTTP message.
+    NotDetermined
+};
+
+autostart actor HTTPOverTCP(VirtualTransport.Server tcp)
+{
+    // Record the server port of current HTTP session in the case of non-80 port is assigned.
+    ushort? httpServerPort = null;
+    // Record the state of current TCP connecton.
+    ConnectionKind conKind = ConnectionKind.NotDetermined;
+ 
+    process tcp accepts s:VirtualDataSegment where IsHTTPConnection(s)
+    {
+        var e = endpoint ReassemblyServer[tcp];
+        if (HTTPPort[s.SourcePort] || s.SourcePort == httpServerPort)
+        {
+            dispatch e issues s;
+        }
+        else
+        {
+            dispatch e accepts s;
+        }
+    }
+    
+    process tcp issues s:VirtualDataSegment where IsHTTPConnection(s)
+    {
+        var e = endpoint ReassemblyServer[tcp];
+        if (HTTPPort[s.SourcePort] || s.SourcePort == httpServerPort)
+        {
+            dispatch e issues s;
+        }
+        else
+        {
+            dispatch e accepts s;
+        }
+    }
+    
+    // Detect if current TCP connection is transfering HTTP message.
+    bool IsHTTPConnection(VirtualDataSegment s)
+    {
+        // We have known current TCP connection is NOT transfering HTTP message.
+        if (conKind == ConnectionKind.NonHTTP)
+        {
+            return false;
+        }
+        // We have known current TCP connection is transfering HTTP message.
+        else if (conKind == ConnectionKind.HTTP)
+        {
+            return true;
+        }
+        // Check first TCP message of connection which we have not detected yet.
+        else
+        {
+            // Check if current TCP conneciton uses HTTP-reserved port.
+            if (HTTPPort[s.DestinationPort] || HTTPPort[s.SourcePort])
+            {
+                conKind = ConnectionKind.HTTP;
+                return true;
+            }
+            
+            // Check payload content of frist TCP data segment of this connection.
+            if (RequestLineToDetectRequest(s.Payload) != nothing)
+            {
+                httpServerPort = s.DestinationPort;
+                conKind = ConnectionKind.HTTP;
+                return true;
+            }
+            else if(StatusLine(s.Payload) != nothing)
+            {
+                httpServerPort = s.SourcePort;
+                conKind = ConnectionKind.HTTP;
+                return true;
+            }
+            else
+            {
+                conKind = ConnectionKind.NonHTTP;
+                return false;
+            }
+        }
+    }
+}
+
+syntax RequestLineToDetectRequest = MethodToDetectRequest SP PrimitiveUri SP Version CRLF;
+syntax MethodToDetectRequest   =  s:("OPTIONS"
+                                      | "GET"
+                                      | "HEAD"
+                                      | "POST"
+                                      | "PUT"
+                                      | "DELETE"
+                                      | "TRACE"
+                                      | "CONNECT"
+                                      | "PROPFIND"
+                                      | "PROPPATCH"
+                                      | "MKCOL"
+                                      | "COPY"
+                                      | "MOVE"
+                                      | "LOCK"
+                                      | "UNLOCK"
+                                      // In most case, extension method should shorter than 20 bytes.
+                                      | regex{[0-9a-zA-Z!#$%&`*+._'|~\x5E\x2D]{20}} ) => s;
+
+void AssociateRequest(HttpContract.Request request, int requestHeaderLen, int requestBodyLen)
+{
+    // set fields offset
+    int pointer = 0;
+    request.AssignFieldEncodingInfo("Method", pointer * 8, (request.Method.Count + 1) * 8);
+    pointer += request.Method.Count + 1; //0x20 after Method.
+    request.AssignFieldEncodingInfo("Uri", pointer * 8, request.Uri.Length() * 8);
+    pointer += request.Uri.Length();
+    request.AssignFieldEncodingInfo("Version", pointer * 8, 64);
+    pointer += 8 + 2; // "0x0D0A" after Version field.
+    request.AssignFieldEncodingInfo("Headers", pointer * 8, (requestHeaderLen * 8 - pointer * 8));
+    pointer = requestHeaderLen;
+    if (requestBodyLen > 0)
+    {
+        request.AssignFieldEncodingInfo("ChunkedMessageBody", pointer * 8, requestBodyLen * 8);
+        request.AssignFieldEncodingInfo("Payload", pointer * 8, requestBodyLen * 8);
+    }
+}
+
+void AssociateResponse(HttpContract.Response response, int responseHeaderLen, int responseBodyLen)
+{
+    // set fields offset
+    int pointer = 0;
+    response.AssignFieldEncodingInfo("Version", pointer * 8, 64);
+    pointer += 8 + 1;// 0x20 after version field.
+    response.AssignFieldEncodingInfo("StatusCode", pointer * 8, 32);
+    pointer += 4;
+    response.AssignFieldEncodingInfo("ReasonPhrase", pointer * 8, response.ReasonPhrase.Count * 8);
+    pointer +=  response.ReasonPhrase.Count + 2; // 0x0D0A after ReasonPhrase.
+    response.AssignFieldEncodingInfo("Headers", pointer * 8, (responseHeaderLen * 8 - pointer * 8));
+    pointer = responseHeaderLen;
+    if (responseBodyLen > 0)
+    {
+        response.AssignFieldEncodingInfo("ChunkedMessageBody", pointer * 8, responseBodyLen * 8);
+        response.AssignFieldEncodingInfo("Payload", pointer * 8, responseBodyLen * 8);
+    }
+}
+
+bool IsChunkedBody(map<string, any> headers)
+{
+    return ("Transfer-Encoding" in headers) && ("chunked" in (headers["Transfer-Encoding"] as array<HeaderFieldType>));
+}
+
+// out parameter parseSuccess is used to indicate if parsing success.
+optional MessageBodyType BodyDecoder(stream s, map<string, any> headers, bool isConnectionClosed, out bool parseSuccess)
+{
+    // Content-Length: value
+    if ("Content-Length" in headers && headers["Content-Length"] is uint)
+    {
+        uint length = 0;
+        // 18446744073709551615(ULONGLONG_MAX) is used by MS-SSTP.
+        if (headers["Content-Length"] as string != "18446744073709551615")
+        {
+            length = headers["Content-Length"] as uint;
+        }
+        if (length == 0)
+        {
+            parseSuccess = true; // We do not need to parse message body when length is 0. So, return true. 
+            return nothing;
+        }
+        if (s.ByteLength - s.BytePosition >= length)
+        {
+            parseSuccess = true;
+            return BinaryDecoder<EntityBodyType[length]>(s);
+        }
+        else
+        {
+            parseSuccess = false;
+            return nothing;
+        }
+    }
+    // Transfer-Encoding: chunked
+    else if (IsChunkedBody(headers))
+    {
+        if (s.ByteLength - s.BytePosition == 0)
+        {
+            parseSuccess = false;
+            return nothing;
+        }
+
+        var chunkBody = new ChunkedBodyType{Chunks=[]};
+
+        optional uint olength = nothing;
+        while (true)
+        {
+            olength = ChunkHeader(s);
+            if (olength == nothing)
+            {
+                parseSuccess = false;
+                return nothing;
+            }
+
+            uint length = olength as uint;
+            if (length == 0)
+            {
+                // Future Reference: Optional trailer maybe exsit before ending CRLF.
+                if (CRLF(s) == nothing)
+                {
+                    parseSuccess = false;
+                    return nothing;
+                }
+                break;
+            }
+
+            if (s.ByteLength - s.BytePosition < length)
+            {
+                parseSuccess = false;
+                return nothing;
+            }
+
+            var chunk = BinaryDecoder<ChunkDataType[length]>(s);
+
+            chunkBody.Chunks += [chunk as ChunkDataType];
+            if (CRLF(s) == nothing)
+            {
+                parseSuccess = false;
+                return nothing;
+            }
+        }
+        parseSuccess = true;
+        if ( chunkBody.Chunks.Count == 0)
+        {
+            return nothing;
+        }
+        return chunkBody;
+    }
+    // Connection: close, do not decode until the connection is closed
+    else if ("Connection" in headers && ArrayContains(headers["Connection"] as array<string>, "close"))
+    {
+        if (isConnectionClosed)
+        {
+            uint length = (s.ByteLength - s.BytePosition) as uint;
+            parseSuccess = true;
+            return new EntityBodyType{ Payload = s.PeekBytes(s.BitPosition) };
+        }
+        else
+        {
+            parseSuccess = false;
+            return nothing;
+        }
+    }
+    parseSuccess = true;
+    return nothing;
+}
+
+// BUG: 23618, cannot use ref for member of type
+// void ParseHeaderFields(ref map<string, any> headers)
+map<string, any> ParseHeaderFields(map<string, any> headers)
+{
+    set<string> keys = headers.Keys;
+
+    // General Headers
+    if (keys["Cache-Control"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "Cache-Control", headers, CacheControl);
+    }
+    if (keys["Connection"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "Connection", headers, Connection);
+    }
+    if (keys["Date"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "Date", headers, Date);
+    }
+    if (keys["Pragma"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "Pragma", headers, Pragma);
+    }
+    if (keys["Trailer"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "Trailer", headers, Trailer);
+    }
+    if (keys["Transfer-Encoding"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "Transfer-Encoding", headers, TransferEncoding);
+    }
+    if (keys["Upgrade"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "Upgrade", headers, Upgrade);
+    }
+    //if (keys["Via"])
+    //{
+    //headers = ParseFieldInHeader(MODULE_NAME, "Via", headers, Via);
+    //}
+    // To be enable
+    //if (keys["Warning"])
+    //{
+    //headers = ParseFieldInHeader(MODULE_NAME, "Warning", headers, Warning);
+    //}
+
+    // Request Headers
+    if (keys["Accept"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "Accept", headers, Accept);
+    }
+    if (keys["Accept-Charset"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "Accept-Charset", headers, AcceptCharset);
+    }
+    if (keys["Accept-Encoding"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "Accept-Encoding", headers, AcceptEncoding);
+    }
+    if (keys["Accept-Language"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "Accept-Language", headers, AcceptEncoding);
+    }
+    if (keys["Authorization"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "Authorization", headers, Authorization);
+    }
+    if (keys["Expect"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "Expect", headers, Expect);
+    }
+    if (keys["From"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "From", headers, From);
+    }
+    if (keys["Host"] || keys["HOST"])
+    {
+        if (keys["HOST"])
+        {
+            headers["Host"] = headers["HOST"];
+            headers = headers.Remove("HOST");
+        }
+        headers = ParseFieldInHeader(MODULE_NAME, "Host", headers, Host);
+    }
+    if (keys["If-Match"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "If-Match", headers, IfMatch);
+    }
+    if (keys["If-Modified-Since"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "If-Modified-Since", headers, IfModifiedSince);
+    }
+    if (keys["If-None-Match"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "If-None-Match", headers, IfNoneMatch);
+    }
+    if (keys["If-Range"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "If-Range", headers, IfRange);
+    }
+    if (keys["If-UnmodifiedSince"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "If-UnmodifiedSince", headers, IfUnmodifiedSince);
+    }
+    if (keys["Max-Forwards"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "Max-Forwards", headers, MaxForwards);
+    }
+    //if (keys["Proxy-Authorization"])
+    //{
+    //headers = ParseFieldInHeader(MODULE_NAME, "Proxy-Authorization", headers, ProxyAuthorization);
+    //}
+    if (keys["Range"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "Range", headers, Range);
+    }
+    if (keys["Referer"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "Referer", headers, Referer);
+    }
+    if (keys["TE"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "TE", headers, TE);
+    }
+    // To be enable
+    //if (keys["User-Agent"])
+    //{
+    //headers = ParseFieldInHeader(MODULE_NAME, "User-Agent", headers, UserAgent);
+    //}
+    //
+    //// Response Headers
+    if (keys["Accept-Ranges"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "Accept-Ranges", headers, AcceptRanges);
+    }
+    if (keys["Age"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "Age", headers, Age);
+    }
+    if (keys["ETag"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "ETag", headers, ETag);
+    }
+    if (keys["Location"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "Location", headers, Location);
+    }
+    if (keys["Proxy-Authenticate"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "Proxy-Authenticate", headers, ProxyAuthenticate);
+    }
+    if (keys["Retry-After"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "Retry-After", headers, RetryAfter);
+    }
+    if (keys["Server"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "Server", headers, ServerHeader);
+    }
+    if (keys["Vary"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "Vary", headers, Vary);
+    }
+    if (keys["Www-Authenticate"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "Www-Authenticate", headers, WwwAuthenticate);
+    }
+    // Entity Headers
+    if (keys["Allow"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "Allow", headers, Allow);
+    }
+    if (keys["Content-Encoding"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "Content-Encoding", headers, ContentEncoding);
+    }
+    if (keys["Content-Language"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "Content-Language", headers, ContentLanguage);
+    }
+    if (keys["Content-Length"])
+    {
+        //18446744073709551615 is the Length of MS-SSTP, not real lenght for body part, instead it's a present indicator.
+        if (headers["Content-Length"].ToString() == "18446744073709551615")
+        {
+            headers["Content-Length"] = headers["Content-Length"] as string;
+        }
+        else
+        {
+            headers = ParseFieldInHeader(MODULE_NAME, "Content-Length", headers, ContentLength);
+        }
+    }
+    if (keys["Content-Location"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "Content-Location", headers, ContentLocation);
+    }
+    if (keys["Content-MD5"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "Content-MD5", headers, ContentMD5);
+    }
+    if (keys["Content-Range"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "Content-Range", headers, ContentRange);
+    }
+    // Be compatible to case that field name is not "Pascal Naming"
+    if (keys["content-type"])
+    {
+        headers["Content-Type"] = headers["content-type"];
+        headers = headers.Remove("content-type");
+    }
+    if (keys["CONTENT-TYPE"])
+    {
+        headers["Content-Type"] = headers["CONTENT-TYPE"];
+        headers = headers.Remove("CONTENT-TYPE");
+    }
+    if (keys["Content-Type"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "Content-Type", headers, ContentType);
+    }
+
+    if (keys["Expires"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "Expires", headers, Expires);
+    }
+    if (keys["Last-Modified"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "Last-Modified", headers, LastModified);
+    }
+    //RFC 4918
+    if (keys["DAV"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "DAV", headers, DAV);
+    }
+    if (keys["Depth"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "Depth", headers, Depth);
+    }
+    if (keys["Destination"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "Destination", headers, Destination1);
+    }
+    if (keys["If"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "If", headers, If);
+    }
+    if (keys["Lock-Token"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "Lock-Token", headers, LockToken);
+    }
+    if (keys["Overwrite"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "Overwrite", headers, Overwrite);
+    }
+    if (keys["TimeOut"])
+    {
+        headers = ParseFieldInHeader(MODULE_NAME, "TimeOut", headers, TimeOut);
+    }
+    return headers;
+}
+
+// void ParseFieldInHeader(..., ref map<string, any> headers, ...)
+map<string, any> ParseFieldInHeader<T>(string moduleName, string key, map<string, any> headers, (optional T)(stream) decoder)
+{
+    // Field's value is null in some cases.
+    if ((headers[key] as string).Count > 0)
+    {
+        stream s = headers[key] as string;
+        optional T t = decoder(s);
+        if (t == nothing)
+        {
+            ValidationCheckDecodingMessageFailedWithReason(null, moduleName, key, "field value does not follow RFC");
+        }
+        else
+        {
+            headers[key] = t as T;
+        }
+    }
+    return headers;
+}
+
+contract HttpContract
+{
+    message IncompletePayload
+    {
+        array<string> PayloadLines;
+        
+        override string ToString()
+        {
+            string summary = this#IsTruncated != nothing && (this#IsTruncated as bool) ? "Truncated, " : "";
+            summary += "Incomplete HTTP Payload";
+            return summary;
+        }
+    }
+    
+    message Request:IMessage
+    {
+        string Method;
+        UriType Uri;
+        VersionType Version;
+        HttpHeadersType Headers;
+        optional MessageBodyType ChunkedMessageBody;
+        binary Payload with MimeDescription{
+            Format = (("Content-Type" in Headers) && (Headers["Content-Type"] is HeaderFieldType))
+                ? (Headers["Content-Type"] as HeaderFieldType).Value : ""};
+
+        override string ToString()
+        {
+            string summary = this#IsTruncated != nothing && (this#IsTruncated as bool) ? "Truncated, " : "";
+            summary += "Request, " + Method + " " + Uri.ToString() + ", Version: " + Version.ToString();
+            return summary;
+        }
+    }
+
+    message Response:IMessage
+    {
+        VersionType Version;
+        uint StatusCode;
+        string ReasonPhrase;
+        HttpHeadersType Headers;
+        optional MessageBodyType ChunkedMessageBody;
+        binary Payload with MimeDescription{
+                Format = (("Content-Type" in Headers) && (Headers["Content-Type"] is HeaderFieldType))
+                        ? (Headers["Content-Type"] as HeaderFieldType).Value : ""};
+
+        override string ToString()
+        {
+            string summary = this#IsTruncated != nothing && (this#IsTruncated as bool) ? "Truncated, " : "";
+            summary += "Response, Status: " + ReasonPhrase + " (" + (StatusCode as string) + "), Version: " + Version.ToString();
+            return summary;        
+        }
+    }
+
+    virtual operation Operation
+    {
+        in string Method = method;
+        in string Uri = uri.ToString();
+        in string Version = ver.ToString();
+        out uint StatusCode = statusCode;
+        out string ReasonPhrase = reasonPhrase;
+        out string ContentType = (("Content-Type" in header) && (header["Content-Type"] is HeaderFieldType)) ? (header["Content-Type"] as HeaderFieldType).Value : "";
+        out binary Payload with MimeDescription{Format = ContentType} = payload;
+
+        override string ToString()
+        {
+            return "Operation, Status: " + ReasonPhrase + " (" + (StatusCode as string) + "), " + Method + " " + Uri + ", Version: " + Version;
+        }
+    } =
+    accepts HttpContract.Request{Method is method:string, Uri is uri:UriType, Version is ver:VersionType} ->
+    issues HttpContract.Response{StatusCode != 100, StatusCode is statusCode:uint, ReasonPhrase is reasonPhrase:string, Headers is header:map<string, any>, Payload is payload:binary};
+}
+
+HeaderFieldType get HTTPContentType(this HttpContract.Request request)
+{
+    return (("Content-Type" in request.Headers) && (request.Headers["Content-Type"] is HeaderFieldType)) ? (request.Headers["Content-Type"] as HeaderFieldType) : null;
+}
+
+HeaderFieldType get HTTPContentType(this HttpContract.Response response)
+{
+    return (("Content-Type" in response.Headers) && (response.Headers["Content-Type"] is HeaderFieldType)) ? (response.Headers["Content-Type"] as HeaderFieldType) : null;
+}
+
+string get HTTPHost(this HttpContract.Request request)
+{
+    // "Host" is required in Request header
+    return ("Host" in request.Headers) ? (request.Headers["Host"] as string) : "";
+
+}
+
+// Get the full URI
+UriType get FullUri(this HttpContract.Request request)
+{
+	// If the Uri in request line has schema, return it directly
+	if(request.Uri.Schema != nothing)
+	{
+		return request.Uri;
+	}
+	
+	// Else combine uri and host header
+	return new UriType{				
+				Schema = "http",
+				Host = request.HTTPHost,
+				Port = request.Uri.Port,
+				AbsPath = request.Uri.AbsPath,
+				Query = request.Uri.Query
+			};
+}
+
+type UrnType
+{
+    string Name;
+}
+
+type EntityBodyType[uint Length]
+{
+    binary Payload with BinaryEncoding{Length = Length};
+}
+
+pattern MessageBodyType = EntityBodyType | ChunkedBodyType;
+
+binary Reassemble(this optional MessageBodyType body)
+{
+    if (body == nothing || body == null)
+        return $[];
+    
+    if (body is EntityBodyType)
+        return (body as EntityBodyType).Payload;
+    
+    var chunkBody = body as ChunkedBodyType;
+    binary payload;
+    foreach (var chunk in chunkBody.Chunks)
+    {
+        payload += chunk.Data;
+    }
+    if (payload == null)
+    {
+        payload = $[];
+    }
+    return payload;
+}
+
+syntax decoder = TextDecoder;
+
+// These patterns are not from the spec
+pattern Line            = regex{[^\r\n]*};
+pattern Digits          = regex{[0-9]+};
+pattern Digit2          = regex{[0-9]{2}};
+pattern Digit3          = regex{[0-9]{3}};
+pattern Digit4          = regex{[0-9]{4}};
+pattern Hexes           = regex{[0-9A-Fa-f]+};
+
+// These patterns are not defined exactly following spec
+pattern Octet          = regex{[\x00-\xFF]};
+pattern Char           = regex{[\x00-\x7F]};
+ //pattern Text           = Octet & !Ctl | CR | LF | SP | HT;
+ //pattern Token          = (Char & !Ctl & !Separators)+;
+
+pattern UpAlpha         = regex{[A-Z]};
+pattern LoAlpha         = regex{[a-z]};
+syntax Alpha            = s:(UpAlpha | LoAlpha) => s;
+
+pattern Digit           = regex{[0-9]};
+
+syntax AlphaNum         = s:(Alpha | Digit) => s;
+
+pattern CTL             = regex{[\x00-\x20\x7F]};
+pattern CR              = "\r";
+pattern LF              = "\n";
+pattern SP              = " ";
+pattern HT              = "\t";
+
+pattern Quote           = regex{\x22};
+
+syntax CRLF             = s1:CR s2:LF => (s1 + s2);
+
+syntax LWS              = s0:CRLF? ss:(s:(SP | HT) => s)+
+                        => ((s0.Count == 0 ? "" : s0[0]) + ConvertStringArrayToString(ss));
+
+syntax Text             = s:(regex{[\x21-\x7E]} | LWS)  => s;
+
+pattern Hex             = regex{[0-9A-Fa-f]};
+
+syntax Token            = s:regex{[0-9a-zA-Z!#$%&`*+._'|~\x5E\x2D]+} => s;
+
+syntax Separators       = s:(regex{[()<>@,;:\\\\\\"/?={}]} | SP | HT) => s;
+
+syntax Comment          = s1:"(" s2:(CText | QuotedPair /*| Comment*/ )* s3:")" => ConvertStringArrayToString(s2);
+
+syntax CText            = s:(regex{[\x21-\x27\x2A-\x7E]} | LWS) => s;
+
+syntax QuotedString     = Quote s:(QDText | QuotedPair)* Quote => ConvertStringArrayToString(s);
+
+// BUG: Escape ", for QDText
+syntax QDText           = s:regex{[!\x23-\x7E \r\n]} => s;
+syntax QuotedPair       = s1:"\\" s2:Char => (s1 + s2);
+
+syntax Version          = "HTTP" "/" major:Digits "." minor:Digits
+                        => new VersionType{
+                                            Major = major as uint,
+                                            Minor = minor as uint
+                                          };
+
+type VersionType
+{
+    uint Major;
+    uint Minor;
+
+    override string ToString()
+    {
+        return "HTTP/" + (Major as string) + "." + (Minor as string);
+    }
+}
+
+syntax HttpDate         = s:(Rfc1123Date | Rfc850Date | AscTimeDate | Rfc5322DateTime | UnofficialDateTime) => s;
+
+// Sun, 06 Nov 1994 08:49:37 GMT
+syntax Rfc1123Date      = s1:WkDay s2:"," s3:SP s4:Date1 s5:SP s6:Time s7:SP s8:("GMT" | Zone) => (s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8);
+syntax Rfc850Date       = s1:WeekDay s2:"," s3:SP s4:Date2 s5:SP s6:Time s7:SP s8:"GMT" => (s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8);
+syntax AscTimeDate      = s1:WkDay s2:SP s3:Date3 s4:SP s5:Time s6:SP s7:Digit4 => (s1 + s2 + s3 + s4 + s5 + s6 + s7);
+syntax Date1            = s1:(Digit2 | Digit) s2:SP s3:Month s4:SP s5:(Digit4 | Digit3 | Digit2) => (s1 + s2 + s3 + s4 + s5);
+syntax Date2            = s1:(Digit2 | Digit) s2:"-" s3:Month s4:"-" s5:(Digit4 | Digit2) => (s1 + s2 + s3 + s4 + s5);
+syntax Date3            = s1:Month s2:SP s3:(s31:Digit2 => s31| (s32:SP s33:Digit => (s32 + s33))) => (s1 + s2 + s3);
+syntax Time             = s1:Digit2 s2:":" s3:Digit2 s4:":" s5:Digit2 => (s1 + s2 + s3 + s4 + s5);
+syntax WkDay            = s:("Mon" | "Tue" | "Wed"
+                            | "Thu" | "Fri" | "Sat" | "Sun") => s;
+syntax WeekDay          = s:("Monday" | "Tuesday" | "Wednesday"
+                            | "Thursday" | "Friday" | "Saturday" | "Sunday") => s;
+syntax Month            = s:("Jan" | "Feb" | "Mar" | "Apr"
+                            | "May" | "Jun" | "Jul" | "Aug"
+                            | "Sep" | "Oct" | "Nov" | "Dec") => s;
+syntax DeltaSeconds     = s:Digits => s;
+syntax Charset          = s:Token => s;
+
+syntax Rfc5322DateTime  = s1:(s11:DayOfWeek s12:"," => (s11 + s12))? s2:Date4 s3:Time2 CFWS?
+                            => ((s1.Count == 0 ? "" : (s1[0] as string)) + s2 + s3);
+syntax DayOfWeek        = s1:FWS? s2:DayName => s2;
+syntax DayName          = s:("Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat" | "Sun") => s;
+syntax Date4            = s1:Day s2:Month s3:Year => (s1 + s2 + s3);
+syntax Day              = FWS? regex{[0-9]{1,2}} FWS;
+syntax Year             = s1:FWS s2:regex{[0-9]{4}} s3:FWS => (s1 + s2 + s3);
+syntax Time2            = s1:TimeOfDay s2:Zone => (s1 + s2);
+syntax TimeOfDay        = s1:Hour s2:":" s3:Minute s4:(s41:":" s42:Second => (s41 + s42))?
+                            => (s1 + s2 + s3 + (s4.Count == 0 ? "" : (s4[0] as string)));
+syntax Hour             = s:regex{[0-9]{2}} => s;
+syntax Minute           = s:regex{[0-9]{2}} => s;
+syntax Second           = s:regex{[0-9]{2}} => s;
+syntax Zone             = s:((s1:FWS s2:("+" | "-") s3:Digit4 => (s1 + s2 + s3)) | ObsZone) => s;
+// Add more if need, Obsolute format sometimes used in actual impletation.
+syntax ObsZone          = s:"EST" => s;
+
+// Keep parsing ability for non RFC-defined datetime format.
+syntax UnofficialDateTime = // Sun, 05-Jun-2005 22:00:00 GMT
+                            (s1:WkDay s2:"," s3:SP s4:Date2 s5:SP s6:Time s7:SP s8:"GMT" => (s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8))
+                            // 2/13/2012 9:34:43 PM
+                            | (t1:Digit12 t2:"/" t3:Digit12 t4:"/" t5:Digit4 t6:SP t7:Digit12 t8:":" t9:Digit12 t10:":" t11:Digit12 t12:SP t13:("PM" | "AM" | "pm" | "am")
+                                => (t1 + t2 + t3 + t4 + t5 + t6 + t7 + t8 + t9 + t10 + t11 + t12 + t13))
+                            ;
+
+syntax Digit12          = s:regex{[0-9]{1,2}} => s;
+// This sysntax is from RFC.
+syntax ContentCoding    = t:Token => t;
+
+syntax TransferCoding         = s1:"chunked" => new HeaderFieldType{Value = s1}
+                                | s2:TransferExtension => s2;
+
+syntax TransferExtension        = s1:Token s2:(";" s21:Parameter => s21)*
+                                    => new HeaderFieldType
+                                        {
+                                            Value = s1,
+                                            Parameters = ConvertArrayToMap(s2)
+                                        };
+
+syntax Parameter                = s1:Attribute "=" s2:ParameterValue
+                                => {s1 -> s2};
+
+syntax Attribute                = s:Token => s;
+syntax ParameterValue           = s:(Token | QuotedString) => s;
+
+syntax ChunkedBody              = cs:(Chunk*)
+                                LastChunk
+                                ChunkTrailer
+                                CRLF
+                                    => new ChunkedBodyType
+                                    {
+                                        Chunks = cs
+                                        // Future Reference: Parse Trailers
+                                    };
+
+type ChunkedBodyType
+{
+    array<ChunkDataType> Chunks;
+    // Future Reference: Parse Trailer
+    //array<string, any> Trailer;
+}
+
+syntax ChunkData[uint length]     = s:(ChunkDataType[length] from BinaryDecoder) => s;
+
+type ChunkDataType[uint Length]
+{
+    uint ChunkSize with Encoding{Ignore = true} = Length;
+    binary Data with BinaryEncoding{Length = Length};
+    
+    override string ToString()
+    {
+        return "ChunkSize: " + ChunkSize.ToString();
+    }
+}
+
+syntax Chunk                    = length:ChunkSize ChunkExtension? CRLF c:ChunkData[length as uint] CRLF => c;
+//syntax Chunk         = length:ChunkSize ChunkExtension? CRLF
+                       //c:ChunkDataType[length] from BinaryDecoder CRLF => c;
+
+// Notice: Add optional spaces around ChunkSize, in real implementation, spaces may exist.
+syntax ChunkHeader              = Spaces? length:ChunkSize Spaces? CRLF => (length as uint);
+
+syntax Spaces                   = SP*;
+
+syntax ChunkSize                = hex:Hexes => hex.ToUInt(true);
+syntax LastChunk                = "0"+ ChunkExtension? CRLF;
+
+syntax ChunkExtension           = ( ";" ChunkExtName ("=" ChunkExtVal)? )*;
+syntax ChunkExtName             = Token;
+syntax ChunkExtVal              = Token | QuotedString;
+// Defined as tailer in spec, rename to ChunkTrailer to avoid name conflict
+// Use MessageHeader instead of EntityHeader
+syntax ChunkTrailer             = (MessageHeader CRLF)*;
+
+syntax MediaType                = s1:Type s2:"/" s3:SubType s5:(SP* ";" SP* s4:Parameter => s4)*
+                                    => new HeaderFieldType
+                                        {
+                                            Value = (s1 + s2 + s3),
+                                            Parameters = ConvertArrayToMap(s5)
+                                        };
+syntax Type                     = s:Token => s;
+syntax SubType                  = s:Token => s;
+
+syntax Product                  = s1:Token s2:(s21:"/" s22:ProductVersion => (s21 + s22))? => (s1 + (s2.Count == 0 ? "" : s2[0]));     // WORKAROUND: should be a strong type
+syntax ProductVersion           = s:Token => s;
+
+syntax QValue                   = s:regex{0(\\\\.[0-9]{0,3})?|1(\\\\.0{0,3})?} => s;
+
+syntax LanguageTag              = s1:PrimaryTag ss:( "-" s:SubTag => ("-" + s))* => (s1 + ConvertStringArrayToString(ss));
+syntax PrimaryTag               = s:Alpha8 => s; 
+syntax SubTag                   = s:Alpha8 => s; 
+
+// Defined in spec but not useful for now
+//
+// syntax HttpMessage   = RequestSyntax | ResponseSyntax;
+// syntax GenericMessage = StartLine
+//                        (MessageHeader CRLF)*
+//                        CRLF
+//                        MessageBody?;
+// syntax StartLine      = RequestLine | StatusLine;
+
+syntax MessageHeader            = k:FieldName ":" v:(FieldValue?)
+                                    => new KeyValuePair{Key = k, Value = (v.Count == 0 ? "" : v[0])};
+syntax FieldName                = s:Token => s;
+//syntax FieldName     = k:regex{[A-Za-z0-9][^:]*} => k;
+//syntax FieldValue    = ( FieldContent | LWS )*;
+syntax FieldValue               = v:regex{[^\r\n]*} => v.Trim();
+syntax FieldContent             = (Text | Token | Separators | QuotedString)*;
+
+syntax RequestHeader            = line:RequestLine
+                                  headers:(header:MessageHeader CRLF => header)*
+                                  CRLF
+                                    => new RequestHeaderType
+                                        {
+                                                Method = line.Method,
+                                                Uri = line.Uri,
+                                                Version = line.Version,
+                                                Headers = MergeHeaders(headers)
+                                        };
+
+type RequestHeaderType
+{
+    string Method;
+    UriType Uri;
+    VersionType Version;
+    map<string, any> Headers;
+}
+
+type RequestLineType
+{
+    string Method;
+    UriType Uri;
+    VersionType Version;
+}
+
+syntax RequestLine              = method:Method SP uri:PrimitiveUri SP version:Version CRLF
+                                    => new RequestLineType
+                                        {
+                                            Method = method,
+                                            Uri = new UriType {Host = uri as string},
+                                            Version = version
+                                        };
+
+syntax PrimitiveUri = s:regex{[^ \r\n]*} => s;
+
+UriType ParseUri(string str)
+{
+    stream s = str;
+    var uri = Urii(s);
+    if (uri == nothing || s.RemainingLength > 0)
+    {
+        ValidationCheck(false, null, "HTTP: Failed to parse URI in request header, because the URI contains characters that are not defined in RFC3986.");
+        return new UriType {Host = str as string};
+    }
+    else
+    {
+        return uri as UriType;
+    }
+}
+
+
+// Rename Host to HostName to avoid name conflict
+// Only used to parse request uri and produce strong type.
+syntax Urii =
+        // Alternative #1: just match a single star "*"
+        "*" => new UriType{Host = "*"}
+       |// Alternative #2: absoluteURI start with https/http/ftp
+        s:("https" | "http" | "ftp") // https must be matched before http
+        "://"
+        h:HostName
+        p:(":" pp:HTTP.Port => pp)?
+        apq:(ap:PathAbsolute q:("?" qq:Query? => (qq.Count == 0 ? "" : (qq[0] as string)))? => [ap, q.Count == 0 ? nothing : q[0]])?
+            => new UriType
+                {
+                    Schema = s,
+                    Host = h,
+                    Port = p.Count == 0 ? nothing : p[0],
+                    AbsPath = (apq.Count != 0 ? apq[0][0] : nothing),
+                    Query = (apq.Count != 0 ? apq[0][1] : nothing)
+                }
+       |// Alternative #3: abs_path
+        s1:PathAbsolute s2:("?" s21:Query => s21)?
+            => new UriType
+                {
+                    AbsPath = s1,
+                    Query = (s2.Count == 0 ? nothing : s2[0])
+                }
+       |// Alternative #4
+        s3:HostName s4:(":" s42:Port => s42)?
+            => new UriType
+                {
+                    Host = s3,
+                    Port = (s4.Count == 0 ? nothing : s4[0])
+                }
+    ;
+
+type UriType
+{
+    optional string Schema;
+    optional string Host;
+    optional string Port;
+    optional string AbsPath;
+    optional string Query;
+
+    override string ToString()
+    {
+        string uri = "";
+        if (Schema != nothing)
+        {
+            uri += (Schema as string) + "://";
+        }
+        if (Host != nothing)
+        {
+            if (Host == "*")
+            {
+                return "*";
+            }
+            else
+            {
+                uri += Host as string;
+            }
+        }
+        if (Port != nothing)
+        {
+            uri += ":" + (Port as string);
+        }
+        if (AbsPath != nothing)
+        {
+            uri += AbsPath as string;
+        }
+        if (Query != nothing)
+        {
+            uri += "?" + (Query as string);
+        }
+
+        return uri;
+    }
+    
+    int Length()
+    {
+        int len = 0;
+        if (Schema != nothing)
+        {
+            len += (Schema as string).Count + 3; // "://" after http.
+        }
+        if (Host != nothing)
+        {
+            len += (Host as string).Count;
+        }
+        if (Port != nothing)
+        {
+            len += (Port as string).Count;
+        }
+        if (AbsPath != nothing)
+        {
+            len += (AbsPath as string).Count;
+        }
+        if (Query != nothing)
+        {
+            len += (Query as string).Count;
+        }
+        return len + 1; // 0x20 after the Uri.
+    }
+}
+
+
+// RFC 4918 Extend "PROPFIND" | "PROPPATCH" | "MKCOL" | "COPY" | "MOVE" | "LOCK" | "UNLOCK"
+syntax Method                   =  s:("OPTIONS"
+                                      | "GET"
+                                      | "HEAD"
+                                      | "POST"
+                                      | "PUT"
+                                      | "DELETE"
+                                      | "TRACE"
+                                      | "CONNECT"
+                                      | "PROPFIND"
+                                      | "PROPPATCH"
+                                      | "MKCOL"
+                                      | "COPY"
+                                      | "MOVE"
+                                      | "LOCK"
+                                      | "UNLOCK"
+                                      | Extensionmethod) => s;
+
+syntax Extensionmethod          = s:Token => s;
+
+// Diffent from rfc definition: Request-URI    = "*" | absoluteURI | abs_path | authority
+syntax RequestUri               = s:("*" | AbsoluteUri | RelativeUri | Authority) => s;
+
+syntax ResponseHeader           = line:StatusLine
+                                    headers:(header:MessageHeader CRLF => header)*
+                                    CRLF
+                                    => new ResponseHeaderType
+                                        {
+                                            Version = line.Version,
+                                            StatusCode = line.Status,
+                                            ReasonPhrase = line.Reason,
+                                            Headers = MergeHeaders(headers),
+                                        };
+
+type ResponseHeaderType
+{
+    VersionType Version;
+    uint StatusCode;
+    string ReasonPhrase;
+    map<string, any> Headers;
+}
+
+bool StatusCodeCarryNoPayload(uint statusCode)
+{
+    return (statusCode >=100&& statusCode <=199)
+        || statusCode == 204
+        || statusCode == 304;
+}
+
+syntax StatusLine               = version:Version Spaces status:StatusCode Spaces reason:ReasonPhrase CRLF
+                                    => new StatusLineType
+                                        {
+                                            Version = version,
+                                            Status = status,
+                                            Reason = reason
+                                        };
+
+type StatusLineType
+{
+    VersionType Version;
+    uint Status;
+    string Reason;
+}
+
+//
+// RFC 4918 extends status code: 207 Muti-status, 422 Unprocessable Entity, 423 Locked, 424 Failed Dependency, 507 Insufficient Storage
+// RFC 6585 extends status code: 428 Precondition Required, 429 Too Many Requests, 431 Request Header Fields Too Large, 511 Network Authentication Required
+//
+syntax StatusCode               = s:("100" | "101" |
+                                    "200" | "201" | "202" | "203" | "204" | "205" | "206" | "207" |
+                                    "300" | "301" | "302" | "303" | "304" | "305" | "306" | "307" |
+                                    "400" | "401" | "402" | "403" | "404" | "405" | "406" | "407" | "408" | "409" | "410" | "411" | "412" | "413" | "414" | "415" | "416" | "417" |
+                                    "422" | "423" | "424" | "428" | "429" | "431" |
+                                    "500" | "501" | "502" | "504" | "505" | "507" | "511" | ExtensionCode)
+                                    => (s as uint);
+
+syntax ExtensionCode            = s:Digit3 => s;
+
+// Not follow RFC LWS
+syntax ReasonPhrase             = s:(regex{[\x21-\x7E]} | SP)*  => ConvertStringArrayToString(s);
+
+syntax Accept                   = s1:MediaRange s2:AcceptParams?
+                                  s:("," SP* s3:MediaRange s4:AcceptParams?
+                                        => new HeaderFieldType
+                                            {
+                                                Value = s3.Value,
+                                                Parameters = (s4.Count == 0 ? s3.Parameters : (s3.Parameters is nothing ? (s4[0] as map<string, optional string>) : ((s3.Parameters as map<string, optional string>) + (s4[0] as map<string, optional string>))))
+                                            }
+                                     )*
+                                    => ([new HeaderFieldType
+                                            {
+                                                Value = s1.Value,
+                                                Parameters = (s2.Count == 0 ? s1.Parameters : (s1.Parameters is nothing ? (s2[0] as map<string, optional string>) : ((s1.Parameters as map<string, optional string>) + (s2[0] as map<string, optional string>))))
+                                            }
+                                        ] + (s == null ? [] : s));
+
+syntax MediaRange               = s:(s1:"*/*" => s1
+                                    //| (s2:Type "/" "*" => (s2 + "/*"))
+                                    | (s3:Type "/" s4:SubType => (s3 + "/" + s4))
+                                    ) sn:(ssn:(";" SP* s0:Parameter => s0)+ => ssn)?
+                                    => new HeaderFieldType
+                                       {
+                                            Value = s,
+                                            Parameters = (sn.Count == 0 ? nothing : ConvertArrayToMap(sn[0] as array<map<string, string>>))
+                                       };
+
+
+syntax AcceptParams             = ";" SP* s1:"q" "=" s2:QValue ss:AcceptExtension*
+                                    => ({s1 -> s2} + ConvertArrayToMap(ss));
+
+syntax AcceptExtension          = ";" s:Token ss:( "=" s1:(Token | QuotedString) => s1)?
+                                    => {s -> ss};
+
+type HeaderFieldType
+{
+    string Value;
+    optional map<string, optional string> Parameters;
+
+    override string ToString()
+    {
+        string summary = Value;
+        if (Parameters != nothing)
+        {
+            var paramMap = Parameters as map<string, optional string>;
+            foreach (var key in paramMap.Keys)
+            {
+                summary += ";" + key;
+                summary += (paramMap[key] == nothing ? "" : "=" + (paramMap[key] as string));
+            }
+        }
+        return summary;
+    }
+}
+
+syntax AcceptCharset            = s:(SP* s1:(Charset | "*") s2:( SP* ";" SP* s21:"q" "=" s22:QValue => {s21 -> s22})?
+                                        => new HeaderFieldType
+                                            {
+                                                Value = s1,
+                                                Parameters = (s2.Count == 0 ? nothing : s2[0])
+                                            }
+                                    )
+                                    ss:(SP* "," SP* ss1:(Charset | "*") ss2:( ";" ss21:"q" "=" ss22:QValue => {ss21 -> ss22})?
+                                        => new HeaderFieldType
+                                            {
+                                                Value = ss1,
+                                                Parameters = (ss2.Count == 0 ? nothing : ss2[0])
+                                            }
+                                        )*
+                                    => ([s] + ss);
+
+
+syntax AcceptEncoding           = s:(SP* s1:Codings s2:(SP* ";" SP* "q" "=" s21:QValue => {"q" -> s21})?
+                                    => new HeaderFieldType
+                                        {
+                                            Value = s1,
+                                            Parameters = (s2.Count == 0 ? nothing : s2[0])
+                                        })
+                                    ss:(SP* "," SP* ss1:Codings ss2:(SP* ";" SP* "q" "=" ss21:QValue => {"q" -> ss21})?
+                                        => new HeaderFieldType
+                                            {
+                                                Value = ss1,
+                                                Parameters = (ss2.Count == 0 ? nothing : ss2[0])
+                                            }
+                                        )*
+                                => ([s] + ss);
+
+syntax Codings                  = s:(ContentCoding | "*") => s;
+
+
+syntax AcceptLanguage           = s:(SP* s1:LanguageRange s2:(SP* ";" SP* s21:"q" "=" s22:QValue  => {s21 -> s22})?
+                                    => new HeaderFieldType
+                                        {
+                                            Value = s1,
+                                            Parameters = (s2.Count == 0 ? nothing : s2[0])
+                                        }
+                                    )
+                                    ss:(SP* "," SP* ss1:LanguageRange ss2:(SP* ";" SP* ss21:"q" "=" ss22:QValue => {ss21 -> ss22})?
+                                        => new HeaderFieldType
+                                            {
+                                                Value = ss1,
+                                                Parameters = (ss2.Count == 0 ? nothing : ss2[0])
+                                            }
+                                        )*
+                                    => ([s] + ss);
+
+syntax LanguageRange            = s:(s1:(s11:Alpha8 s12:(s121:"-" s122:Alpha8 => (s121 + s122))* => (s11 + ConvertStringArrayToString(s12)))
+                                    | s2:"*" )
+                                    => s;  // Alpha#1..8, Alpha#1..8
+
+// Not from RFC
+syntax Alpha8                   = s:regex{[a-zA-Z]{1,8}} => s;
+
+syntax AcceptRanges             = s:AcceptableRanges => s;
+syntax AcceptableRanges         = s:(LWS* s1:RangeUnit s2:(LWS* "," LWS* s21:RangeUnit => s21)* => ([s1] + s2)
+                                    | s3:"none" => [s3])
+                                    => s;
+
+syntax Age                      = s:AgeValue => s;
+syntax AgeValue                 = s:DeltaSeconds => s;
+
+syntax Allow                    = LWS* s1:Method ss:(LWS* "," sn:Method => sn)* => ([s1] + ss);
+
+syntax Authorization            = s:Credentials => s;
+
+syntax CacheControl             = s0:CacheDirective ss:(SP* "," SP* s:CacheDirective => s)* => ([s0] + ss);
+
+syntax CacheDirective           = s:(CacheRequestDirective | CacheResponseDirective) => s;
+
+syntax CacheRequestDirective    = s1:"no-cache" => s1
+                                 | s2:"no-store" => s2
+                                 | s31:"max-age" SP? s32:"=" SP? s33:DeltaSeconds => (s31 + s32 + s33)
+                                 | s41:"max-stale" s42:(s43:"=" s44:DeltaSeconds => (s43 + s44))? => (s41 + (s42.Count == 0 ? "" : s42[0]))
+                                 | s51:"min-fresh" s52:"=" s53:DeltaSeconds => (s51 + s52 + s53)
+                                 | s6:"no-transform" => s6
+                                 | s7:"only-if-cached" => s7
+                                 | s8:CacheExtension => s8;
+
+syntax CacheResponseDirective   = s1:"public" => s1
+                                 | s21:"private" s22:( ss1:"=" ss2:Quote SP* ss3:FieldName ss4:(SP* ss31:"," SP* ss32:FieldName => (ss31 + ss32))* ss5:Quote
+                                                       => (ss1 + ss2 + ss3 + ConvertStringArrayToString(ss4) + ss5) )?
+                                    => (s21 + (s22.Count == 0 ? "" : s22[0]))
+                                 | s31:"no-cache" s32:( sss1:"=" sss2:Quote SP* sss3:FieldName sss4:(SP* sss31:"," SP* sss32:FieldName => (sss31 + sss32))* sss5:Quote
+                                                       => (sss1 + sss2 + sss3 + ConvertStringArrayToString(sss4) + sss5) )?
+                                    => (s31 + (s32.Count == 0 ? "" : s32[0]))
+                                 | s4:"no-store" => s4
+                                 | s5:"no-transform" => s5
+                                 | s6:"must-revalidate" => s6
+                                 | s7:"proxy-revalidate" => s7
+                                 | s81:"max-age" s82:"=" s83:DeltaSeconds => (s81 + s82 + s83)
+                                 | s91:"s-maxage" s92:"=" s93:DeltaSeconds => (s91 + s92 + s93)
+                                 | s10:CacheExtension => s10;
+
+
+
+syntax CacheExtension           = s:Token ss:(SP? s1:"=" SP? s2:(Token | QuotedString) => (s1 + s2))?
+                                    => (s + (ss.Count == 0 ? "" : ss[0]));
+                                    //=> new HeaderFieldType
+                                        //{
+                                            //Value = s,
+                                            //Parameters = (ss == nothing ? nothing : ss)
+                                        //};
+
+syntax Connection               = LWS* t0:ConnectionToken ts:(LWS* "," tn:ConnectionToken => tn)*
+                                    => ([t0] + ts);
+syntax ConnectionToken          = t:Token => t;
+
+syntax ContentEncoding          = LWS* t0:ContentCoding ts:(LWS* "," tn:ContentCoding => tn)*
+                                    => ([t0] + ts);
+
+syntax ContentLanguage          = LWS* s0:LanguageTag ss:(LWS* "," s:LanguageTag => s)*
+                                    => ([s0] + ss);
+syntax ContentLength            = LWS* v:Digits => (v as uint);
+
+syntax ContentLocation          = s:(AbsoluteUri | RelativeUri) => s;
+syntax ContentMD5               = s:MD5Digest => s;
+pattern MD5Digest               = regex{[a-zA-Z0-9=]+}; // Future Reference: <base64 of 128 bit MD5 digest as per RFC 1864>
+                                                        // base64 of 128 bit MD5 digest as per RFC 1864
+
+
+syntax ContentRange             = s:ContentRangeSpec => s;
+
+syntax ContentRangeSpec         = s:ByteContentRangeSpec => s;
+syntax ByteContentRangeSpec     = s1:BytesUnit s2:SP s3:ByteRangeRespSpec s4:"/" s5:(InstanceLength | "*")
+                                    => (s1 + s2 + s3 + s4 + s5);
+
+syntax ByteRangeRespSpec        = ss:((s1:FirstBytePos "-" s2:LastBytePos => (s1 + "-" + s2)) | s:"*" => s)=> ss;
+//syntax InstanceLength           = Digit+;
+syntax InstanceLength           = Digits;
+
+syntax ContentType              = s:MediaType => new HeaderFieldType
+                                                    {
+                                                        Value = s.Value,
+                                                        Parameters = ((s.Parameters != nothing && s.Parameters as map<string, optional string> == {}) ? nothing : s.Parameters)
+                                                    };
+
+syntax Date                     = s:HttpDate => s;
+
+syntax ETag                     = s:EntityTag => s;
+
+// Not from rfc. Token is DIY
+syntax EntityTag                = s1:Weak? s2:(Token | OpaqueTag) => ((s1.Count == 0 ? "" : s1[0]) + s2);
+syntax Weak                     = s:"W/" => s;
+syntax OpaqueTag                = s:QuotedString => s;
+
+syntax RangeUnit                = s:(BytesUnit | OtherRangeUnit) => s;
+syntax BytesUnit                = s:"bytes" => s;
+syntax OtherRangeUnit           = s:Token => s;
+
+
+syntax Expect                   = LWS* s0:Expectation ss:(LWS* "," e:Expectation => e)*
+                                    => ([s0] + ss);
+
+syntax Expectation              = s1:"100-continue" => new HeaderFieldType{Value = s1}
+                                | s2:ExpectationExtension => s2;
+
+syntax ExpectationExtension     = s0:Token s1:(s11:"=" s12:(Token | QuotedString) => (s11 + s12))? ss:ExpectParams*
+                                    => new HeaderFieldType
+                                            {
+                                                Value = (s0 + (s1.Count == 0 ? "" : s1[0])),
+                                                Parameters = ((ConvertArrayToMap(ss) == {}) ? nothing : ConvertArrayToMap(ss))
+                                            };
+
+syntax ExpectParams             =  ";" s0:Token s1:("=" s:(Token | QuotedString) => s)?
+                                    => {s0 -> s1};
+
+// "-1", "0" , "1" not from rfc, but actual data contains such value.
+syntax Expires                  = s:(HttpDate | "-1" | "0" | "1") => s;
+
+syntax From                     = s:Mailbox => s;
+
+syntax Host                     = s1:HostName s2:(s21:":" s22:HTTP.Port => (s21 + s22))? => (s1 + (s2.Count == 0 ? "" : s2[0]));
+syntax IfMatch                  = s:(s1:"*" => [s1]
+                                    | s2:(SP* s21:EntityTag s22:(SP* "," SP* s220:EntityTag => s220)*
+                                    => ([s21] + s22) )) => s;
+
+syntax IfModifiedSince          = s:HttpDate => s;
+
+syntax IfNoneMatch              = s:(s1:"*" => [s1]
+                                    | s2:(SP* s21:EntityTag s22:(SP* "," SP* s220:EntityTag => s220)* => ([s21] + s22) ))
+                                    => s;
+syntax IfRange                  = s:(EntityTag | HttpDate) => s;
+
+syntax IfUnmodifiedSince        = s:HttpDate => s;
+
+syntax LastModified             = s:HttpDate =>s;
+syntax Location                 = s:(AbsoluteUri | RelativeUri) => s;
+
+syntax MaxForwards              = s:Digits => s;
+
+syntax Pragma                   = SP* s1:PragmaDirective ss:(SP* "," SP* s2:PragmaDirective => s2)*
+                                    => ([s1] + ss);
+
+syntax PragmaDirective          = s:("no-cache" | ExtensionPragma) => s;
+
+syntax ExtensionPragma          = s1:Token s2:(s21:"=" s22:(Token | QuotedString)
+                                   => (s21 + s22))? => (s1 + (s2.Count == 0 ? "" : s2[0]));
+
+syntax ProxyAuthenticate        = LWS* Challenge (LWS* "," Challenge)*;   // Future Reference: this syntax should return value.
+
+syntax ProxyAuthorization       = s:Credentials => s;
+syntax RangesSpecifier          = s:ByteRangesSpecifier => s;
+syntax ByteRangesSpecifier      = s1:BytesUnit s2:"=" s3:ByteRangeSet => (s1 + s2 + s3);
+syntax ByteRangeSet             = LWS* s1:(ByteRangeSpec | SuffixByteRangeSpec)
+                                    s2:(LWS* s21:"," LWS* s22:(ByteRangeSpec | SuffixByteRangeSpec) => (s21 + s22))*
+                                    => (s1 + ConvertStringArrayToString(s2));
+
+syntax ByteRangeSpec            = s1:FirstBytePos s2:"-" s3:LastBytePos? => (s1 + s2 + (s3.Count == 0 ? "" : s3[0]));
+syntax FirstBytePos             = s:Digits => s;
+syntax LastBytePos              = s:Digits => s;
+
+
+syntax SuffixByteRangeSpec      = "-" SuffixLength;
+syntax SuffixLength             = Digits;
+
+syntax Range                    = s:RangesSpecifier => s;
+
+syntax Referer                  = s:(AbsoluteUri | RelativeUri) => s;
+
+syntax RetryAfter               = s:(Date | DeltaSeconds) => s;
+
+// Name conflict with Server role
+syntax ServerHeader             = s:(Product | Comment)+ => s;
+
+syntax TE                       = LWS* s1:TCodings s2:(LWS* "," LWS* s22:TCodings => s22)* => ([s1] + s2);
+syntax TCodings                 = s:(s1:"trailers" => s1//new HeaderFieldType{Value = s1, Parameters = null}
+                                    |s2:(s21:TransferExtension s22:AcceptParams?
+                                    => new HeaderFieldType
+                                        {
+                                            Value = s21.Value,
+                                            Parameters = ((s22 .Count == 0 ? s21.Parameters : (s21.Parameters is nothing ? (s22[0] as map<string, optional string>) : ((s21.Parameters as map<string, optional string>) + s22[0] as map<string, optional string>))))
+                                        }))
+                                    => s;
+
+// Future Reference: Need check with spec
+syntax Trailer                  = LWS* s1:FieldName s2:(LWS* "," LWS* s22:FieldName => s22)* => ([s1] + s2);
+
+syntax TransferEncoding         = LWS* t0:TransferCoding ts:(LWS* "," LWS* tn:TransferCoding => tn)* => ([t0] + ts);
+
+syntax Upgrade                  = LWS* s1:Product s2:(LWS* "," LWS* s22:Product => s22)* => ([s1] + s2);
+
+//syntax UserAgent     = s:(Product | Comment)+ => s;
+syntax UserAgent                = s:(s1:Product SP* s2:Comment? => (s1 + (s2.Count == 0 ? "" : (" " +s2[0]))))+ => s;
+
+syntax Vary                     = s:(s1:"*" => [s1]| LWS* s2:FieldName s3:(LWS* "," LWS* s33:FieldName => s33)* => ([s2] + s3)) => s;
+
+syntax Via                      =  SP* s:(s11:ReceivedProtocol SP* s12:ReceivedBy SP* s13:Comment?
+                                    => new ViaType
+                                        {
+                                            ReceivedProtocol = s11,
+                                            ReceivedBy = s12,
+                                            Comment = s13.Count == 0 ? nothing : s13[0]
+                                        })
+                                    ss:(SP* "," SP* ss1:ReceivedProtocol SP* ss2:ReceivedBy SP* ss3:Comment?
+                                        => new ViaType
+                                            {
+                                                ReceivedProtocol = ss1,
+                                                ReceivedBy = ss2,
+                                                Comment = ss3.Count == 0 ? nothing : ss3[0]
+                                            } )*
+                                    => ([s] + ss);
+
+type ViaType
+{
+    ProtocolType ReceivedProtocol;
+    string ReceivedBy;
+    optional string Comment;
+}
+
+type ProtocolType
+{
+    optional string Name;
+    string Version;
+}
+syntax ReceivedProtocol         = s2:ProtocolVersion => new ProtocolType{Version = s2};
+//syntax ReceivedProtocol = s1:(s11:ProtocolName s12:"/" => (s11 + s12))? s2:ProtocolVersion => new ProtocolType{Name = s1, Version = s2};
+
+syntax ProtocolName             = s:Token => s;
+syntax ProtocolVersion          = s:Token => s;
+syntax ReceivedBy               = s:(s1:(s11:HostName s12:(s121:":" s122:HTTP.Port =>(s121 + s122))? => (s11 + (s12.Count == 0 ? "" : s12[0])))
+                                    | s2:Pseudonym => s2)
+                                    => s;
+syntax Pseudonym                = s:Token => s;
+
+syntax Warning                  = LWS* s1:WarningValue s2:(LWS* "," LWS* s21:WarningValue => s21)*
+                                    => ([s1] + s2);
+// WORKAROUND: should return a type, not string
+syntax WarningValue             = s1:WarnCode s2:SP s3:WarnAgent s4:SP s5:WarnText s6:(s61:SP s62:WarnDate => (s61 + s62))?
+                                    => (s1 + s2 + s3 + s4 + s5 + (s6.Count == 0 ? "" : s6[0]));
+
+syntax WarnCode                 = s:Digit3 => s;
+
+syntax WarnAgent                = s:(s1:(s11:HostName s12:(s121:":" s122:HTTP.Port => (s121 + s122))? => (s11 + (s12.Count == 0 ? "" : s12[0])))
+                                    | s2:Pseudonym => s2)
+                                    => s;
+
+// Confict to real data.
+syntax WarnText                 = s:(Token | QuotedString) => s;
+syntax WarnDate                 = s1:Quote s2:HttpDate s3:Quote => (s1 + s2 + s3);
+syntax WwwAuthenticate          = LWS* s1:Challenge s2:(LWS* "," LWS* s20:Challenge => s20)* => ([s1] + s2);
+
+syntax MimeVersion              = Digit+ "." Digit+;
+
+syntax ContentDisposition       = DispositionType ( ";" DispositionParm )*;
+syntax DispositionType          = "attachment" | DispExtensionToken;
+syntax DispositionParm          = FileNameParm | DispExtensionParm;
+syntax FileNameParm             = "fileName" "=" QuotedString;
+syntax DispExtensionToken       = Token;
+syntax DispExtensionParm        = Token "=" ( Token | QuotedString );
+
+// RFC 5322.
+syntax Mailbox                  = s:(NameAddr | AddrSpec) => s;
+syntax NameAddr                 = s1:DisplayName? s2:AngleAddr
+                                    => ((s1.Count == 0 ? "" : (s1[0] as string)) + s2);
+syntax AngleAddr                = s1:CFWS? s2:"<" s3:AddrSpec s4:">" s5:CFWS?
+                                    => (s2 + s3 + s4);
+syntax DisplayName              = s:Phrase => s;
+
+syntax AddrSpec                 = s1:LocalPart s2:"@" s3:Domain => (s1 + s2 + s3);
+syntax LocalPart                = s:(DotAtom | QuotedString) => s;
+syntax Domain                   = s:(DotAtom | DomainLiteral) => s;
+syntax DomainLiteral            = s1:CFWS? s2:"[" s3:(s31:FWS? s32:DText => (s32))* s4:FWS? s5:"]" s6:CFWS?
+                                    => (s2 + ConvertStringArrayToString(s3) + s5);
+syntax DText                    = s:regex{[\x21-\x5A\x5E-\x7E]}
+                                | s1:("[" | "]" | "\\") => s1;
+/*
+syntax DText                    = s:regex{[^[]\\\r]} => s;
+syntax DTexts                   = s:regex{[^[]\\\r]*} => s; // not from rfc.
+*/
+syntax AText                    = s:(Alpha | Digit | regex{[!#$%&'*+\x2D/=?_`|{}~]} | "^")  => s;
+syntax Atom                     = s1:CFWS? s2:AText+ s3:CFWS?   => ConvertStringArrayToString(s2);
+syntax DotAtomText              = s1:AText+ s2:(s21:"." s22:AText+
+                                                => (s21 + ConvertStringArrayToString(s22))
+                                                )*
+                                    => (ConvertStringArrayToString(s1) + ConvertStringArrayToString(s2));
+syntax DotAtom                  = s1:CFWS? s2:DotAtomText s3:CFWS? => s2;
+
+syntax Phrase                   = s:Word+ => ConvertStringArrayToString(s);
+syntax Word                     = s:(Atom | QuotedString) => s;
+
+// RFC 3986
+syntax AbsoluteUri              = s1:Schema s2:":" s3:HierPart s4:(s41:"?" s42:Query => (s41 + s42))?
+                                    => (s1 + s2 + s3 + (s4.Count == 0 ? "" : (s4[0] as string)));
+
+syntax RelativeUri              = s1:RelativePath s2:(s21:"?" s22:Query => (s21 + s22))?
+                                    => (s1 + (s2.Count== 0 ? "" : s2[0]));
+
+syntax HierPart                 =  s1:"//" s2:Authority s3:PathAbempty  => (s1 + s2 + s3)
+                                | s4:PathAbsolute  => s4
+                                | s5:PathRootless   => s5
+                                | s6:PathEmpty  => s6;
+syntax RelativeRef              = s1:RelativePath s2:(s21:"?" s22:Query => (s21 + s22))? s3:(s31:"#" s32:Fragment => (s31 + s32))?
+                                    => (s1 + (s2.Count == 0 ? "" : (s2[0] as string)) + (s3.Count == 0 ? "" : (s3[0] as string)));
+syntax RelativePath             = s1:"//" s2:Authority s3:PathAbempty => (s1 + s2 + s3)
+                                | s4:PathAbsolute   => s4
+                                | s5:PathNoSchema   => s5
+                                | s6:PathEmpty => s6;
+
+syntax Schema                   = s0:Alpha ss:(s:(Alpha | Digit | "+" | "-" | ".") => s)*
+                                    => (s0 + ConvertStringArrayToString(ss));
+
+syntax Authority                = /*s1:(s11:UserInfo s12:"@" => (s11 + s12))?*/ s2:HostName s3:(s31:":" s32:Port => (s31 + s32))?
+                                    => (/*(s1.Count == 0 ? "" : (s1[0] as string)) +*/ s2 + (s3.Count == 0 ? "" : (s3[0] as string)));
+syntax UserInfo                 = s:(Unreserved | PctEncoded | SubDelims)* => ConvertStringArrayToString(s);
+
+// Rename 'Host' to 'HostName'
+syntax HostName                    = s:(IPLiteral | IPv4Address | RegName) => s;
+syntax Port                     = s:Digits => s;
+syntax IPLiteral                = s1:"[" s2:(IPv6Address | IPvFuture) s3:"]" => (s1 + s2 + s3);
+syntax IPvFuture                = s1:"v" s2:regex{[0-9a-zA-Z]+} s3:"." s4:(Unreserved | SubDelims | ":")+
+                                    => (s1 + s2 + s3 + ConvertStringArrayToString(s4));
+/*
+syntax IPv6Address              =                            (H16 ":"){6} LS32
+                                |                       "::" (H16 ":"){5} LS32
+                                |                 H16?  "::" (H16 ":"){4} LS32
+                                | ((H16 ":"){0,1} H16)? "::" (H16 ":"){3} LS32
+                                | ((H16 ":"){0,2} H16)? "::" (H16 ":"){2} LS32
+                                | ((H16 ":"){0,3} H16)? "::" (H16 ":")    LS32
+                                | ((H16 ":"){0,4} H16)? "::"              LS32
+                                | ((H16 ":"){0,5} H16)? "::"              H16
+                                | ((H16 ":"){0,6} H16)? "::";
+*/
+syntax IPv6Address              = s11:regex{([a-zA-Z0-9]{1,4}:){6}} s12:LS32
+                                    => (s11 + s12)
+                                | s21:"::" s22:regex{([a-zA-Z0-9]{1,4}:){5}} s23:LS32
+                                    => (s21 + s22 + s23)
+                                | s31:H16? s32:"::" s33:regex{([a-zA-Z0-9]{1,4}:){4}} s34:LS32
+                                    => ((s31.Count == 0 ? "" : (s31[0] as string)) + s32 + s33 + s34)
+                                | s41:(s411:regex{([a-zA-Z0-9]{1,4}:){0,1}} s412:H16 => (s411 + s412))? s42:"::" s43:regex{([a-zA-Z0-9]{1,4}:){3}} s44:LS32
+                                    => ((s41.Count == 0 ? "" : (s41[0] as string)) + s42 + s43 + s44)
+                                | s51:(s511:regex{([a-zA-Z0-9]{1,4}:){0,2}} s512:H16 => (s511 + s512))? s52:"::" s53:regex{([a-zA-Z0-9]{1,4}:){2}} s54:LS32
+                                    => ((s51.Count == 0 ? "" : (s51[0] as string)) + s52 + s53 + s54)
+                                | s61:(regex{([a-zA-Z0-9]{1,4}:){0,3}} H16)? s62:"::" s63:regex{([a-zA-Z0-9]{1,4}:){1}} s64:LS32
+                                    => ((s61.Count == 0 ? "" : (s61[0] as string)) + s62 + s63 + s64)
+                                | s71:(s711:regex{([a-zA-Z0-9]{1,4}:){0,4}} s712:H16 => (s711 + s712))? s72:"::" s73:LS32
+                                    => ((s71.Count == 0 ? "" : (s71[0] as string)) + s71[0] + s73)
+                                | s81:(s811:regex{([a-zA-Z0-9]{1,4}:){0,5}} s812:H16 => (s811 + s812))? s82:"::" s83:H16
+                                    => ((s81.Count == 0 ? "" : (s81[0] as string)) + s82 + s83)
+                                | s91:(regex{([a-zA-Z0-9]{1,4}:){0,6}} H16)? s92:"::"
+                                    =>((s91.Count == 0 ? "" : (s91[0] as string)) + s92);
+// least-significant 32 bits of address
+syntax LS32                     = s1:(s11:H16 s12:":" s13:H16 => (s11 + s12 + s13))
+                                | s2:IPv4Address => s2;
+// 16 bits of address represented in hexadecimal
+syntax H16                      = s:regex{[0-9a-zA-Z]{1,4}} => s;
+
+syntax IPv4Address              = s1:DecOctet s2:"." s3:DecOctet s4:"." s5:DecOctet s6:"." s7:DecOctet
+                                    => (s1 + s2 + s3 + s4 + s5 + s6 + s7);
+syntax DecOctet                 = s1:regex{[0-9]}           => s1   // 0-9
+                                | s2:regex{[1-9][0-9]}      => s2   // 10-99
+                                | s3:regex{1[0-9]{2}}       => s3   // 100-199
+                                | s4:regex{2[0-4][0-9]}     => s4   // 200-249
+                                | s5:regex{25[0-5]}         => s5;  // 250-255
+
+syntax RegName                  = s:(Unreserved | PctEncoded | SubDelims)* => ConvertStringArrayToString(s);
+
+syntax Path                     = s1:PathAbempty    => s1           // begins with "/" or is empty
+                                | s2:PathAbsolute   => s2           // begins with "/" but not "//"
+                                | s3:PathNoSchema   => s3           // begins with a non-colon segment
+                                | s4:PathRootless   => s4           // begins with a segment
+                                | s5:PathEmpty      => s5;            // zero characters
+syntax PathAbempty              = s:(s1:"/" s2:Segment => (s1 + s2))* => ConvertStringArrayToString(s);
+syntax PathAbsolute             =  s1:"/" s2:(s3:SegmentNz s4:(s41:"/" s42:Segment => (s41 + s42))*
+                                                => (s3 + ConvertStringArrayToString(s4))
+                                            )?
+                                    => (s1 + (s2.Count == 0 ? "" : (s2[0] as string)));
+syntax PathNoSchema             = s1:SegmentNzNc s2:(s3:"/" s4:Segment => (s3 + s4))* => (s1 + ConvertStringArrayToString(s2));
+syntax PathRootless             = s1:SegmentNz s2:(s3:"/" s4:Segment => (s3 + s4))* => (s1 + ConvertStringArrayToString(s2));
+syntax PathEmpty                = s:"" => s;
+
+syntax Segment                  = s:PChar* => ConvertStringArrayToString(s);
+syntax SegmentNz                = s:PChar+ => ConvertStringArrayToString(s);
+syntax SegmentNzNc              = s:(Unreserved | PctEncoded | SubDelims | "@")+ => ConvertStringArrayToString(s);         // non-zero-length segment without any colon ":"
+
+// Specials are added to the definition for real parsing
+syntax PChar                    = s:(Unreserved | PctEncoded | SubDelims | ":" | "@" | Specials) => s;
+
+syntax Query                    = s:(PChar | "/" | "?")* => ConvertStringArrayToString(s);
+syntax Fragment                 = s:(PChar | "/" | "?")* => ConvertStringArrayToString(s);
+
+// Workaround to paring %u.
+syntax PctEncoded               = s:"%u" => s
+                                | s1:"%" s2:HexDig s3:HexDig => (s1 + s2 + s3);
+
+syntax Unreserved               = s:(Alpha | Digit | "-" | "." | "_" | "~") => s;
+syntax Reserved                 = s:(GenDelims | SubDelims | Specials) => s;
+syntax GenDelims                = s:(":" | "/" | "?" | "#" | "[" | "]" | "@") => s;
+syntax SubDelims                = s:("!" | "$" | "&" | "'" | "(" | ")" | "*" | "+" | "," | ";" | "=") => s;
+
+// Specailss is not from rfc
+syntax Specials                 = s:("^" | "|" | "[" | "]" | "{" | "}" | "\"" | "/" | "%") => s;
+
+syntax HexDig                   = s:Hex => s;
+
+// RFC 2617
+syntax Credentials              = s1:AuthSchema s2:(SP* s21:AuthParam s22:(SP* "," SP* s221:AuthParam => s221)* => ([s21] + s22))
+                                    => (s1 + ConvertStringArrayToString(s2));
+                            //= AuthSchema (LWS* AuthParam (LWS* "," LWS* AuthParam)*)
+
+syntax Challenge                = s1:AuthSchema SP* s2:(LWS* s21:AuthParam s22:(LWS* "," LWS* s221:AuthParam => s221)* => ([s21] + s22))
+                                    => (s1 + ConvertStringArrayToString(s2));
+syntax AuthSchema               = s:Token => s;
+// Add "s2:(t1:"/" t2:Token => (t1 + t2))?" for fixing Bug#36322, the data contains "/", but the rfc haven't the definition for token.
+syntax AuthParam                = s1:Token s2:(t1:"/" t2:Token => (t1 + t2))? s3:("=")? s4:(Token | QuotedString | "=")? => (s1 + (s2.Count == 0 ? "" : s2[0]) + (s3.Count == 0 ? "" : s3[0]) + (s4.Count == 0 ? "" : s4[0]));
+
+// RFC 4918 section 10
+syntax DAV                      = s:ComplianceClass => s;
+syntax ComplianceClass          = s:("1" | "2" | "3" | Extend) => s;
+syntax Extend                   = s:(CodedURL | Token) => s;
+syntax CodedURL                 = s1:"<" s2:AbsoluteUri s3:">" => (s1 + s2 + s3);
+syntax Depth                    = s:("0" | "1" | "infinity") => s;
+
+syntax Destination1              = s:Simpleref => s;
+// Simple-ref = absolute-URI | ( path-absolute [ "?" query ] )
+syntax Simpleref                = s:(AbsoluteUri | (s2:PathAbsolute s5:(s3:"?" s4:Query => (s3 + s4))? => (s2 + (s5.Count == 0 ? "" : s5[0])))) => s;
+
+syntax If                       = s:(ss1:NoTagList+ => ConvertStringArrayToString(ss1) | ss2:TaggedList+ => ConvertStringArrayToString(ss2)) => (s);
+syntax NoTagList                = s:List => s;
+syntax List                     = s1:"(" s2:Condition+ s3:")" => (s1 + ConvertStringArrayToString(s2) + s3);
+syntax Condition                = s1:"Not"? s2:(StateToken | (s3:"[" s4:EntityTag s5:"]" => (s3 + s4 + s5))) => ((s1.Count == 0 ? "" : s1[0]) + s2);
+syntax StateToken               = s:CodedURL => s;
+syntax TaggedList               = s1:ResourceTag s2:List+ => (s1 + ConvertStringArrayToString(s2));
+syntax ResourceTag              = s1:"<" s2:Simpleref s3:">" => (s1 + s2 + s3);
+
+syntax LockToken                = s:(CodedURL | OpaqueLockTokenURI) => s;
+
+syntax Overwrite                = s:("T" | "F") => s;
+
+syntax TimeOut                  = s:TimeType+ => ConvertStringArrayToString(s);
+syntax TimeType                 = s1:"Second-" s2:(DAVTimeOutVal | "Infinite") => (s1 + s2);
+syntax DAVTimeOutVal            = s:Digits => s;
+
+// RFC 2518
+syntax OpaqueLockTokenURI       = s1:"opaquelocktoken:" s0:(s2:"{"? s3:UUID s4:"}"? => ((s2.Count == 0 ? "" : s2[0] ) + s3 + (s4.Count == 0 ? "" : s4[0]))) s5:Extension? => (s1 + s0 + (s5.Count == 0 ? "" : s5[0]));
+syntax Extension                = s:OpaquePath => s;
+
+//RFC 2068
+syntax OpaquePath               = s0:SegmentNz s1:(s2:"/" s3:PathSegment => (s2 + s3))* => (s0 + (s1 == null ? "" : ConvertStringArrayToString(s1)));
+// *pchar
+syntax PathSegment              = s:(PChar)* => (s == null ? "" : ConvertStringArrayToString(s));
+
+// RFC 4122
+syntax UUID                     = s1:TimeLow s2:"-" s3:TimeMid s4:"-" s5:TimeHighAndVersion s6:"-" s7:ClockSeqAndReserved s8:ClockSeqLow s9:"-" s10:Node => (s1 + s2 + s3 + s4 + s5 + s6 + s7 + s8 + s9 + s10);
+syntax TimeLow                  = s:regex{[A-Fa-f0-9]{8}} => s;
+syntax TimeMid                  = s:regex{[A-Fa-f0-9]{4}} => s;
+syntax TimeHighAndVersion       = s:regex{[A-Fa-f0-9]{4}} => s;
+syntax ClockSeqAndReserved      = s:regex{[A-Fa-f0-9]{2}} => s;
+syntax ClockSeqLow              = s:regex{[A-Fa-f0-9]{2}} => s;
+syntax Node                     = s:regex{[A-Fa-f0-9]{12}} => s;
+
+interface IMessage {};
+
+syntax IncompletePayloadLine    = ss:(s:regex{[^\r\n]*} (CRLF | CR | LF)* => s)* => ss;
+
+string GetUri(IMessage msg)
+{
+    if (msg is HttpContract.Request)
+    {
+        var req = msg as HttpContract.Request;
+        return req.Uri.ToString();
+    }
+    else
+    {
+        var res = msg as HttpContract.Response;
+        if (res#Uri == nothing)
+        {
+            return "";
+        }
+        else
+        {
+            return (res#Uri as UriType).ToString();
+        }
+    }
+}
+
+bool ContentTypeContains(this map<string, any> headers, string target)
+{
+    return ("Content-Type" in headers) && (headers["Content-Type"] is HeaderFieldType) &&
+        (headers["Content-Type"] as HeaderFieldType).Value.Contains(target);
+}
+
+type KeyValuePair
+{
+    string Key;
+    string Value;
+}
+
+map<string, any> MergeHeaders(array<KeyValuePair> headers)
+{
+    map<string, any> result = {};
+    foreach (KeyValuePair pair in headers)
+    {
+        if (result.Keys[pair.Key])
+        {
+            result[pair.Key] = (result[pair.Key] as string) + ", " + (pair.Value as string);
+        }
+        else
+        {
+        result[pair.Key] = pair.Value;
+        }
+    }
+    return result;
+}
+
+binary MergeChunks(array<binary> chunks)
+{
+    binary payload;
+
+    foreach (binary chunk in chunks)
+    {
+        payload += chunk;
+    }
+
+    return payload;
+}
+
+string MergeStringArray(array<optional string> arr)
+{
+    string str;
+    foreach (var s in arr)
+    {
+        str += s as string;
+    }
+
+    return str;
+}
+
+string MergeStringArray(array<string> arr)
+{
+    string str;
+    foreach (string s in arr)
+    {
+        str += s;
+    }
+
+    return str;
+}
+
+bool ArrayContains(array<string> arr, string s)
+{
+    if (arr == null)
+        return false;
+
+    return s in arr;
+}
+
+string GetHostFromUri(string uri)
+{
+    if (uri.Count == 0)
+    {
+        return "";
+    }
+
+    int pos1 = uri.IndexOf("//");
+    if (pos1 < 0)
+    {
+        return "";
+    }
+    int beg = (pos1 + 2) as int;
+
+    int end = uri.IndexOf("/", beg);
+    if (end < 0)
+    {
+        return uri.Segment(beg);
+    }
+    else
+    {
+        return uri.Segment(beg, end - beg);
+    }
+}
+
+map<string, optional string> ConvertArrayToMap(array<map<string, optional string>> arr)
+{
+    if (arr.Count == 0)
+    {
+        return {};
+    }
+    map<string, optional string> results = {};
+    foreach (var item in arr)
+    {
+        results += item;
+    }
+    return results;
+}
+
+map<string, optional string> ConvertArrayToMap(array<map<string, array<string>>> arr)
+{
+    if (arr.Count == 0)
+    {
+        return {};
+    }
+    map<string, optional string> results = {};
+    foreach (var item in arr)
+    {
+        foreach (var key in item.Keys)
+        {
+            var strArr = item[key];
+            if (strArr.Count == 0)
+                results += { key -> nothing };
+            else
+                results += {key -> strArr[0]};
+        }
+    }
+    return results;
+}
+
+map<string, optional string> ConvertArrayToMap(array<map<string, string>> arr)
+{
+    if (arr.Count == 0)
+    {
+        return {};
+    }
+    map<string, optional string> results = {};
+    foreach (var item in arr)
+    {
+        foreach (var key in item.Keys)
+        {
+            results += {key -> item[key]};
+        }
+    }
+    return results;
+}
+
+// Operator 'in' overloading.
+// Determine whether a specific string is contians in array<HeaderFieldType's Value>
+/*
+ * Input:
+ *      str: multipart
+ *      arr: [HeaderFieldType{Value = multipart/form-data}]
+ * Ouput:
+ *      true
+ */
+static bool operator in (string str, array<HeaderFieldType> arr)
+{
+    bool result = false;
+    foreach (var e in arr)
+    {
+        if (e.Value.Contains(str))
+        {
+            result = true;
+            break;
+        }
+    }
+    return result;
+}
+
+(IPv4Address | IPv6Address | string) get Source(this HTTP.HttpContract.Request request)
+{
+    if (request#IsRequestOverWebProxy != nothing && request#IsRequestOverWebProxy as bool)
+    {
+        return "Local";
+    }
+    else if (request#SourceAddress != nothing)
+    {
+        return request#SourceAddress as (IPv4Address | IPv6Address);
+    }
+    else
+    {
+        return GetAddressFromFirstOrigin(request.Origins, true);
+    }
+}
+
+(IPv4Address | IPv6Address | string) get Destination(this HTTP.HttpContract.Request request)
+{
+
+    if (request#DestinationAddress != nothing)
+    {
+        return request#DestinationAddress as (IPv4Address | IPv6Address);
+    }
+    else
+    {
+        if (request#DestinationStr == nothing || (request#DestinationStr as string) == "")
+        {
+            return GetAddressFromFirstOrigin(request.Origins, false);
+        }
+        else
+        {
+            return request#DestinationStr as string;
+        }
+    }
+}
+
+(IPv4Address | IPv6Address | string) get Source(this HTTP.HttpContract.Response response)
+{
+    if (response#SourceAddress != nothing)
+    {
+       return response#SourceAddress as (IPv4Address | IPv6Address);
+    }
+    // Get Source address from its first Origin, once its request message misses in trace.
+    else if (response#SourceStr == nothing || response#SourceStr.ToString() == "")
+    {
+        if (response#IsResponseOverWebProxy != nothing && response#IsResponseOverWebProxy as bool)
+        {
+            return "";
+        }
+        else
+        {
+            return GetAddressFromFirstOrigin(response.Origins, true);
+        }
+    }
+    else
+    {
+        return response#SourceStr as string;
+    }
+}
+
+(IPv4Address | IPv6Address | string) get Destination(this HTTP.HttpContract.Response response)
+{
+    if (response#IsResponseOverWebProxy != nothing && response#IsResponseOverWebProxy as bool)
+    {
+        return "Local";
+    }
+    else if (response#DestinationAddress != nothing)
+    {
+        return response#DestinationAddress as (IPv4Address | IPv6Address);
+    }
+    else
+    {
+        return GetAddressFromFirstOrigin(response.Origins, false);
+
+    }
+}
+
+(IPv4Address | IPv6Address | string) GetAddressFromFirstOrigin(array<any message> origins, bool isSource)
+{
+    if (origins.Count < 1 || (origins[0] is Segment))
+    {
+        return "";
+    }
+    else
+    {
+        binary addrBin = $[];
+        if (isSource)
+        {
+            addrBin = (origins[0] as VirtualDataSegment)#SourceAddrBin as binary;
+        }
+        else
+        {
+            addrBin = (origins[0] as VirtualDataSegment)#DestinationAddrBin as binary;
+        }
+        return addrBin.Count == 4 ? new IPv4Address{Octets = addrBin} : new IPv6Address{Octets = addrBin};
+    }
+}
+
+// check whether payload of http response is compressed
+bool IsResponseCompressed(HttpContract.Response res)
+{
+    if("Content-Encoding" in res.Headers
+        && res.Headers["Content-Encoding"] is array<string>
+        && ("gzip" in (res.Headers["Content-Encoding"] as array<string>) // gzip: GNU zip format
+            || "compress" in (res.Headers["Content-Encoding"] as array<string>) // compress: UNIX "compress" program method
+            || "x-gzip" in (res.Headers["Content-Encoding"] as array<string>) // same as gzip
+            || "x-compress" in (res.Headers["Content-Encoding"] as array<string>) // same as compress
+            || "deflate" in (res.Headers["Content-Encoding"] as array<string>) // deflate: RFC 2616
+            || "exi" in (res.Headers["Content-Encoding"] as array<string>) // exi: W3C Efficient XML Interchange
+            || "pack200-gzip" in (res.Headers["Content-Encoding"] as array<string>) // pack200-gzip: Network Transfer Format for Java archives
+            || "sdch" in (res.Headers["Content-Encoding"] as array<string>) // sdch: Google Shared dictionary compression for http
+            || "bzip2" in (res.Headers["Content-Encoding"] as array<string>) // bzip2: free and open source lossless data compression algorithm 
+        ))
+    {
+        return true;
+    }
+    return false;
+}

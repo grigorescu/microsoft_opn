@@ -1,0 +1,1554 @@
+protocol LDAP with
+Asn1EncodingDefaults{EncodingRule = Asn1EncodingRule.BER},
+// Future Reference: Enable it when the feature is ready
+//Asn1ModuleEncoding {ExtensionDefault = Asn1Extensibility.Implied, TagDefault = Asn1Tagging.Implicit},
+BinaryEncodingDefaults{Endian = Endian.Big, TextEncoding = TextEncoding.UTF8},
+Documentation
+{
+    ProtocolName = "Lightweight Directory Access Protocol",
+    ShortName = "LDAP",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+    [
+    new Reference{Name = "RFC 4511"},
+    new Reference{Name = "RFC 4422"},
+    new Reference{Name = "RFC 2891"},
+    new Reference{Name = "RFC 2696"},
+    new Reference{Name = "RFC 2589"},
+    new Reference{Name = "RFC 3352"},
+    ],
+    RevisionSummary =
+    [
+    new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "3/30/2012"},
+    ]
+};
+
+using Standard;
+using ASN1;
+using TCP;
+using IANA;
+using Utility;
+using GSSAPI;
+using GSSAPIKRB5;
+using KerberosV5;
+using SPNG;
+using NLMP;
+using VirtualTransport;
+using CoreResources;
+using Reassembly;
+using Diagnostics;
+
+// with which ldap message this GSSAPI token is pair, only happens when GSSAPI is used but not encrypt ldap message data
+annotation string SaslMessage#Ldap;
+
+annotation string SaslMessage#AuthMechanism;
+
+endpoint Server over LdapSegmentServer
+issues LdapMessage accepts LdapMessage
+provides VirtualOperations;
+    
+client endpoint Client connected to Server;
+
+// Future Reference: remove this and use GSSAPI endpoint after it's refactored
+endpoint SaslServer issues SaslMessage accepts SaslMessage;
+
+autostart actor LdapSegOverTcp(VirtualTransport.Server server)
+{
+    process server accepts seg:VirtualTransport.VirtualDataSegment where (seg.DestinationPort == Port.LDAP || seg.SourcePort == Port.LDAP)
+    {
+        dispatch endpoint LdapSegmentServer over server accepts seg;
+    }
+    
+    process server issues seg:VirtualTransport.VirtualDataSegment where (seg.SourcePort == Port.LDAP || seg.DestinationPort == Port.LDAP)
+    {
+        dispatch endpoint LdapSegmentServer over server issues seg;
+    }
+}
+
+void ThrowTcpDecodingException(bool hasIncompleteSegments, bool hasSegmentLost)
+{
+    ThrowDecodingExceptionForTCP("LDAP", "LDAP message or SASL Message", hasIncompleteSegments, hasSegmentLost);
+}
+
+endpoint LdapSegmentServer over server:VirtualTransport.Server issues VirtualTransport.VirtualDataSegment accepts VirtualTransport.VirtualDataSegment
+{
+    string extendedResponseName = "";
+    string authenticationMechanism = "";
+    array<int> gssAPISupportedMech = [];
+    bool micPresent = false;
+    
+    DecodingCache requestCache = new DecodingCache{};
+    DecodingCache responseCache = new DecodingCache{};
+    
+    process this accepts seg:VirtualTransport.VirtualDataSegment
+    {
+        bool hasIncompleteSegments;
+        bool hasSegmentLost;
+        bool isSaslMsg;
+        requestCache.Add(seg);
+        if (!requestCache.DecodeAndDispatcher(ref extendedResponseName, ref authenticationMechanism, false, server, ref gssAPISupportedMech, ref micPresent, ref hasIncompleteSegments, ref hasSegmentLost, ref isSaslMsg))
+        {
+            ThrowTcpDecodingException(hasIncompleteSegments, hasSegmentLost);
+        }
+    }
+
+    process this issues seg:VirtualTransport.VirtualDataSegment
+    {
+        bool hasIncompleteSegments;
+        bool hasSegmentLost;
+        bool isSaslMsg;
+        responseCache.Add(seg);
+        if (!responseCache.DecodeAndDispatcher(ref extendedResponseName, ref authenticationMechanism, true, server, ref gssAPISupportedMech, ref micPresent, ref hasIncompleteSegments, ref hasSegmentLost, ref isSaslMsg))
+        {
+            ThrowTcpDecodingException(hasIncompleteSegments, hasSegmentLost);
+        }
+    }
+    
+    // destructor
+    ~endpoint(VirtualTransport.Server server)
+    {
+        requestCache.Clear();
+        responseCache.Clear();
+    }
+}
+
+bool DecodeTokenInBindRequest(ref SaslCredentials sasl, binary binaryValue, ref array<int> gssAPISupportedMech, ref bool micPresent)
+{
+    stream streamValue = binaryValue as stream;
+    var gssapiOptional = GssapiDecoder(streamValue, ref micPresent);
+    if (gssapiOptional != nothing)
+    {
+        var gssapi = gssapiOptional as GssapiType;
+        sasl.Credentials = gssapiOptional;
+        if (gssapi.Gssapi is InitialContextToken
+        && (gssapi.Gssapi as InitialContextToken).InnerContextToken is NegTokenInit)
+        {
+            gssAPISupportedMech = ((gssapi.Gssapi as InitialContextToken).InnerContextToken as NegTokenInit).MechTypes[0];
+        }
+        return true;
+    }
+    else
+    {
+        // NLMP
+        var nlmpPackage = NlmpDecoder(streamValue, ref micPresent);
+        if (nlmpPackage != nothing)
+        {
+            sasl.Credentials = nlmpPackage;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool DecodeTokenInBindResponse(BindResponse sasl, ref bool micPresent)
+{
+    stream streamValue = (sasl.ServerSaslCreds as binary) as stream;
+    var gssapiOptional = GssapiDecoder(streamValue, ref micPresent);
+    if (gssapiOptional != nothing)
+    {
+        var gssapi = gssapiOptional as GssapiType;
+        sasl.ServerSaslCredsValue = gssapiOptional;
+        return true;
+    }
+    else
+    {
+        // NLMP
+        var nlmpPackage = NlmpDecoder(streamValue, ref micPresent);
+        if (nlmpPackage != nothing)
+        {
+            sasl.ServerSaslCredsValue = nlmpPackage;
+            return true;
+        }
+    }
+    return false;
+}
+
+//void DecodeRawGssApiTokenInBindResponse(BindResponse sasl, ref bool micPresent)
+//{
+//RawGssApiWrapper rg = (sasl.RawGssApiWrapper as RawGssApiWrapper);
+//if ((rg.Gss.Token as binary).Count > 0)
+//{
+//stream streamValue = (rg.Gss.Token as binary) as stream;
+//if (streamValue.CurrentByte == 0x4E)
+//{
+//var nlmpMessage = NLMP.NlmpDecoder(streamValue, ref micPresent);
+//if (nlmpMessage != nothing)
+//{
+//rg.Gss.Token = nlmpMessage;
+//}
+//}
+//}
+//// always use "ServerSaslCredsValue" field to present result
+//sasl.ServerSaslCredsValue = rg.Gss;
+//sasl.RawGssApiWrapper = nothing;
+//}
+
+type DecodingCache : DecodingCacheBase
+{    
+    bool IsReassembled = false; 
+    
+    bool DecodeAndDispatcher(ref string extendedResponseName, ref string authenticationMechanism, bool isIssues, VirtualTransport.Server server, ref array<int> gssAPISupportedMech, ref bool micPresent, ref bool hasIncompleteSegments, ref bool hasSegmentLost, ref bool isSaslMsg)
+    {
+        binary plainDataFromGss = null;
+        int plainDataOffset = 0;
+        array<LdapMessage> plainLdapArray = [];
+        any message lastOne = null;
+        // when there is GSSAPI token but not encrypt ldap message data, we will assign MessageID to this GSSAPI token message, so that it's easy to pair it with related ldap messages 
+        optional SaslMessage gss = nothing;
+        if (HasSegmentLost && IsReassembled)
+        {
+            Clear();
+        }
+        else if (HasIncompleteSegments)
+        {
+            Clear();
+        }
+        else
+        {
+            stream s = Buffer;
+            // there may be padding caused by security token, there is doc issue, actually the implementation not care about padding bytes, just try decode as many LDAP messages as possible
+            while (s.BytePosition < s.ByteLength - 4)
+            {
+                int currentPosition = s.BytePosition;
+                    
+                // LDAP PDUs
+                if (s.CurrentByte == 0x30)
+                {          
+                    switch (s)
+                    {
+                        case ldap:LdapMessage from Asn1BerDecoder<LdapMessage> =>
+                        switch (ldap.ProtocolOp)
+                        {
+                            case op:BindRequest =>
+                            {
+                                // Unable to parse simple, sicily.Blocked by Runtime Bug, not able to differentiate types inherits same base type
+                                if (op.Authentication is SaslCredentials)
+                                {
+                                    SaslCredentials sasl = op.Authentication as SaslCredentials;
+                                    authenticationMechanism = sasl.Mechanism as string;
+                                    binary binaryValue = sasl.Credentials as binary;
+                                    if (authenticationMechanism == "DIGEST-MD5")
+                                    {
+                                        optional AsciiString cred = BinaryDecoder<AsciiString>(binaryValue);
+                                        if (cred != nothing)
+                                        {
+                                            sasl.Credentials = (cred as AsciiString).String;
+                                        }
+                                    }
+                                    else
+                                    {
+                                        DecodeTokenInBindRequest(ref sasl, binaryValue, ref gssAPISupportedMech, ref micPresent);
+                                    }
+                                }
+                            }
+                            case op:ExtendedRequest =>
+                            {
+                                extendedResponseName = op.RequestName as string;
+                            }
+                            case op:BindResponse =>
+                            {
+                                // Unable to parse simple, sicily.Blocked by Runtime Bug, not able to differentiate types inherits same base type
+                                if (op.ServerSaslCreds != nothing)
+                                {
+                                    binary binaryValue = op.ServerSaslCreds as binary;
+                                    if (binaryValue.Count > 0)
+                                    {
+                                        if (authenticationMechanism == "DIGEST-MD5")
+                                        {
+                                            optional AsciiString cred = BinaryDecoder<AsciiString>(binaryValue);
+                                            if (cred != nothing)
+                                            {
+                                                op.ServerSaslCreds = (cred as AsciiString).String;
+                                            }
+                                        }
+                                        else if (DecodeTokenInBindResponse(op, ref micPresent))
+                                        {
+                                            op.ServerSaslCreds = nothing;
+                                        }
+                                    }
+                                    //else if(op.RawGssApiWrapper != nothing)
+                                    //{
+                                    //DecodeRawGssApiTokenInBindResponse(op as BindResponse, ref micPresent);
+                                    //}
+                                }
+                            }
+                        }
+                        // Set origins
+                        ldap.Origins += Origins;
+                        plainLdapArray += [ldap];
+                        if (gss != nothing)
+                        {
+                            SaslMessage g = (gss as SaslMessage);
+                            g#Ldap = ldap.MessageID.ToString();
+                            gss = nothing;
+                        }
+                        default =>
+                        // not LDAP message, other code should check return code == true
+                        IsReassembled = false;
+                        Buffer = $[];
+                        Origins = [];
+                        isSaslMsg = false;
+                        hasIncompleteSegments = HasIncompleteSegments;
+                        hasSegmentLost = HasSegmentLost;
+                        return false;
+                    }
+                }
+                // SASL-protected data
+                else
+                {
+                    // WORKAROUND: Bug#31792 - [DCR]BinaryDecoder<T>(binary) should support big-endian or little-endian dynamically assigned in runtime decoding.
+                    //uint len = BinaryDecoder<uint>(s.PeekBytes(s.BitPosition, 4));
+                    Uint uintLen = BinaryDecoder<Uint>(s.PeekBytes(s.BitPosition, 4)) as Uint;
+                    uint len = uintLen.Length;
+                    if (len > s.RemainingLength - 4)
+                    {
+                        //// Set the buffer as the remaining bytes
+                        //Buffer = s.PeekBytes(s.BitPosition);
+                        IsReassembled = true;
+                        if (lastOne != null)
+                        {
+                            ValidationCheck(false, lastOne, Format(LDAP_STR_SASL_LENGTH_NOT_MATCH, len, (s.RemainingLength - 4).ToString()));
+                        }
+                        break;
+                    }
+                    switch (s)
+                    {
+                        case sasl:SaslMessage from BinaryDecoder<SaslMessage> =>
+                        sasl#AuthMechanism = authenticationMechanism;
+                        sasl.Buffer = s.PeekBytes(s.BitPosition);
+                        sasl.AssignFieldEncodingInfo("Buffer", s.BitPosition, (sasl.Length * 8 as int));
+                        // Set origins
+                        sasl.Origins += Origins;
+                        stream tmpS = (sasl.Buffer as binary) as stream;
+                        if (tmpS.ByteLength > 0)
+                        {
+                            if (sasl#AuthMechanism == "DIGEST-MD5")
+                            {
+                                // remove 4 bytes before plain data and 16 bytes integrity at trail
+                                plainDataFromGss = tmpS.PeekBytes(32, tmpS.ByteLength - 4 - 16);
+                                BinaryDecoder<Blob[tmpS.ByteLength as uint]>(s);
+                            }
+                            else
+                            {
+                                var gssapiOptional = GssapiDecoder(tmpS, ref micPresent);
+                                if (gssapiOptional != nothing)
+                                {
+                                    var gssapi = gssapiOptional as GssapiType;
+                                    sasl.Buffer = gssapiOptional;
+                                    sasl#AuthMechanism = "GSS-API";
+                                    plainDataFromGss = CheckGssapiType(gssapiOptional as GssapiType, ref plainDataOffset);
+                                    // consume bytes of original stream
+                                    BinaryDecoder<Blob[tmpS.BytePosition as uint]>(s);
+                                }
+                                else
+                                {
+                                    var krb5 = GssapiKrb5Decoder(tmpS);
+                                    if (krb5 != nothing)
+                                    {
+                                        sasl.Buffer = krb5;
+                                        sasl#AuthMechanism = "GSS-API";
+                                        plainDataFromGss = CheckGssapiKrb5Message(krb5 as GssapiKrb5Message, ref plainDataOffset);
+                                        // consume bytes of original stream
+                                        BinaryDecoder<Blob[tmpS.BytePosition as uint]>(s);
+                                    }
+                                    else
+                                    {
+                                        var nlmp = NlmpDecoder(tmpS, ref micPresent);
+                                        if (nlmp != nothing)
+                                        {
+                                            sasl.Buffer = nlmp;
+                                            sasl#AuthMechanism = "NLMP";
+                                            // consume bytes of original stream
+                                            BinaryDecoder<Blob[tmpS.BytePosition as uint]>(s);
+                                        }
+                                        else
+                                        {
+                                            var nlmpSealed = BinaryDecoder<NtlmSealedMessage>(tmpS);
+                                            if (nlmpSealed != nothing)
+                                            {
+                                                sasl.Buffer = nlmpSealed;
+                                                sasl#AuthMechanism = "NLMP";
+                                                // consume bytes of original stream
+                                                BinaryDecoder<Blob[tmpS.BytePosition as uint]>(s);
+                                            }
+                                        }
+                                    }
+                                }
+                            }      
+                        }
+                        if (sasl#AuthMechanism == "")
+                        {
+                            sasl#AuthMechanism = "Unknown";
+                        }
+                        gss = sasl;
+                        lastOne = sasl;
+                        if (isIssues)
+                        {
+                            dispatch endpoint LDAP.SaslServer issues sasl;
+                        }
+                        else
+                        {
+                            dispatch endpoint LDAP.SaslServer accepts sasl;
+                        }
+                        default =>
+                        // not LDAP message, other code should check return code == true
+                        Buffer = $[];
+                        Origins = [];
+                        IsReassembled = false;
+                        hasIncompleteSegments = HasIncompleteSegments;
+                        hasSegmentLost = HasSegmentLost;
+                        isSaslMsg = true;
+                        return false;
+                    }
+                }
+                if (plainDataFromGss != null)
+                {
+                    stream tmpPlainStream = plainDataFromGss as stream;
+                    BinaryDecoder<Blob[plainDataOffset as uint]>(tmpPlainStream);
+                    while (tmpPlainStream.BytePosition < tmpPlainStream.ByteLength - 1)
+                    {
+                        optional LdapMessage l = Asn1BerDecoder<LdapMessage>(tmpPlainStream);
+                        if (l != nothing)
+                        {
+                            plainLdapArray += [(l as LdapMessage)];
+                        }
+                        else
+                        {
+                            ValidationCheck(false, null, Format(LDAP_STR_SASL_FAILED_DECODE_PLAIN_LDAP, currentPosition.ToString()));
+                            break;
+                        }
+                    }
+                    plainDataFromGss = null;
+                }
+				else if(lastOne is SaslMessage)
+				{
+				    BinaryDecoder<Blob[(lastOne as SaslMessage).Length as uint]>(s);
+				}
+                if (plainLdapArray.Count > 0)
+                {
+                    foreach (LdapMessage plainLdap in plainLdapArray)
+                    {
+                        if (!server.isMissingThreeWayHandshake)
+                        {
+                            if (isIssues)
+                            {
+                                dispatch endpoint LDAP.Server over server issues plainLdap;
+                            }
+                            else
+                            {
+                                dispatch endpoint LDAP.Server over server accepts plainLdap;
+                            }
+                        }
+                        else
+                        {
+                            if (plainLdap.ProtocolOp is SearchRequest || plainLdap.ProtocolOp is AddRequest || plainLdap.ProtocolOp is DelRequest || 
+                            plainLdap.ProtocolOp is ModifyRequest || plainLdap.ProtocolOp is ModifyDNRequest || plainLdap.ProtocolOp is CompareRequest || 
+                            plainLdap.ProtocolOp is AbandonRequest || plainLdap.ProtocolOp is BindRequest || plainLdap.ProtocolOp is UnbindRequest || plainLdap.ProtocolOp is ExtendedRequest)
+                            {
+                                dispatch endpoint LDAP.Server over server accepts plainLdap;
+                            }
+                            else
+                            {
+                                dispatch endpoint LDAP.Server over server issues plainLdap;
+                            }
+                        }
+                        
+                        lastOne = plainLdap;
+                    }
+                    plainLdapArray = []; 
+                }
+        
+                if (s.BytePosition == s.ByteLength)
+                {
+                    Buffer = $[];
+                    Origins = [];
+                    IsReassembled = false;
+                    return true;   
+                }
+            }  
+            //Buffer = $[];
+            //Origins = [];
+            //IsReassembled = false;
+        }
+        Clear();
+        // return false if no message is parsed from TCP
+        if (lastOne != null)
+        { 
+            return true;
+        }
+        else
+        {
+            return false;
+        }  
+    }
+}
+
+binary CheckGssapiType(GssapiType g, ref int offset)
+{
+    if (g.Gssapi is InitialContextToken)
+    {
+        InitialContextToken ini = g.Gssapi as InitialContextToken;
+        if (ini.Payload is GssapiKrb5Message)
+        {
+            return CheckGssapiKrb5Message(ini.Payload as GssapiKrb5Message, ref offset);
+        }
+        //else if (ini.Payload is KerberosTokenType)
+        //{
+        //return CheckKerberosTokenType(ini.Payload as KerberosTokenType, ref offset);
+        //}
+    }
+    return null;
+}
+
+//binary CheckKerberosTokenType(KerberosTokenType krb5, ref int offset)
+//{
+//if (krb5.Token != nothing)
+//{
+//if (krb5.Token is WrapToken)
+//{
+//return CheckWrapToken(krb5.Token as WrapToken, ref offset);
+//}
+//}
+//return null;
+//}
+
+binary CheckGssapiKrb5Message(GssapiKrb5Message krb5, ref int offset)
+{
+    if (krb5.Token != nothing)
+    {
+        if (krb5.Token is WrapToken)
+        {
+            return CheckWrapToken(krb5.Token as WrapToken, ref offset);
+        }
+    }
+    return null;
+}
+
+binary CheckWrapToken(WrapToken t, ref int offset)
+{
+
+    if (t.SealAlg is SealAlgType.None)
+    {
+        if (t.Data.Count >= 16)
+        {
+            offset = 8;
+            return t.Data;
+        }   
+    }
+    return null;
+}
+
+bool IsLdap(binary binaryValue)
+{
+    int firstTagLen = 4;
+    // first tag starts with 0x3084/0x3082/0x3081, second tag is for MessageID, should start with 0x0201, thrid tag is Application Tag, should start with value in range of all LDAP operation application ID 
+    if (binaryValue[0] == 0x30)
+    {
+        if (binaryValue[1] != 0x84)
+        {
+            if (binaryValue[1] == 0x82)
+            {
+                firstTagLen = 2;
+            }
+            else
+            {
+                if(binaryValue[1] == 0x81)
+                {
+                    firstTagLen = 1; 
+                }
+            }
+        }
+        if (binaryValue[2 + firstTagLen] == 2)
+        {
+            if (binaryValue[3 + firstTagLen] == 1 && (binaryValue[5 + firstTagLen] >= 0x60 && binaryValue[5 + firstTagLen] <= 0x78))
+            {
+                return true;
+            }
+            else if (binaryValue[3 + firstTagLen] == 2 && (binaryValue[6 + firstTagLen] >= 0x60 && binaryValue[6 + firstTagLen] <= 0x78))
+            {
+                return true;
+            }
+            else if (binaryValue[3 + firstTagLen] == 4 && (binaryValue[8 + firstTagLen] >= 0x60 && binaryValue[8 + firstTagLen] <= 0x78))
+            {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// WORKAROUND: Bug#31792 - [DCR]BinaryDecoder<T>(binary) should support big-endian or little-endian dynamically assigned in runtime decoding.
+type Uint
+{
+    uint Length;
+}
+
+// WORKAROUND: Bug 33856 [Binary Codec] Should support BinaryEncoding which is applied on pattern.
+type AsciiString
+{
+    string String with BinaryEncoding{TextEncoding = TextEncoding.ASCII};
+}
+
+
+/* RFC 4422 3.7.  Security Layers
+     * Each buffer of protected data is transferred over the underlying
+     * transport connection as a sequence of octets prepended with a four-octet
+     * field in network byte order that represents the length of the buffer
+     */
+message SaslMessage
+{
+    uint Length;
+    (binary | any) Buffer with Encoding{Ignore = true};
+
+    override string ToString()
+    {
+        return "SASL Message, " + ((this#AuthMechanism is nothing) ? "Unknown AuthMechanism" : ("AuthMechanism: " + (this#AuthMechanism as string))) + ", Buffer Length: " + (Length as string);
+    }
+}
+    
+message LdapMessage
+{
+    MessageID MessageID;
+    ProtocolOperation ProtocolOp;
+    optional Controls Controls with Asn1Encoding{TagClass = Asn1TagClass.ContextSpecific, TagNumber = 0, Tagging = Asn1Tagging.Implicit};
+    
+    override string ToString()
+    {
+        // add text here because they inherits basic types
+        string backUpText = "";  
+        switch(ProtocolOp)
+        {                              
+            case op:DelRequest =>
+            {
+                backUpText = "Del Request, Delete object: " + (op as string);
+            }
+            case op:SearchResultReference =>
+            {
+                backUpText = "Search Result Reference";
+            }
+            case op:AbandonRequest =>
+            {
+                backUpText = "Abandon Request";
+            }
+        }
+        return "LDAP Message, " + ((backUpText == "" ? ProtocolOp.ToString() : backUpText) + ", MessageID: " + (MessageID as string));
+    }
+};
+       
+// ---------------------------
+// virtual operations
+// ---------------------------
+contract VirtualOperations
+{
+        
+    virtual operation LdapBindOperation
+    {
+        in MessageID MessageID = id;
+        in ResultCode Result = result;
+           
+        override string ToString()
+        {
+            return "Bind Operation, MessageID:" + (MessageID as string) + ", Result:" + EnumToString(Result, "LDAP.ResultCode");
+        }
+    } 
+    =
+    accepts LdapMessage{MessageID is var id, ProtocolOp is BindRequest}
+    issues LdapMessage{MessageID == id, ProtocolOp is BindResponse, (ProtocolOp as BindResponse).ResultCode is var result}
+    ;
+    
+    virtual operation LdapAddOperation
+    {
+        in MessageID MessageID = id;
+        in LdapDN Object = ob;
+        in ResultCode ResultCode = result;
+    
+        override string ToString()
+        {
+            return "Add Operation, MessageID:" + (MessageID as string) + ", Result:" + EnumToString(ResultCode, "LDAP.ResultCode") + ", Add object:" + (Object as string);
+        }
+    } 
+    =
+    accepts LdapMessage{MessageID is var id, ProtocolOp is AddRequest, (ProtocolOp as AddRequest).Entry is var ob}
+    issues LdapMessage{MessageID == id, ProtocolOp is AddResponse, (ProtocolOp as AddResponse).ResultCode is var result}
+    ;
+    
+    virtual operation LdapExtendedOperation
+    {
+        in MessageID MessageID = id;
+        in LDAPOID Request = oid;
+        in ResultCode ResultCode = result;
+    
+        override string ToString()
+        {
+            return "Extended Operation, MessageID:" + (MessageID as string) + ", Result:" + EnumToString(ResultCode, "LDAP.ResultCode") + ", Request:" + (Request as string);
+        }
+    } 
+    =
+    accepts LdapMessage{MessageID is var id, ProtocolOp is ExtendedRequest, (ProtocolOp as ExtendedRequest).RequestName is var oid}
+    issues LdapMessage{MessageID == id, ProtocolOp is ExtendedResponse, (ProtocolOp as ExtendedResponse).ResultCode is var result}
+    ;
+    
+    virtual operation LdapCompareOperation
+    {
+        in MessageID MessageID = id;
+        in LdapDN Object = ob;
+        in ResultCode ResultCode = result;
+        
+        override string ToString()
+        {
+            return "Compare Operation, MessageID:" + (MessageID as string) + ", Result:" + EnumToString(ResultCode, "LDAP.ResultCode") + ", Compare object:" + (Object as string);
+        }
+    } 
+    =
+    accepts LdapMessage{MessageID is var id, ProtocolOp is CompareRequest, (ProtocolOp as CompareRequest).Entry is var ob}
+    issues LdapMessage{MessageID == id, ProtocolOp is CompareResponse, (ProtocolOp as CompareResponse).ResultCode is var result}
+    ;
+
+    virtual operation LdapDelOperation
+    {
+        in MessageID MessageID = id;
+        in LdapDN Object = ob;
+        in ResultCode ResultCode = result;
+        
+        override string ToString()
+        {
+            return "Del Operation, MessageID:" + (MessageID as string) + ", Result:" + EnumToString(ResultCode, "LDAP.ResultCode") + ", Delete object:" + (Object as string);
+        }
+    } 
+    =
+    accepts LdapMessage{MessageID is var id, ProtocolOp is DelRequest, (ProtocolOp as DelRequest) is var ob}
+    issues LdapMessage{MessageID == id, ProtocolOp is DelResponse, (ProtocolOp as DelResponse).ResultCode is var result}
+    ;
+    
+    virtual operation LdapModifyOperation
+    {
+        in MessageID MessageID = id;
+        in LdapDN Object = ob;
+        in ResultCode ResultCode = result;
+        
+        override string ToString()
+        {
+            return "Modify Operation, MessageID:" + (MessageID as string) + ", Result:" + EnumToString(ResultCode, "LDAP.ResultCode") + ", Modify object:" + (Object as string);
+        }
+    } 
+    =
+    accepts LdapMessage{MessageID is var id, ProtocolOp is ModifyRequest, (ProtocolOp as ModifyRequest).Object is var ob}
+    issues LdapMessage{MessageID == id, ProtocolOp is ModifyResponse, (ProtocolOp as ModifyResponse).ResultCode is var result}
+    ;    
+
+    virtual operation LdapModifyDNOperation
+    {
+        in MessageID MessageID = id;
+        in LdapDN OldDN = old;
+        in bool DelOld = delOld;
+        in ResultCode ResultCode = result;
+        
+        override string ToString()
+        {
+            return "ModifyDN Operation, MessageID:" + (MessageID as string) + ", Result:" + EnumToString(ResultCode, "LDAP.ResultCode") + ", Move object:" + (OldDN as string) ;
+        }
+    } 
+    =
+    accepts LdapMessage{MessageID is var id, ProtocolOp is ModifyDNRequest, (ProtocolOp as ModifyDNRequest).Entry is var old, (ProtocolOp as ModifyDNRequest).Deleteoldrdn is var delOld}
+    issues LdapMessage{MessageID == id, ProtocolOp is ModifyDNResponse, (ProtocolOp as ModifyDNResponse).ResultCode is var result}
+    ;
+        
+    virtual operation LdapSearchOperation
+    {
+        in MessageID MessageID = id;
+        in LdapDN BaseObject = ob;
+    
+        override string ToString()
+        {
+            string ret = "Search Operation, MessageID:" + (MessageID as string);
+            if (BaseObject == "")
+            {
+                ret += ", Search For RootDSE";
+            }
+            else
+            {
+                ret += ", Search On BaseObject:" + (BaseObject as string);
+            }
+            return ret;
+        }
+    } = SearchScenario[out var id, out var ob]; 
+}
+
+scenario SearchScenario[out MessageID id, out LdapDN ob]
+=
+accepts LdapMessage{MessageID is id, ProtocolOp is SearchRequest, (ProtocolOp as SearchRequest).BaseObject is ob}
+(
+issues LdapMessage{MessageID == id, ProtocolOp is SearchResultEntry || ProtocolOp is SearchResultReference}
+) *
+issues LdapMessage{MessageID == id, ProtocolOp is SearchResultDone}
+;
+
+
+// Types and patterns
+pattern ProtocolOperation = BindRequest
+| BindResponse
+| UnbindRequest
+| SearchRequest
+| SearchResultEntry
+| SearchResultDone
+| SearchResultReference
+| ModifyRequest
+| ModifyResponse
+| AddRequest
+| AddResponse
+| DelRequest
+| DelResponse
+| ModifyDNRequest
+| ModifyDNResponse
+| CompareRequest
+| CompareResponse
+| AbandonRequest
+| ExtendedRequest
+| ExtendedResponse;
+
+pattern MessageID = Integer with Asn1Encoding {LowerEndValue = 0, UpperEndValue = maxInt};
+
+const long maxInt = 2147483647; // -- (2^^31 - 1) --
+
+pattern LdapString = OctetString with Asn1Encoding{Flags = Asn1EncodingFlags.OctetStringIsString, Encoding = TextEncoding.UTF8};
+
+pattern LDAPOID = OctetString with Asn1Encoding{Flags = Asn1EncodingFlags.OctetStringIsString};
+
+pattern LdapDN = LdapString;
+
+pattern RelativeLdapDN = LdapString;
+
+pattern AttributeDescription = LdapString;
+
+pattern AttributeValue = OctetString with DisplayInfo{ToText = DecodeOctetStringAsUTF8};
+
+string DecodeOctetStringAsUTF8(any a)
+{
+    assert a is binary;
+    var s = BinaryDecoder<UTF8StringWrapper>(a as binary); 
+    return s is nothing ? a.ToString() : (s as UTF8StringWrapper).Text;
+}
+ 
+type UTF8StringWrapper
+{
+    string Text;
+} with BinaryEncodingDefaults{TextEncoding = TextEncoding.UTF8};
+
+
+type AttributeValueAssertion[int tag]
+{
+    AttributeDescription AttributeDesc;
+    AssertionValue AssertionValue;
+    
+    override string ToString()
+    {
+        string op = "";
+        switch(tag)
+        {
+            case 3 =>
+            op = " == ";
+            case 5 =>
+            op = " >= ";
+            case 6 =>
+            op = " <= ";
+            case 8 =>
+            op = " ~= ";
+        }
+        return AttributeDesc.ToString() + op + AssertionValue.ToString();
+    }
+};
+
+pattern AssertionValue = LdapString;
+
+type PartialAttribute
+{
+    AttributeDescription Type;
+    array<AttributeValue> Vals;
+}
+
+pattern Attribute = PartialAttribute;
+
+pattern MatchingRuleId = LdapString;
+
+// WORKAROUND: codec always display LdapResult.ToString() even if child type/pattern has its own ToString/DisplayInfo implemented
+type LdapResult[int t]
+{
+    ResultCode ResultCode where ErrorCodeIf(value in {1, 2}, null, value == 1 ? "Operations Error." : "Protocol Error.");
+    LdapDN MatchedDN;
+    LdapString DiagnosticMessage;
+    optional Referral Referral with Asn1Encoding{TagClass = Asn1TagClass.ContextSpecific, TagNumber = 3, Tagging = Asn1Tagging.Implicit};
+    
+    override string ToString()
+    {
+        string ret = "";
+        switch(t)
+        {
+            case 5 =>
+            ret = "Search Result Done";
+            case 7 =>
+            ret = "Modify Response";          
+            case 9 =>
+            ret = "Add Response";         
+            case 11 =>
+            ret = "Del Response";
+            case 13 =>
+            ret = "ModifyDN Response";        
+            case 15 =>
+            ret = "Compare Response";   
+        }
+        return ret;
+    }
+}
+
+pattern ResultCode = enum Integer
+{
+    Success                       = 0,
+    OperationsError               = 1,
+    ProtocolError                 = 2,
+    TimeLimitExceeded             = 3,
+    SizeLimitExceeded             = 4,
+    CompareFalse                  = 5,
+    CompareTrue                   = 6,
+    AuthMethodNotSupported        = 7,
+    Reserved                      = 9,
+    StrongerAuthRequired          = 8,
+    Referral                      = 10,
+    AdminLimitExceeded            = 11,
+    UnavailableCriticalExtension  = 12,
+    ConfidentialityRequired       = 13,
+    SaslBindInProgress            = 14,
+    NoSuchAttribute               = 16,
+    UndefinedAttributeType        = 17,
+    InappropriateMatching         = 18,
+    ConstraintViolation           = 19,
+    AttributeOrValueExists        = 20,
+    InvalidAttributeSyntax        = 21,
+    NoSuchObject                  = 32,
+    AliasProblem                  = 33,
+    InvalidDNSyntax               = 34,
+    ReservedForUndefinedIsLeaf    = 35,
+    AliasDereferencingProblem     = 36,
+    InappropriateAuthentication   = 48,
+    InvalidCredentials            = 49,
+    InsufficientAccessRights      = 50,
+    Busy                          = 51,
+    Unavailable                   = 52,
+    UnwillingToPerform            = 53,
+    LoopDetect                    = 54,
+    NamingViolation               = 64,
+    ObjectClassViolation          = 65,
+    NotAllowedOnNonLeaf           = 66,
+    NotAllowedOnRDN               = 67,
+    EntryAlreadyExists            = 68,
+    ObjectClassModsProhibited     = 69,
+    ReservedForCldap              = 70,
+    AffectsMultipleDSAs           = 71,
+    Other                         = 80,
+};
+
+pattern Referral = array<Uri> where (value.Count >= 1);
+
+pattern Uri = LdapString;
+
+pattern Controls = array<Control>;
+
+type Control
+{
+    LDAPOID ControlType;
+    optional Boolean Criticality;
+    optional (OctetString | any) ControlValue;
+}
+
+type BindRequest
+{
+    Integer Version where (value >= 1 && value <= 127);
+    LdapDN Name;
+    AuthenticationChoice Authentication;
+    
+    override string ToString()
+    {
+        return "Bind Request, Version:" + Version.ToString();
+    }
+}
+with Asn1Encoding
+{
+    TagClass = Asn1TagClass.Application,
+    TagNumber = 0,
+    Tagging = Asn1Tagging.Implicit
+};
+
+// Type is extensible 3.7.  LDAP Authentication Method
+pattern AuthenticationChoice = Simple | Sasl | SicilyPackageDiscovery | SicilyNegotiate | SicilyResponse;
+
+pattern Simple = OctetString with Asn1Encoding 
+{
+    TagClass = Asn1TagClass.ContextSpecific,
+    TagNumber = 0,
+    Tagging = Asn1Tagging.Implicit
+};
+
+pattern Sasl = SaslCredentials with Asn1Encoding
+{
+    TagClass = Asn1TagClass.ContextSpecific,
+    TagNumber = 3,
+    Tagging = Asn1Tagging.Implicit
+};
+
+// Remove start--------->
+// Future Reference: Remove the following code.
+// There's extended in MS-ADTS 5.1.1.1. Detail impletment will be placed at ADTS.opn
+//
+pattern SicilyPackageDiscovery = OctetString with Asn1Encoding 
+{
+    TagClass = Asn1TagClass.ContextSpecific,
+    TagNumber = 9,
+    Tagging = Asn1Tagging.Implicit
+};
+    
+pattern SicilyNegotiate = OctetString with Asn1Encoding 
+{
+    TagClass = Asn1TagClass.ContextSpecific,
+    TagNumber = 10,
+    Tagging = Asn1Tagging.Implicit
+};
+    
+pattern SicilyResponse = OctetString with Asn1Encoding 
+{
+    TagClass = Asn1TagClass.ContextSpecific,
+    TagNumber = 11,
+    Tagging = Asn1Tagging.Implicit
+};
+// Remove end<---------------
+    
+type SaslCredentials
+{
+    LdapString Mechanism;
+    // Would detail of authentication protocols for MS implement: http://msdn.microsoft.com/en-us/library/cc223498(v=prot.10).aspx
+    optional (OctetString | any) Credentials;
+}
+
+type RawGssApi
+{
+    OctetString Signature with Asn1Encoding{Flags = Asn1EncodingFlags.OctetStringIsString};
+    (OctetString | any) Token;
+}
+with Asn1Encoding
+{
+    TagClass = Asn1TagClass.ContextSpecific,
+    TagNumber = 3,
+    Tagging = Asn1Tagging.Implicit
+};
+
+type RawGssApiWrapper
+{
+    RawGssApi Gss;
+}
+with Asn1Encoding
+{
+    TagClass = Asn1TagClass.ContextSpecific,
+    TagNumber = 7,
+    Tagging = Asn1Tagging.Implicit
+};
+    
+type BindResponse
+{
+    // Components of LDAPResult
+    ResultCode ResultCode where ErrorCodeIf(value in {1, 2}, null, value == 1 ? "Operations Error." : "Protocol Error.");
+    LdapDN MatchedDN;
+    LdapString DiagnosticMessage;
+    optional Referral Referral with Asn1Encoding
+    {
+        TagClass = Asn1TagClass.ContextSpecific,
+        TagNumber = 3,
+        Tagging = Asn1Tagging.Implicit
+    };
+    
+    // WORKAROUND: see if this field should be combined with "ServerSaslCreds" field as OctetString. Becuase RawGssApi token set tag header to 0xA7
+    // WORKAROUND: ignore due to PEF Bug
+    //optional RawGssApiWrapper RawGssApiWrapper; 
+
+    // use "optional (OctetString | any) ServerSaslCreds" will cause decode fail,
+    // so add ServerSaslCredsValue field.
+    optional OctetString ServerSaslCreds with Asn1Encoding
+    {
+        TagClass = Asn1TagClass.ContextSpecific,
+        TagNumber = 7,
+        Tagging = Asn1Tagging.Implicit
+    }; 
+    
+    optional (GssapiType | NlmpMessage | RawGssApi) ServerSaslCredsValue with Encoding{Ignore = true};
+    
+    override string ToString()
+    {
+        return "Bind Response, Result:" + EnumToString(ResultCode, "LDAP.ResultCode");
+    }
+} with Asn1Encoding
+{
+    TagClass = Asn1TagClass.Application,
+    TagNumber = 1,
+    Tagging = Asn1Tagging.Implicit
+};
+
+type UnbindRequest
+{
+    override string ToString()
+    {
+        return "Unbind Request";
+    }
+
+} with Asn1Encoding
+{
+    TagClass = Asn1TagClass.Application,
+    TagNumber = 2,
+    Tagging = Asn1Tagging.Implicit
+};
+
+type SearchRequest
+{
+    LdapDN BaseObject;
+    Scope Scope;
+    DerefAliases DerefAliases;
+    Integer SizeLimit;
+    Integer TimeLimit;
+    Boolean TypesOnly;
+    Filter Filter;
+    AttributeSelection Attributes;
+    override string ToString()
+    {
+        return "Search Request, " + (BaseObject == "" ? "Search For RootDSE" : "baseObject:" + BaseObject.ToString());
+    }
+
+} with Asn1Encoding
+{
+    TagClass = Asn1TagClass.Application,
+    TagNumber = 3,
+    Tagging = Asn1Tagging.Implicit
+};
+
+pattern Scope = enum Integer
+{
+    BaseObject                      = 0,
+    SingleLevel                     = 1,
+    WholeSubtree                    = 2,
+};
+
+pattern DerefAliases = enum Integer
+{
+    NeverDerefAliases               = 0,
+    DerefInSearching                = 1,
+    DerefFindingBaseObj             = 2,
+    DerefAlways                     = 3, 
+};
+
+pattern AttributeSelection = array<LdapString>;
+
+/*
+        Filter ::= CHOICE {
+                and             [0] SET OF Filter,
+                or              [1] SET OF Filter,
+                not             [2] Filter,
+                equalityMatch   [3] AttributeValueAssertion,
+                substrings      [4] SubstringFilter,
+                greaterOrEqual  [5] AttributeValueAssertion,
+                lessOrEqual     [6] AttributeValueAssertion,
+                present         [7] AttributeDescription,
+                approxMatch     [8] AttributeValueAssertion,
+                extensibleMatch [9] MatchingRuleAssertion }
+*/
+// Note: Although Filter is declared as CHOICE in ASN.1 syntax, we need to declare it as type since
+// ASN.1 BER codec only generate decode funtion for type, not for pattern.
+type Filter
+{   (And
+    | Or
+    | Not
+    | EqualityMatch
+    | Substrings
+    | GreaterOrEqual
+    | LessOrEqual
+    | Present
+    | ApproxMatch
+    | ExtensibleMatch) Content;
+    
+    override string ToString()
+    {
+        if (Content is Present)
+        {
+            return "(" + Content.ToString() + " Present)";
+        }
+        return "(" + Content.ToString() + ")";
+    }
+} with Asn1Encoding{
+Flags = Asn1EncodingFlags.TagLengthSkipped};
+
+// Note: Declared And, Or and Not as type to be able to override their ToString() function
+type And
+{
+    array<Filter> Content;
+    
+    override string ToString()
+    {
+        string str;
+        bool isFirst = true;
+        foreach(var filter in Content)
+        {
+            if (isFirst)
+            {
+                isFirst = false;
+                str = filter.ToString();
+            }
+            else
+            {
+                str += " && " + filter.ToString();
+            }
+        }
+        return str;
+    }
+} with Asn1Encoding{
+TagClass = Asn1TagClass.ContextSpecific,
+TagNumber = 0,
+Flags = Asn1EncodingFlags.TagLengthSkipped,
+Tagging = Asn1Tagging.Implicit};
+
+type Or
+{
+    array<Filter> Content;
+    
+    override string ToString()
+    {
+        string str;
+        bool isFirst = true;
+        foreach(var filter in Content)
+        {
+            if (isFirst)
+            {
+                isFirst = false;
+                str = filter.ToString();
+            }
+            else
+            {
+                str += " || " + filter.ToString();
+            }
+        }
+        return str;
+    }
+} with Asn1Encoding{
+TagClass = Asn1TagClass.ContextSpecific,
+TagNumber = 1,
+Flags = Asn1EncodingFlags.TagLengthSkipped,
+Tagging = Asn1Tagging.Implicit};
+
+// Note: Shouldn't use Asn1EncodingFlags.TagLengthSkipped aspect on Not since
+// that will cause stack overflow exception
+type Not
+{
+    Filter Content;
+    
+    override string ToString()
+    {
+        return "! " + Content.ToString();
+    }
+} with Asn1Encoding{
+TagClass = Asn1TagClass.ContextSpecific,
+TagNumber = 2,
+Tagging = Asn1Tagging.Implicit};
+
+pattern EqualityMatch = AttributeValueAssertion[3] with Asn1Encoding
+{TagClass = Asn1TagClass.ContextSpecific, TagNumber = 3, Tagging = Asn1Tagging.Implicit};
+
+    pattern Substrings = SubstringFilter with Asn1Encoding
+    {TagClass = Asn1TagClass.ContextSpecific, TagNumber = 4, Tagging = Asn1Tagging.Implicit};
+
+        pattern GreaterOrEqual = AttributeValueAssertion[5] with Asn1Encoding
+        {TagClass = Asn1TagClass.ContextSpecific, TagNumber = 5, Tagging = Asn1Tagging.Implicit}
+            ;
+
+            pattern LessOrEqual = AttributeValueAssertion[6] with Asn1Encoding
+            {TagClass = Asn1TagClass.ContextSpecific, TagNumber = 6, Tagging = Asn1Tagging.Implicit}
+                ;
+
+                pattern Present = AttributeDescription with Asn1Encoding
+                {TagClass = Asn1TagClass.ContextSpecific, TagNumber = 7, Tagging = Asn1Tagging.Implicit}
+                    ;
+
+                    pattern ApproxMatch = AttributeValueAssertion[8] with Asn1Encoding
+                    {TagClass = Asn1TagClass.ContextSpecific, TagNumber = 8, Tagging = Asn1Tagging.Implicit}
+                        ;
+
+                        pattern ExtensibleMatch = MatchingRuleAssertion with Asn1Encoding
+                        {TagClass = Asn1TagClass.ContextSpecific, TagNumber = 9, Tagging = Asn1Tagging.Implicit}
+                            ;
+
+                            type SubstringFilter
+                            {
+                                AttributeDescription Type;
+                                array<SubString> SubStrings where value.Count >= 1;
+                            }
+
+                            pattern SubString = Initial | Any | Final;
+
+                            pattern Initial = AssertionValue with Asn1Encoding
+                            {
+                                TagClass = Asn1TagClass.ContextSpecific,
+                                TagNumber = 0,
+                                Tagging = Asn1Tagging.Implicit
+                            }
+                            ;
+
+                            pattern Any = AssertionValue with Asn1Encoding
+                            {
+                                TagClass = Asn1TagClass.ContextSpecific,
+                                TagNumber = 1,
+                                Tagging = Asn1Tagging.Implicit
+                            }
+                            ;
+
+                            pattern Final = AssertionValue with Asn1Encoding
+                            {
+                                TagClass = Asn1TagClass.ContextSpecific,
+                                TagNumber = 2,
+                                Tagging = Asn1Tagging.Implicit
+                            }
+                            ;
+
+                            type MatchingRuleAssertion
+                            {
+                                optional MatchingRuleId MatchingRule with Asn1Encoding {TagNumber = 1, Tagging = Asn1Tagging.Implicit}
+                                ;
+                                optional AttributeDescription Type with Asn1Encoding {TagNumber = 2, Tagging = Asn1Tagging.Implicit}
+                                ;
+                                AssertionValue MatchValue with Asn1Encoding {TagNumber = 3, Tagging = Asn1Tagging.Implicit}
+                                ;
+                                optional Boolean DnAttributes with Asn1Encoding {TagNumber = 4, Tagging = Asn1Tagging.Implicit}
+                                ;
+                            }
+
+                            type SearchResultEntry
+                            {
+                                LdapDN ObjectName;
+                                PartialAttributeList Attributes;
+                                
+                                override string ToString()
+                                {
+                                    return "Search Result Entry";
+                                }
+                            } 
+                            with Asn1Encoding
+                            {
+                                TagClass = Asn1TagClass.Application,
+                                TagNumber = 4,
+                                Tagging = Asn1Tagging.Implicit
+                            };
+                            
+                            pattern PartialAttributeList = array<PartialAttribute>;
+
+                            pattern SearchResultReference = array<Uri> where (value.Count >= 1) with Asn1Encoding
+                            {
+                                TagClass = Asn1TagClass.Application,
+                                TagNumber = 19,
+                                Tagging = Asn1Tagging.Implicit
+                            };
+
+                            pattern SearchResultDone = LdapResult[5] with Asn1Encoding
+                            {
+                                TagClass = Asn1TagClass.Application,
+                                TagNumber = 5,
+                                Tagging = Asn1Tagging.Implicit
+                            };
+                            
+                            type ModifyRequest
+                            {
+                                LdapDN Object;
+                                array<Modification> Modifications;
+                                
+                                override string ToString()
+                                {
+                                    return "Modify Request, Modify object:" + (Object as string);
+                                }
+                            } 
+                            with Asn1Encoding
+                            {
+                                TagClass = Asn1TagClass.Application,
+                                TagNumber = 6,
+                                Tagging = Asn1Tagging.Implicit
+                            };
+                            
+                            pattern Operation = enum Integer
+                            {
+                                Add     = 0,
+                                Delete  = 1,
+                                Replace = 2,
+                            }
+                            ;
+
+                            type Modification
+                            {
+                                Operation Operation;
+                                PartialAttribute Modification;
+                            }
+
+                            pattern ModifyResponse = LdapResult[7] with Asn1Encoding
+                            {
+                                TagClass = Asn1TagClass.Application,
+                                TagNumber = 7,
+                                Tagging = Asn1Tagging.Implicit
+                            };
+                            
+                            type AddRequest
+                            {
+                                LdapDN Entry;
+                                AttributeList Attributes;
+                                
+                                override string ToString()
+                                {
+                                    return "Add Request, Add object:" + (Entry as string);
+                                }
+                            }
+                            with Asn1Encoding
+                            {
+                                TagClass = Asn1TagClass.Application,
+                                TagNumber = 8,
+                                Tagging = Asn1Tagging.Implicit
+                            };
+                            
+                            pattern AttributeList = array<Attribute>;
+
+                            pattern AddResponse = LdapResult[9] with Asn1Encoding
+                            {
+                                TagClass = Asn1TagClass.Application,
+                                TagNumber = 9,
+                                Tagging = Asn1Tagging.Implicit
+                            };
+                                                    
+                            pattern DelRequest = LdapDN with Asn1Encoding
+                            {
+                                TagClass = Asn1TagClass.Application,
+                                TagNumber = 10,
+                                Tagging = Asn1Tagging.Implicit
+                            };
+                            
+                            pattern DelResponse = LdapResult[11] with Asn1Encoding
+                            {
+                                TagClass = Asn1TagClass.Application,
+                                TagNumber = 11,
+                                Tagging = Asn1Tagging.Implicit
+                            };
+                            
+                            type ModifyDNRequest
+                            {
+                                LdapDN Entry;
+                                RelativeLdapDN Newrdn;
+                                Boolean Deleteoldrdn;
+                                optional LdapDN NewSuperior with Asn1Encoding
+                                {
+                                    TagClass = Asn1TagClass.ContextSpecific,
+                                    TagNumber = 0,
+                                    Tagging = Asn1Tagging.Implicit
+                                }
+                                ;
+                                
+                                override string ToString()
+                                {
+                                    return "ModifyDN Request, Move object:" + (Entry as string);
+                                }
+                            } 
+                            with Asn1Encoding
+                            {
+                                TagClass = Asn1TagClass.Application,
+                                TagNumber = 12,
+                                Tagging = Asn1Tagging.Implicit
+                            };
+                            
+                            pattern ModifyDNResponse = LdapResult[13] with Asn1Encoding
+                            {
+                                TagClass = Asn1TagClass.Application,
+                                TagNumber = 13,
+                                Tagging = Asn1Tagging.Implicit
+                            };
+                            
+                            type CompareRequest
+                            {
+                                LdapDN Entry;
+                                AttributeValueAssertion[3] Ava;
+                                
+                                override string ToString()
+                                {
+                                    return "Compare Request, Compare object:" + (Entry as string);
+                                }
+                            }
+                            with Asn1Encoding
+                            {
+                                TagClass = Asn1TagClass.Application,
+                                TagNumber = 14,
+                                Tagging = Asn1Tagging.Implicit
+                            };
+                            
+                            pattern CompareResponse = LdapResult[15] with Asn1Encoding
+                            {
+                                TagClass = Asn1TagClass.Application,
+                                TagNumber = 15,
+                                Tagging = Asn1Tagging.Implicit
+                            };
+                            
+                            pattern AbandonRequest = MessageID with Asn1Encoding
+                            {
+                                TagClass = Asn1TagClass.Application,
+                                TagNumber = 16,
+                                Tagging = Asn1Tagging.Implicit
+                            };
+                            
+                            type ExtendedRequest
+                            {
+                                LDAPOID RequestName with Asn1Encoding
+                                {TagClass = Asn1TagClass.ContextSpecific, TagNumber = 0, Tagging = Asn1Tagging.Implicit}
+                                    ;
+                                    optional (ExtendedRequestValue | any) RequestValue;
+                                    
+                                    override string ToString()
+                                    {
+                                        return "Extended Request";
+                                    }
+                                }
+                                with Asn1Encoding
+                                {
+                                    TagClass = Asn1TagClass.Application,
+                                    TagNumber = 23,
+                                    Tagging = Asn1Tagging.Implicit
+                                };
+                            
+                                pattern ExtendedRequestValue = OctetString with Asn1Encoding {TagClass = Asn1TagClass.ContextSpecific, TagNumber = 1, Tagging = Asn1Tagging.Implicit}
+                                ;
+
+                                type ExtendedResponse
+                                {
+                                    // Components of LDAPResult
+                                    ResultCode ResultCode where ErrorCodeIf(value in {1, 2}
+                                    , null, value == 1 ? "Operations Error." : "Protocol Error.");
+                                    LdapDN MatchedDN;
+                                    LdapString DiagnosticMessage;
+                                    optional Referral Referral with Asn1Encoding
+                                    {TagClass = Asn1TagClass.ContextSpecific, TagNumber = 3, Tagging = Asn1Tagging.Implicit}
+                                        ;
+                                        // end Components of LDAPResult
+                                        optional LDAPOID ResponseName with Asn1Encoding
+                                        {TagClass = Asn1TagClass.ContextSpecific, TagNumber = 10, Tagging = Asn1Tagging.Implicit}
+                                            ;
+                                            optional (ExtendedResponseValue | any) ResponseValue;
+                                            
+                                            override string ToString()
+                                            {
+                                                return "Extended Response";
+                                            }
+                                        }
+                                        with Asn1Encoding
+                                        {
+                                            TagClass = Asn1TagClass.Application,
+                                            TagNumber = 24,
+                                            Tagging = Asn1Tagging.Implicit
+                                        };
+                            
+                                        pattern ExtendedResponseValue = OctetString with Asn1Encoding{TagClass = Asn1TagClass.ContextSpecific, TagNumber = 11, Tagging = Asn1Tagging.Implicit}
+                                        ;

@@ -1,0 +1,233 @@
+﻿protocol ERF with 
+BinaryEncodingDefaults{Endian = Endian.Big},
+Documentation
+{
+    ProtocolName = "Extensible Record Format (ERF)",
+    ShortName = "ERF",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+    [
+        new Reference {Name = "Extensible Record Format (ERF)", Link = "http://wiki.wireshark.org/ERF"},
+    ],
+    RevisionSummary = 
+    [
+        new Revision {Class = RevisionClass.Major, Version = "1.0.0", Date = "07/04/2013"}
+    ]
+};
+
+using Standard;
+using Utility;
+using IANA;
+using Ethernet;
+using IPv4;
+using IPv6;
+using DTYP;
+using Diagnostics;
+
+// http://wiki.wireshark.org/ERF
+// http://research.wand.net.nz/software/libtrace-docs/html/erftypes_8h.html
+// No public documents for ERF. Reference the links as above.
+pattern ERFType = enum byte
+{
+    LEGACY = 0,
+    HDLC_POS = 1,
+    ETHERNET = 2,
+    ATM = 3,
+    AAL5 = 4,
+    MC_HDLC = 5,
+    MC_RAW = 6,
+    MC_ATM = 7,
+    MC_RAW_CHANNEL = 8,
+    MC_AAL5 = 9,
+    COLOR_HDLC_POS = 10,
+    COLOR_ETH = 11,
+    MC_AAL2 = 12,
+    IP_COUNTER = 13,
+    TCP_FLOW_COUNTER = 14,
+    DSM_COLOR_HDLC_POS = 15,
+    DSM_COLOR_ETHERNET = 16,
+    COLOR_MC_HDLC_POS = 17,
+    AAL2 = 18,
+    COLOR_HASH_POS = 19,
+    COLOR_HASH_ETHERNET = 20,
+    INFINIBAND = 21,
+    IPV4 = 22,
+    IPV6 = 23,
+    RAW_LINK = 24,
+    PAD = 48,
+    ...
+};
+
+endpoint Node
+    accepts ERFRecord
+{
+    process this accepts r:ERFRecord{headerType.ErfType is ERFType.ETHERNET}
+    {
+        switch (r.Payload)
+        {
+            case f:Ethernet.Frame from BinaryDecoder<Ethernet.Frame[false]> =>
+                dispatch (endpoint Ethernet.Node[f.DestinationAddress.FlatAddress]) accepts f;
+            default =>
+                ThrowDecodingException("ERF", "IPv4.Frame");
+        }
+    }
+    process this accepts r:ERFRecord{headerType.ErfType is ERFType.IPV4}
+    {
+        switch (r.Payload)
+        {
+            case d:IPv4.Datagram from BinaryDecoder<IPv4.Datagram> =>
+                dispatch endpoint IPv4.ReassemblyNode[d.DestinationAddress.FlatAddress < d.SourceAddress.FlatAddress ? d.DestinationAddress.FlatAddress : d.SourceAddress.FlatAddress] accepts d;
+            default =>
+                ThrowDecodingException("ERF", "IPv4.Datagram");
+        }
+    }
+    process this accepts r:ERFRecord{headerType.ErfType is ERFType.IPV6}
+    {
+        switch (r.Payload)
+        {
+            case d:IPv6.Datagram from IPv6Decoder =>
+                dispatch endpoint IPv6.ReassemblyNode[d.DestinationAddress.FlatAddress < d.SourceAddress.FlatAddress ? d.DestinationAddress.FlatAddress : d.SourceAddress.FlatAddress] accepts d;
+            default =>
+                ThrowDecodingException("ERF", "IPv6.Datagram");
+        }
+    }
+}
+
+type HeaderType
+{
+    bool ExtensionHeaderPresent with BinaryEncoding{Width = 1};
+    ERFType ErfType with BinaryEncoding{Width = 7};
+}
+
+pattern ERFFlags = flags byte
+{
+    Reserved1 = 0x20,
+    Reserved2 = 0x10,
+    DSError = 0x08, // DS error. An internal error generated inside the card annotator. Not present on the wire.
+    RXError = 0x04, // RX error. An error in the received data. Present on the wire
+    TruncatedError = 0x02, // Truncated record (depreciated)
+    VaryingLengthRecord = 0x01, // Varying length record... just leave this on, otherwise packets should be padded
+};
+
+pattern CaptureInterface = enum byte
+{
+    // Binary enumeration of capture interface. 11, interface 3/D 10 interface 2/C 01 interface 1/B 00 interface 0/A
+    Interface_3_D = 0x03,
+    Interface_2_C = 0x02,
+    Interface_1_B = 0x01,
+    Interface_0_A = 0x00
+};
+
+type HeaderFlags
+{
+    ERFFlags ErfFlags with BinaryEncoding{Width = 6};
+    CaptureInterface Interface with BinaryEncoding{Width = 2};
+}
+
+// Convert POSIX time to string. POSIX time is defined as the number of seconds that have elapsed since 00:00:00 Coordinated Universal Time (UTC), Thursday, 1 January 1970.
+// The high 32-bits contain the integer number of seconds since the start of time (unix epoch time). 
+// The lower 32-bits contain the binary fraction of the second allowing an ultimate resolution of approximately 233 picoseconds. 
+string POSIXTimeToString(uint dwHighDateTime, uint dwLowDateTime)
+{
+    ulong yearBase = 1970;
+    ulong monthBase = 1;
+    ulong dayBase = 1;
+    ulong second = dwHighDateTime;
+    ulong secondResult = second % 60;
+    ulong minute = second / 60;
+    ulong minuteResult = minute % 60;
+    ulong hour = minute / 60;
+    ulong hourResult = hour % 24;
+    ulong dayValue = hour / 24;
+    
+    ulong dayResult = dayBase + dayValue;
+    while (true)
+    {
+        bool isLeapYear = IsLeapYear(yearBase);
+        if (dayResult >= 365 && !isLeapYear)
+        {
+            yearBase = yearBase + 1;
+            dayResult = dayResult - 365;
+        }
+        else if (dayResult >= 366 && isLeapYear)
+        {
+            yearBase = yearBase + 1;
+            dayResult = dayResult - 366;
+        }
+        else
+        {
+            while (true)
+            {
+                if (dayResult > 31 && monthBase in {1, 3, 5, 7, 8, 10, 12})
+                {
+                    monthBase = monthBase + 1;
+                    dayResult = dayResult - 31;
+                }
+                else if (dayResult > 30 && monthBase in {4, 6, 9, 11})
+                {
+                    monthBase = monthBase + 1;
+                    dayResult = dayResult - 30;
+                }
+                else if (monthBase == 2 && dayResult > 28 && !isLeapYear)
+                {
+                    monthBase = monthBase + 1;
+                    dayResult = dayResult - 28;
+                }
+                else if (monthBase == 2 && dayResult > 29 && isLeapYear)
+                {
+                    monthBase = monthBase + 1;
+                    dayResult = dayResult - 29;
+                }
+                else
+                {
+                    break;
+                }
+            }
+            break;
+        }
+    }
+        
+    ulong milliSecond = ((dwLowDateTime as ulong) * 1000000000) >> 32;
+    string milliSecondResult = Format("{0:D9}", milliSecond);
+    return (monthBase as string) + @"/" + (dayResult as string) + @"/" + (yearBase as string)  + " " + (hourResult as string) + ":" + (minuteResult as string) + ":" + (secondResult as string) + "." + milliSecondResult + " UTC";
+}
+
+bool IsLeapYear(ulong year)
+{
+    // multiple of 4 or multiple of 400 but not multiple of 100.
+    return (year % 400 == 0) || (year % 4 == 0 && year % 100 != 0);
+}
+
+type POSIXFILETIME
+{
+    uint dwLowDateTime with BinaryEncoding{Endian = Endian.Little};
+    uint dwHighDateTime with BinaryEncoding{Endian = Endian.Little};
+    
+    override string ToString()
+    {
+        return POSIXTimeToString(dwHighDateTime, dwLowDateTime);
+    }
+}
+
+message ERFRecord
+{
+    POSIXFILETIME ErfTimestamp;
+    HeaderType headerType;
+    HeaderFlags headerFlags;
+    ushort RLen;
+    ushort Lctr;
+    ushort WLen;
+    optional [|headerType.ExtensionHeaderPresent|] uint ExtensionHeaders;
+    optional [|headerType.ErfType == ERFType.ETHERNET|] byte EthernetOffset;
+    optional [|headerType.ErfType == ERFType.ETHERNET|] byte Reserved;
+    binary Payload with BinaryEncoding{Length = WLen};
+    
+    override string ToString()
+    {
+        return "ERFRecord, Type: " + (headerType.ErfType as string) + ", " + "Payload length: " + (WLen as string) + " bytes";
+    }
+}

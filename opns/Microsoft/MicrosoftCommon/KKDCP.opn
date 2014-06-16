@@ -1,0 +1,133 @@
+protocol KKDCP with
+Asn1EncodingDefaults{EncodingRule = Asn1EncodingRule.BER},
+BinaryEncodingDefaults{Endian = Endian.Big},
+Documentation
+{
+    ProtocolName = "Kerberos Key Distribution Center (KDC) Proxy Protocol",
+    ShortName = "KKDCP",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+            new Reference{Name = "MS-KKDCP", Version = "1.1", ProgramName = ProgramName.WSPP},
+        ],
+    RevisionSummary =
+        [
+            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "11/20/2012"},
+        ]
+};
+
+using Standard;
+using ASN1;
+using HTTP;
+using KerberosV5;
+using Utility;
+
+const string KdcProxyString = "/KdcProxy";
+
+endpoint Server over HTTP.Server accepts KdcProxyMessage issues KdcProxyMessage
+{
+    observe this accepts kdcMsg:KdcProxyMessage
+    {
+        DecodeActualKerbMessage(kdcMsg);
+    }
+    observe this issues kdcMsg:KdcProxyMessage
+    {
+        DecodeActualKerbMessage(kdcMsg);
+    }
+}
+
+void DecodeActualKerbMessage(KdcProxyMessage kdcMsg)
+{
+    if (kdcMsg.KerbMessage is binary)
+    {
+        var msgPayload = kdcMsg.KerbMessage as binary;
+        if (msgPayload.Count > 4)
+        {
+            var length = BinaryDecoder<MaxLength>(msgPayload.Segment(0, 4)) as MaxLength;
+            // has TCP MaxLength header for Kerberos message. Not sure whether need reassemble here (no such case currently), pending updates for reassembly logic.
+            if (length.Length == msgPayload.Count - 4) 
+            {
+                var krbMsg = Asn1BerDecoder<KrbMessage>(msgPayload.Segment(4)) as KrbMessage;
+                krbMsg.Length = length;
+                kdcMsg.KerbMessage = krbMsg;
+            }
+            else
+            {
+                kdcMsg.KerbMessage = Asn1BerDecoder<KrbMessage>(msgPayload) as KrbMessage;
+            }
+        }
+    }
+}
+
+message KdcProxyMessage
+{
+    /* Kerberos might be transmitted both on TCP and UDP, 
+     * so can't identify whether total length (4 octets) are present or not,
+     * which need manual decode in server observe rules.
+     */
+    (OctetString | KrbMessage) KerbMessage with Asn1Encoding{TagNumber = 0, Tagging = Asn1Tagging.Explicit}, Documentation{NameInDocumentation = "kerb-message"};
+    optional Realm TargetDomain with Asn1Encoding{TagNumber = 1, Tagging = Asn1Tagging.Explicit}, Documentation{NameInDocumentation = "target-domain"};
+    optional Integer DclocatorHint with Asn1Encoding{TagNumber = 2, Tagging = Asn1Tagging.Explicit}, Documentation{NameInDocumentation = "dclocator-hint"};
+    override string ToString()
+    {
+        string summary = (TargetDomain is nothing) ? "" : "TargetDomain: " + TargetDomain.ToString();
+        summary += (DclocatorHint is nothing) ? "" : ", DclocatorHint: " + DclocatorHint.ToString();
+        return summary;
+    }
+
+} with Documentation{NameInDocumentation = "KDC-PROXY-MESSAGE"};
+
+autostart actor KkdcpOverHttps(HTTP.Server httpServer)
+{
+    process httpServer accepts req:HttpContract.Request where IsKkdcpPayload(req.Uri.AbsPath)
+    {
+        DecodeKdcProxyMessage(httpServer, req.Payload, true);
+    }
+    process httpServer issues resp:HttpContract.Response where IsKkdcpPayload((resp#Uri as UriType).AbsPath)
+    {
+        DecodeKdcProxyMessage(httpServer, resp.Payload, false);
+    }
+}
+
+bool IsKkdcpPayload(optional string str)
+{
+    if (str is nothing)
+    {
+        return false;
+    }
+    else
+    {
+        var uriStr = str as string;
+        if (uriStr == null)
+        {
+            return false;
+        }
+        else
+        {
+            return uriStr == KdcProxyString || uriStr.IndexOf(KdcProxyString) != -1;
+        }
+    }
+}
+
+void DecodeKdcProxyMessage(HTTP.Server httpServer, binary payload, bool isAccepts)
+{
+    switch (payload)
+    {
+        case kdcMsg:KdcProxyMessage from Asn1BerDecoder<KdcProxyMessage> =>
+            var kkdcpServer = endpoint Server over httpServer;
+            if (isAccepts)
+            {
+                dispatch kkdcpServer accepts kdcMsg;
+            }
+            else
+            {
+                dispatch kkdcpServer issues kdcMsg;
+            }
+        default =>
+            ThrowDecodingException("KKDCP", "KdcProxyMessage");
+    }
+}

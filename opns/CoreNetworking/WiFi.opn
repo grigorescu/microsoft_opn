@@ -1,0 +1,3495 @@
+protocol WiFi with 
+BinaryEncodingDefaults {Endian = Endian.Little, TextEncoding = TextEncoding.ASCII},
+Documentation
+{
+    ProtocolName = "WiFi Protocols",
+    ShortName = "WiFi",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+    [
+    new Reference{Name = "IEEE Std 802.11", Version = "2007 Edition", Link = "http://standards.ieee.org/getieee802/download/802.11-2007.pdf"},
+    new Reference{Name = "IEEE Std 802.11k", Version = "2008 Edition", Link = "http://standards.ieee.org/getieee802/download/802.11k-2008.pdf"},
+    new Reference{Name = "IEEE Std 802.11r", Version = "2008 Edition", Link = "http://standards.ieee.org/getieee802/download/802.11r-2008.pdf"},
+    new Reference{Name = "IEEE Std 802.11y", Version = "2008 Edition", Link = "http://standards.ieee.org/getieee802/download/802.11y-2008.pdf"},
+    new Reference{Name = "IEEE Std 802.11w", Version = "2009 Edition", Link = "http://standards.ieee.org/getieee802/download/802.11w-2009.pdf"},
+    new Reference{Name = "IEEE Std 802.11n", Version = "2009 Edition", Link = "http://standards.ieee.org/getieee802/download/802.11n-2009.pdf"},
+    ],
+    RevisionSummary = 
+    [
+    new Revision{Class = RevisionClass.Major, Version="1.0.0", Date="09/02/2011"}
+    ]
+};
+
+using Standard;
+using Ethernet;
+using Utility;
+using IPv6;
+using IPv4;
+
+endpoint Node[binary DestinationAddress]
+accepts WiFiMessage;
+    
+message WiFiMessage
+{
+    byte SubType            with BinaryEncoding{Width = 4};
+    byte Type               with BinaryEncoding{Width = 2};
+    byte ProtocolVersion    with BinaryEncoding{Width = 2};
+    bool Order              with BinaryEncoding{Width = 1};
+    bool ProtectedFrame     with BinaryEncoding{Width = 1};
+    bool MoreData           with BinaryEncoding{Width = 1};
+    bool PwrMgt             with BinaryEncoding{Width = 1};
+    bool Retry              with BinaryEncoding{Width = 1};
+    bool MoreFrag           with BinaryEncoding{Width = 1};
+    bool FromDS             with BinaryEncoding{Width = 1};
+    bool ToDS               with BinaryEncoding{Width = 1};
+    ([|Type == 0 && SubType == 0|] AssociationRequestFrame |
+    [|Type == 0 && SubType == 1|] AssociationResponseFrame |
+    [|Type == 0 && SubType == 2|] ReassociationRequestFrame |
+    [|Type == 0 && SubType == 3|] ReassociationResponseFrame |
+    [|Type == 0 && SubType == 4|] ProbeRequestFrame |
+    [|Type == 0 && SubType == 5|] ProbeResponseFrame |
+    [|Type == 0 && SubType == 8|] BeaconFrame |
+    [|Type == 0 && SubType == 9|] ATIM |
+    [|Type == 0 && SubType == 10|] DisassociationFrame |
+    [|Type == 0 && SubType == 11|] AuthenticationFrame |
+    [|Type == 0 && SubType == 12|] Deauthentication |
+    [|Type == 0 && SubType == 13|] ActionFrame | //(optional ActionNoAckFrame | optional PublicActionFrame | optional VendorSpecificActionFrame) |
+    [|Type == 1 && SubType == 7|] ControlWrapper |
+    [|Type == 1 && SubType == 8|] BlockAckReqFrame |
+    [|Type == 1 && SubType == 9|] BlockAckFrame |
+    [|Type == 1 && SubType == 10|] PSPollFrame |
+    [|Type == 1 && SubType == 11|] RTSFrame |
+    [|Type == 1 && SubType == 12|] CTSFrame |
+    [|Type == 1 && SubType == 13|] ACKFrame |
+    [|Type == 1 && SubType == 14|] CFEndFrame |
+    [|Type == 1 && SubType == 15|] CFEndCFAckFrame |
+    // WORKAROUND: Should Use type parameter
+    //DataFrame[ToDS, FromDS, SubType] where Type == 2
+    // WORKAROUND: UT baseline doesn't consist with the result in UI, hold the cleanup
+    [|Type == 2 && !ToDS && !FromDS|] AdHoc[WiFiDataFrameHasNoData(SubType), Order, SubType] |
+    [|Type == 2 && ToDS && FromDS|] APToAP[WiFiDataFrameHasNoData(SubType), Order, SubType] |
+    [|Type == 2 && ToDS && !FromDS && SubType >= 8|] ClientToApWithQoSControlWithTXOPDurationRequested[WiFiDataFrameHasNoData(SubType), Order] |
+    [|Type == 2 && ToDS && !FromDS && SubType >= 8|] ClientToApWithQoSControlWithQueueSize[WiFiDataFrameHasNoData(SubType), Order] |
+    [|Type == 2 && ToDS && !FromDS|] ClientToAp[WiFiDataFrameHasNoData(SubType)] |
+    [|Type == 2 && !ToDS && FromDS && SubType in {0x0A, 0x0B, 0x0E, 0x0F}|] APToClientWithQoSControlWithTXOPLimit[WiFiDataFrameHasNoData(SubType), Order] |
+    [|Type == 2 && !ToDS && FromDS && SubType in {0x08, 0x09, 0x0C}|] APToClientWithQoSControlWithQAPPSBufferState[WiFiDataFrameHasNoData(SubType), Order] |
+    [|Type == 2 && !ToDS && FromDS|] APToClient[WiFiDataFrameHasNoData(SubType), Order, SubType]
+    ) Frame;
+    
+    override string ToString()
+    {
+        string summary = (this#IsEncrypted as bool) ? "WiFiMessage, Encrypted" : "" + MessageNaming(Type, SubType) + ", Flags: " + GetControlInfor(this);
+        if (Type==0)
+        {
+            summary += GetSSIDString(this, SubType);
+        }
+        return summary;
+    }
+}
+
+annotation bool WiFiMessage#IsEncrypted;
+annotation MacAddress WiFiMessage#SourceAddress;
+annotation MacAddress WiFiMessage#DestinationAddress;
+
+MacAddress get Source(this WiFiMessage wifi)
+{
+    return wifi#SourceAddress as MacAddress;
+}
+
+MacAddress get Destination(this WiFiMessage wifi)
+{
+    return wifi#DestinationAddress as MacAddress;
+}
+
+string get Network(this WiFiMessage wifi)
+{
+    MacAddress Source = wifi#SourceAddress as MacAddress;
+    MacAddress Destination = wifi#DestinationAddress as MacAddress;
+    return "WiFi: " + (Source.Octets > Destination.Octets
+    ?  Destination.ToString() + " - " + Source.ToString()
+    : Source.ToString() + " - " +  Destination.ToString());
+}
+
+binary BlankMacAddress = $[000000000000];
+
+bool DecodeWiFiMessageAndDispatch(stream strm, bool isMonitorMode)
+{
+    var originalPosition = strm.BitPosition;
+    switch (strm)
+    {
+        case wifi:WiFiMessage from BinaryDecoder<WiFiMessage> =>
+        // destination address start from the 4th byte
+        var destAddress = strm.PeekBytes(originalPosition + 32, 6);
+        binary srcAddress;
+        if (!((wifi.Type == 1) && (wifi.SubType in {7, 10, 12, 13})))
+        {
+            // source address start from the 10th byte
+            srcAddress = strm.PeekBytes(originalPosition + 80, 6);
+        }
+        else
+        {
+            srcAddress = BlankMacAddress;
+        }
+        wifi#IsEncrypted = (isMonitorMode && wifi.ProtectedFrame);
+        wifi#SourceAddress = new MacAddress{Octets = srcAddress};
+        wifi#DestinationAddress = new MacAddress{Octets = destAddress};
+        dispatch endpoint WiFi.Node[destAddress] accepts wifi;
+        return true;
+        default =>
+        return false;
+    }
+}
+
+bool DecodeWirelessWanMessage(binary binaryValue)
+{
+    if ((binaryValue[0] & 0x40) != 0)
+    {
+        switch (binaryValue)
+        {
+            case d:IPv4.Datagram from BinaryDecoder =>
+            dispatch endpoint IPv4.ReassemblyNode[d.DestinationAddress.FlatAddress < d.SourceAddress.FlatAddress ? d.DestinationAddress.FlatAddress : d.SourceAddress.FlatAddress] accepts d;
+            return true;
+            default => 
+            return false;
+        }
+    }
+    // IPv6
+    else if ((binaryValue[0] & 0x60) != 0)
+    {
+        switch (binaryValue)
+        {
+            case d:IPv6.Datagram from IPv6Decoder =>
+            dispatch endpoint IPv6.ReassemblyNode[d.DestinationAddress.FlatAddress < d.SourceAddress.FlatAddress ? d.DestinationAddress.FlatAddress : d.SourceAddress.FlatAddress] accepts d;
+            return true;
+            default =>
+            return false;
+        }
+    }
+    else
+    {
+        return false;
+    }
+}
+
+bool WiFiDataFrameHasNoData(byte SubType)
+{
+    return SubType in {4, 5, 6, 7, 12, 14, 15};
+}
+
+// 802.11 section 7.2.1.1
+type RTSFrame
+{
+    ushort Duration;
+    MacAddress RA;
+    MacAddress TA;
+    optional uint FCS;
+}
+
+// 802.11 section 7.2.1.2
+type CTSFrame
+{
+    ushort Duration;
+    MacAddress RA;
+    optional uint FCS;
+}
+
+// 802.11 section 7.2.1.3
+type ACKFrame
+{
+    ushort Duration;
+    MacAddress RA;
+    optional uint FCS;
+}
+
+// 802.11 section 7.2.1.4
+type PSPollFrame
+{
+    ushort AID;
+    MacAddress BSSID;
+    MacAddress TA;
+    optional uint FCS;
+}
+
+// 802.11 section 7.2.1.5
+type CFEndFrame
+{
+    ushort Duration where ValidationCheckZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Duration", "CFEndFrame", value);
+    MacAddress RA;
+    MacAddress BSSID;
+    optional uint FCS;
+}
+
+// 802.11 section 7.2.1.6
+type CFEndCFAckFrame
+{
+    ushort Duration where ValidationCheckZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Duration", "CFEndCFAckFrame", value);
+    MacAddress RA;
+    MacAddress BSSID;
+    optional uint FCS;
+}
+
+// 802.11 section 7.2.1.7
+type BlockAckReqFrame
+{
+    ushort DurationID;
+    MacAddress RA;
+    MacAddress TA;
+    BARControl BARControl;
+    BlockAckStartingSequenceControl BlockAckStartingSequenceControl;
+    optional uint FCS;
+}
+
+type BARControl
+{
+    byte Reserved1 where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved1", "BARControl", value);
+    byte TID        with BinaryEncoding{Width = 4};
+    byte Reserved2 where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved2", "BARControl", value) with BinaryEncoding{Width = 4};
+}
+
+// !FIXME: actually BlockAckStartingSequenceControl itself is a short encoded as little endian
+// Currently we have to split SequenceNumber as two parts
+type BlockAckStartingSequenceControl
+{
+    byte StartSequenceNumberLowerBits with BinaryEncoding{Width = 4};
+    byte FragmentNumber where ValidationCheckZero(value == 0, null, false, ReferenceType.Type, "WiFi", "FragmentNumber", "BlockAckStartingSequenceControl", value) with BinaryEncoding{Width = 4};
+    byte StartSequenceNumberHigherBits with BinaryEncoding{Width = 8};
+}
+
+short get StartSequenceNumber(this BlockAckStartingSequenceControl bassc)
+{
+    return ((bassc.StartSequenceNumberHigherBits << 4) | bassc.StartSequenceNumberLowerBits) as short;
+}
+
+// 802.11 section 7.2.1.8
+type BlockAckFrame
+{
+    ushort DurationID;
+    MacAddress RA;
+    MacAddress TA;
+    BARControl BAControl;
+    BlockAckStartingSequenceControl BlockAckStartingSequenceControl;
+    array<byte> BlockAckBitmap with BinaryEncoding{Length = 128};
+    optional uint FCS;
+}
+// WORKAROUND: Should use type parameter
+//type DataFrame[bool ToDS, bool FromDS, byte SubType]
+//{
+//    ((ClientToAp where DataFrameCheck(ToDS, FromDS) == 2) |
+//    (AdHoc where DataFrameCheck(ToDS, FromDS) == 1) |
+//    (APToClient where DataFrameCheck(ToDS, FromDS) == 3) |
+//    (APToAP where DataFrameCheck(ToDS, FromDS) == 4)) DataHeader;
+//    optional ((QoSControlWithQueueSize where QoSControlCheck(ToDS, FromDS, SubType) == 1) |
+//    (QoSControlWithTXOPDurationRequested where QoSControlCheck(ToDS, FromDS, SubType) == 2) |
+//    (QoSControlWithTXOPLimit where QoSControlCheck(ToDS, FromDS, SubType) == 3) |
+//    (QoSControlWithQAPPSBufferState where QoSControlCheck(ToDS, FromDS, SubType) == 4)) QoSControl;
+//    binary Data;
+//}
+
+//uint DataFrameCheck(bool ToDS, bool FromDS)
+//{
+//    if (!ToDS && !FromDS)
+//        return 1;
+//    else if (ToDS && !FromDS)
+//        return 2;
+//    else if (!ToDS && FromDS)
+//        return 3;
+//    else if (ToDS && FromDS)
+//        return 4;
+//    else return 0;
+//}
+
+//uint QoSControlCheck(bool ToDS, bool FromDS, byte SubType)
+//{
+//    if (ToDS && !FromDS)
+//        return 1;
+//    else if (ToDS && !FromDS)
+//        return 2;
+//    else if (!ToDS && FromDS && SubType == 0x0A || SubType == 0x0B || SubType == 0x0E || SubType == 0x0F)
+//        return 3;
+//    else if (!ToDS && FromDS && SubType == 0x08 || SubType == 0x09 || SubType == 0x0C)
+//        return 4;
+//    else return 0;
+//}
+
+// 802.11 section 7.2.2 Data Frame
+// !FIXME: if data and FCS both exist, Data will consume all the data since there is no length indicator this layer
+type AdHoc[bool NoData, bool Order, byte SubType]
+{
+    ushort Duration;
+    MacAddress DA;
+    MacAddress SA;
+    MacAddress BSSID;
+    SequenceControl SequenceControl;
+    optional [|(SubType >= 8) && Order|] HTControl HTControl;
+    optional [|!NoData|] binary Data;
+    optional uint FCS;
+}
+
+type ClientToAp[bool NoData]
+{
+    ushort Duration;
+    MacAddress BSSID;
+    MacAddress SA;
+    MacAddress DA;
+    SequenceControl SequenceControl;
+    optional [|!NoData|] binary Data;
+    optional uint FCS;
+}
+
+type ClientToApWithQoSControlWithQueueSize[bool NoData, bool Order]
+{
+    ushort Duration;
+    MacAddress BSSID;
+    MacAddress SA;
+    MacAddress DA;
+    SequenceControl SequenceControl;
+    //QoSControlWithQueueSize QoSControl;
+    byte Reserved where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved", "ClientToApWithQoSControlWithQueueSize", value) with BinaryEncoding{Width = 1};
+    byte AckPolicy               with BinaryEncoding{Width = 2};
+    (byte where value == 1) BIT4 with BinaryEncoding{Width = 1};
+    bool TID                     with BinaryEncoding{Width = 4};
+    byte QueueSize;
+    optional [|Order|] HTControl HTControl;
+    optional [|!NoData|] binary Data;
+    optional uint FCS;
+}
+
+type ClientToApWithQoSControlWithTXOPDurationRequested[bool NoData, bool Order]
+{
+    ushort Duration;
+    MacAddress BSSID;
+    MacAddress SA;
+    MacAddress DA;
+    SequenceControl SequenceControl;
+    byte Reserved where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved", "ClientToApWithQoSControlWithTXOPDurationRequested", value) with BinaryEncoding{Width = 1};
+    byte AckPolicy               with BinaryEncoding{Width = 2};
+    (byte where value == 0) BIT4 with BinaryEncoding{Width = 1};
+    bool TID                     with BinaryEncoding{Width = 4};
+    byte TXOPDurationRequested;
+    optional [|Order|] HTControl HTControl;
+    optional [|!NoData|] binary Data;
+    optional uint FCS;
+}
+
+type APToClient[bool NoData, bool Order, byte SubType]
+{
+    ushort Duration;
+    MacAddress DA;
+    MacAddress BSSID;
+    MacAddress SA;
+    SequenceControl SequenceControl;
+    optional [|(SubType >= 8) && Order|] HTControl HTControl;
+    optional [|!NoData|] binary Data;
+    optional uint FCS;
+}
+
+type APToClientWithQoSControlWithTXOPLimit[bool NoData, bool Order]
+{
+    ushort Duration;
+    MacAddress DA;
+    MacAddress BSSID;
+    MacAddress SA;
+    SequenceControl SequenceControl;
+    byte Reserved where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved", "APToClientWithQoSControlWithTXOPLimit", value) with BinaryEncoding{Width = 1};
+    byte AckPolicy  with BinaryEncoding{Width = 2};
+    byte EOSP       with BinaryEncoding{Width = 1};
+    byte TID        with BinaryEncoding{Width = 4};
+    byte TXOPLimit;
+    optional [|Order|] HTControl HTControl;
+    optional [|!NoData|] binary Data;
+    optional uint FCS;
+}
+
+type APToClientWithQoSControlWithQAPPSBufferState[bool NoData, bool Order]
+{
+    ushort Duration;
+    MacAddress DA;
+    MacAddress BSSID;
+    MacAddress SA;
+    SequenceControl SequenceControl;
+    byte Reserved1 where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved1", "APToClientWithQoSControlWithQAPPSBufferState", value) with BinaryEncoding{Width = 1};
+    byte AckPolicy                  with BinaryEncoding{Width = 2};
+    bool EOSP                       with BinaryEncoding{Width = 1};
+    byte TID                        with BinaryEncoding{Width = 4};
+    
+    byte QAPBufferedLoad            with BinaryEncoding{Width = 4};
+    byte HighestPriorityBufferedAC  with BinaryEncoding{Width = 2};
+    bool BufferedStateIndicated     with BinaryEncoding{Width = 1};
+    byte Reserved2 where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved2", "APToClientWithQoSControlWithQAPPSBufferState", value) with BinaryEncoding{Width = 1};
+    optional [|Order|] HTControl HTControl;
+    optional [|!NoData|] binary Data;
+    optional uint FCS;
+}
+
+type APToAP[bool NoData, bool Order, byte SubType]
+{
+    ushort Duration;
+    MacAddress RA;
+    MacAddress TA;
+    MacAddress DA;
+    SequenceControl SequenceControl;
+    MacAddress SA;
+    optional [|(SubType >= 8) && Order|] HTControl HTControl;
+    optional [|!NoData|] binary Data;
+    optional uint FCS;
+}
+
+type ControlWrapper
+{
+    ushort DurationID;
+    MacAddress Address1;
+    byte SubType            with BinaryEncoding{Width = 4};
+    byte Type               with BinaryEncoding{Width = 2};
+    byte ProtocolVersion    with BinaryEncoding{Width = 2};
+    bool Order              with BinaryEncoding{Width = 1};
+    bool ProtectedFrame     with BinaryEncoding{Width = 1};
+    bool MoreData           with BinaryEncoding{Width = 1};
+    bool PwrMgt             with BinaryEncoding{Width = 1};
+    bool Retry              with BinaryEncoding{Width = 1};
+    bool MoreFrag           with BinaryEncoding{Width = 1};
+    bool FromDS             with BinaryEncoding{Width = 1};
+    bool ToDS               with BinaryEncoding{Width = 1};
+    HTControl HTControl;
+    // FIXME: pre-checker need change in OPN parser or operater pattern resolver
+    ([|Type == 0 && SubType == 0|] AssociationRequestFrame |
+    [|Type == 0 && SubType == 1|] AssociationResponseFrame |
+    [|Type == 0 && SubType == 2|] ReassociationRequestFrame |
+    [|Type == 0 && SubType == 3|] ReassociationResponseFrame |
+    [|Type == 0 && SubType == 4|] ProbeRequestFrame |
+    [|Type == 0 && SubType == 5|] ProbeResponseFrame |
+    [|Type == 0 && SubType == 8|] BeaconFrame |
+    [|Type == 0 && SubType == 9|] ATIM |
+    [|Type == 0 && SubType == 10|] DisassociationFrame |
+    [|Type == 0 && SubType == 11|] AuthenticationFrame |
+    [|Type == 0 && SubType == 12|] Deauthentication |
+    [|Type == 0 && SubType == 13|] (ActionNoAckFrame | PublicActionFrame | VendorSpecificActionFrame) |
+    [|Type == 1 && SubType == 7|] ControlWrapper | // ControlWrapper again?
+    [|Type == 1 && SubType == 8|] BlockAckReqFrame |
+    [|Type == 1 && SubType == 9|] BlockAckFrame |
+    [|Type == 1 && SubType == 10|] PSPollFrame |
+    [|Type == 1 && SubType == 11|] RTSFrame |
+    [|Type == 1 && SubType == 12|] CTSFrame |
+    [|Type == 1 && SubType == 13|] ACKFrame |
+    [|Type == 1 && SubType == 14|] CFEndFrame |
+    [|Type == 1 && SubType == 15|] CFEndCFAckFrame |
+    // WORKAROUND: Use type parameter
+    //DataFrame[ToDS, FromDS, SubType] where Type == 2
+    // WORKAROUND: UT baseline doesn't consist with the result in UI, hold the cleanup
+    [|Type == 2 && !ToDS && !FromDS|] AdHoc[WiFiDataFrameHasNoData(SubType), Order, SubType] |
+    [|Type == 2 && ToDS && FromDS|] APToAP[WiFiDataFrameHasNoData(SubType), Order, SubType] |
+    [|Type == 2 && ToDS && !FromDS && SubType >= 8|] ClientToApWithQoSControlWithQueueSize[WiFiDataFrameHasNoData(SubType), Order] |
+    [|Type == 2 && ToDS && !FromDS && SubType >= 8|] ClientToApWithQoSControlWithTXOPDurationRequested[WiFiDataFrameHasNoData(SubType), Order] |
+    [|Type == 2 && ToDS && !FromDS|] ClientToAp[WiFiDataFrameHasNoData(SubType)] |
+    [|Type == 2 && !ToDS && FromDS && SubType in {0x0A, 0x0B, 0x0E, 0x0F}|] APToClientWithQoSControlWithTXOPLimit[WiFiDataFrameHasNoData(SubType), Order] |
+    [|Type == 2 && !ToDS && FromDS && SubType in {0x08, 0x09, 0x0C}|] APToClientWithQoSControlWithQAPPSBufferState[WiFiDataFrameHasNoData(SubType), Order] |
+    [|Type == 2 && !ToDS && FromDS|] APToClient[WiFiDataFrameHasNoData(SubType), Order, SubType]
+    ) CarriedFrame;
+}
+
+// 802.11n Section 7.1.3.5a HT Control field
+type HTControl
+{
+    LinkAdaptationControl LinkAdaptationControl;
+    
+    byte CSISteering            with BinaryEncoding{Width = 2};
+    byte Reserved1 where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved1", "HTControl", value) with BinaryEncoding{Width = 2};
+    byte CalibrationSequence    with BinaryEncoding{Width = 2};
+    byte CalibrationPosition    with BinaryEncoding{Width = 2};
+    
+    byte RDGMorePPDU            with BinaryEncoding{Width = 1};
+    byte ACConstraint           with BinaryEncoding{Width = 1};
+    byte Reserved2 where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved2", "HTControl", value) with BinaryEncoding{Width = 5};
+    byte NDPAnnouncement        with BinaryEncoding{Width = 1};
+}
+
+type LinkAdaptationControl
+{
+    byte MFSIL           with BinaryEncoding{Width = 2};
+    byte MAI             with BinaryEncoding{Width = 4};
+    byte TRQ             with BinaryEncoding{Width = 1};
+    byte Reserved where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved", "LinkAdaptationControl", value) with BinaryEncoding{Width = 1};
+    
+    byte MFBASELC        with BinaryEncoding{Width = 7};
+    byte MFSIH           with BinaryEncoding{Width = 1};
+}
+
+// 802.11 Section 7.2.3 Management frames
+type ManagementFrame
+{
+    ushort Duration;
+    MacAddress DA;
+    MacAddress SA;
+    MacAddress BSSID;
+    SequenceControl SequenceControl;
+}
+
+// !FIXME: actually SequenceControl itself is a short encoded as little endian
+// Currently we have to split SequenceNumber as two parts
+// 802.11 Section 7.1.3.4 Sequence Control field
+type SequenceControl
+{
+    byte SequenceNumberLowerBits with BinaryEncoding{Width = 4};
+    byte FragmentNumber with BinaryEncoding{Width = 4};
+    byte SequenceNumberHigherBits;
+}
+
+short get SequenceNumber(this SequenceControl sc)
+{
+    return ((sc.SequenceNumberHigherBits << 4) | sc.SequenceNumberLowerBits) as short;
+}
+
+// 802.11 section 7.2.3.1 BeaconFrame
+type BeaconFrame
+{
+    ushort Duration;
+    MacAddress DA;
+    MacAddress SA;
+    MacAddress BSSID;
+    SequenceControl SequenceControl;
+    ulong TimeStamp;
+    ushort BeaconInterval;
+    Capability Capability;
+    array<InformationField> InformationElements;
+    optional uint FCS;
+}
+
+// 802.11 section 7.2.3.4 AssociationRequestFrame
+type AssociationRequestFrame
+{
+    ushort Duration;
+    MacAddress DA;
+    MacAddress SA;
+    MacAddress BSSID;
+    SequenceControl SequenceControl;
+    Capability Capability;
+    ushort ListenInterval;
+    array<InformationField> InformationElements;
+    optional uint FCS;
+}
+
+// 802.11 section 7.2.3.5 AssociationResponseFrame
+type AssociationResponseFrame
+{
+    ushort Duration;
+    MacAddress DA;
+    MacAddress SA;
+    MacAddress BSSID;
+    SequenceControl SequenceControl;
+    Capability Capability;
+    ushort Status;
+    AssociationID AssociationID;
+    array<InformationField> InformationElements;
+    optional uint FCS;
+}
+
+type AssociationID
+{
+    byte AssociationIDL;
+    byte Reserved where ValidationCheck(value == 3, null, "WiFi: The Reserved field in type AssociationID is reserved and should be set to 3, not " + (value as string) + ".") with BinaryEncoding{Width = 2};
+    byte AssociationIDH with BinaryEncoding{Width = 6};
+}
+
+// 802.11 section 7.2.3.6 ReassociationRequestFrame
+type ReassociationRequestFrame
+{
+    ushort Duration;
+    MacAddress DA;
+    MacAddress SA;
+    MacAddress BSSID;
+    SequenceControl SequenceControl;
+    Capability Capability;
+    ushort ListenInterval;
+    MacAddress CurrentAP;
+    array<InformationField> InformationElements;
+    optional uint FCS;
+}
+
+// 802.11 section 7.2.3.7 ReassociationResponseFrame
+type ReassociationResponseFrame
+{
+    ushort Duration;
+    MacAddress DA;
+    MacAddress SA;
+    MacAddress BSSID;
+    SequenceControl SequenceControl;
+    Capability Capability;
+    ushort Status;
+    AssociationID AssociationID;
+    array<InformationField> InformationElements;
+    optional uint FCS;
+}
+
+// 802.11 section 7.2.3.8 ProbeRequestFrame
+type ProbeRequestFrame
+{
+    ushort Duration;
+    MacAddress DA;
+    MacAddress SA;
+    MacAddress BSSID;
+    SequenceControl SequenceControl;
+    array<InformationField> InformationElements;
+    optional uint FCS;
+}
+
+// 802.11 section 7.2.3.9 ProbeResponseFrame
+type ProbeResponseFrame
+{
+    ushort Duration;
+    MacAddress DA;
+    MacAddress SA;
+    MacAddress BSSID;
+    SequenceControl SequenceControl;
+    ulong TimeStamp;
+    ushort BeaconInterval;
+    Capability Capability;
+    array<InformationField> InformationElements;
+    optional uint FCS;
+}
+
+// 802.11 section 7.2.3.2 ATIM
+type ATIM
+{
+    ushort Duration;
+    MacAddress DA;
+    MacAddress SA;
+    MacAddress BSSID;
+    SequenceControl SequenceControl;
+    optional uint FCS;
+}
+
+// 802.11 section 7.2.3.3 DisassociationFrame
+type DisassociationFrame
+{
+    ushort Duration;
+    MacAddress DA;
+    MacAddress SA;
+    MacAddress BSSID;
+    SequenceControl SequenceControl;
+    ushort Reason;
+    array<InformationField> InformationElements;
+    optional uint FCS;
+}
+
+// 802.11 section 7.2.3.10 AuthenticationFrame
+type AuthenticationFrame
+{
+    ushort Duration;
+    MacAddress DA;
+    MacAddress SA;
+    MacAddress BSSID;
+    SequenceControl SequenceControl;
+    ushort AuthenticationAlgorithmNumber;
+    ushort AuthenticationTransactionSequenceNumber;
+    ushort StatusCode;
+    array<InformationField> InformationElements;
+    optional uint FCS;
+}
+
+// 802.11 section 7.2.3.11 Deauthentication
+type Deauthentication
+{
+    ushort Duration;
+    MacAddress DA;
+    MacAddress SA;
+    MacAddress BSSID;
+    SequenceControl SequenceControl;
+    ushort ReasonCode;
+    array<InformationField> InformationElements;
+    optional uint FCS;
+}
+
+// 802.11 section 7.2.3.12 ActionFrame
+type ActionNoAckFrame
+{
+    ushort Duration;
+    MacAddress DA;
+    MacAddress SA;
+    MacAddress BSSID;
+    SequenceControl SequenceControl;
+    ActionNoAckFrameBody Action;
+    array<InformationField> InformationElements;
+    optional uint FCS;
+}
+
+type PublicActionFrame
+{
+    ushort Duration;
+    MacAddress DA;
+    MacAddress SA;
+    MacAddress BSSID;
+    SequenceControl SequenceControl;
+    VendorSpecificForPublic Action;
+    optional uint FCS;
+}
+
+type VendorSpecificActionFrame
+{
+    ushort Duration;
+    MacAddress DA;
+    MacAddress SA;
+    MacAddress BSSID;
+    SequenceControl SequenceControl;
+    VendorSpecificFrame Action;
+    optional uint FCS;
+}
+
+pattern ActionFrame = ActionNoAckFrame | PublicActionFrame | VendorSpecificActionFrame;
+
+// BUGBUG: BinaryCodec doesn't support named pattern as a term of the or pattern
+// WORKAROUND: use the original pattern to replace the named pattern
+pattern ActionNoAckFrameBody =  //SpectrumManagementAction |//0
+MeasurementRequestForAction |//0
+MeasurementReportForAction |//1
+TPCRequestForAction |//2
+TPCReportForAction |//3
+ChannelSwitchAnnouncementForAction |//4
+//Qos //1
+AddtsRequest |
+AddtsResponse |
+Delts |
+SchedulForAction |
+//DLSAction |//2
+DLSRequest |//0
+DLSResponse |//1
+DLSTeardown |//2
+//BlockAckAction |//3
+ADDBARequest |//0
+ADDBAResponse |//1
+DELBA |//2
+//PublicAction |//4
+WiFi20or40BSSCoexistenceManagement | //0
+DSEEnablement | //1
+DSEDeEnablement | //2
+DSERegisteredLocationAnnouncement | //3
+ExtendedChannelSwitchAnnouncementForAction | //4
+DSEMeasurementRequest | //5
+DSEMeasurementReport | //6
+MeasurementPilot | //7
+DSEPowerConstraint | //8
+//VendorSpecificForPublic | //9
+//Radio Measurement //5
+RadioMeasurementRequest | //0
+RadioMeasurementReport | //1
+LinkMeasurementRequest | //2
+LinkMeasurementReport | //3
+NeighborReportRequest | //4
+NeighborReportResponse | //5
+//FT Action//6
+FTRequest | //1
+FTResponse | //2
+FTConfirm | //3
+FTAck | //4
+//HTAction;//7
+NotifyChannelWidth |//0
+SMPowerSave |//1
+PSMP |//2
+SetPCOPhase |//3
+CSI |//4
+NoncompressedBeamforming |//5
+CompressedBeamforming |//6
+ASELIndicesFeedback |//7
+//SA Action
+SAQueryRequest | //0
+SAQueryResponse; //1
+// Verdor-specific action
+//VendorSpecificFrame;
+
+//SpectrumManagementAction
+//pattern SpectrumManagementAction = MeasurementRequestForAction |//0
+//MeasurementReportForAction |//1
+//TPCRequestForAction |//2
+//TPCReportForAction |//3
+//ChannelSwitchAnnouncementForAction;//4
+
+// 802.11 section 7.4.1.1 MeasurementRequestForAction
+type MeasurementRequestForAction
+{
+    (byte where value == 0) Category;
+    (byte where value == 0) Action;
+    byte DialogToken;
+    array<MeasurementRequest> MeasurementRequest;
+}
+
+// 802.11 section 7.4.1.2 MeasurementReportForAction
+type MeasurementReportForAction
+{
+    (byte where value == 0) Category;
+    (byte where value == 1) Action;
+    byte DialogToken;
+    array<MeasurementReport> MeasurementReport;
+}
+
+// 802.11 section 7.4.1.3 TPCRequestForAction
+type TPCRequestForAction
+{
+    (byte where value == 0) Category;
+    (byte where value == 2) Action;
+    byte DialogToken;
+    TPCRequest TPCRequest;
+}
+
+// 802.11 section 7.4.1.4 TPCReportForAction
+type TPCReportForAction
+{
+    (byte where value == 0) Category;
+    (byte where value == 3) Action;
+    byte DialogToken;
+    TPCReport TPCReport;
+}
+
+// 802.11 section 7.4.1.5 ChannelSwitchAnnouncementForAction
+// 802.11n updated
+type ChannelSwitchAnnouncementForAction
+{
+    (byte where value == 0) Category;
+    (byte where value == 4) Action;
+    ChannelSwitchAnnouncement ChannelSwitchAnnouncement;
+    optional SecondaryChannelOffset SecondaryChannelOffset;
+}
+
+// 802.11 section 7.4.2.1 AddtsRequest
+type AddtsRequest
+{
+    (byte where value == 1) Category;
+    (byte where value == 0) Action;
+    byte DialogToken;
+    TSPEC Tspec;
+    optional array<TCLAS> tclas;
+    optional TCLASProcessing TclasProcessing;
+}
+
+// 802.11 section 7.4.2.2 AddtsResponse
+type AddtsResponse
+{
+    (byte where value == 1) Category;
+    (byte where value == 1) Action;
+    byte DialogToken;
+    ushort Status;
+    optional [|Status == 47|] TSDelay TSDelay;
+    TSPEC Tspec;
+    optional array<TCLAS> tclas;
+    optional TCLASProcessing TclasProcessing;
+    optional [|Status == 0|] Schedule Schedule;
+}
+
+// 802.11 section 7.4.2.3 DELTS
+type Delts
+{
+    (byte where value == 1) Category;
+    (byte where value == 2) Action;
+    byte DialogToken;
+    TSInfo TSInfo;
+    ushort Reason;
+}
+
+// 802.11 section 7.4.2.4 SchedulForAction
+type SchedulForAction
+{
+    (byte where value == 1) Category;
+    (byte where value == 3) Action;
+    Schedule Schedule;
+}
+
+//DLSAction
+//pattern DLSAction = DLSRequest |//0
+//DLSResponse |//1
+//DLSTeardown;//2
+
+// 802.11 section 7.4.3.1 DLSRequest
+// 802.11n updated
+type DLSRequest
+{
+    (byte where value == 2) Category;
+    (byte where value == 0) Action;
+    MacAddress Destination;
+    MacAddress Source;
+    Capability CapabilityInformation;
+    ushort DLSTimeoutValue;
+    SupportedRates SupportedRates;
+    ExtendedSupportedRates ExtendedSupportedRates;
+    optional HTCapabilities HTCapabilities;
+}
+
+// 802.11 section 7.4.3.2 DLSResponse
+// 802.11n updated
+type DLSResponse
+{
+    (byte where value == 2) Category;
+    (byte where value == 1) Action;
+    ushort Status;
+    MacAddress Destination;
+    MacAddress Source;
+    optional [|Status == 0|] Capability CapabilityInformation;
+    optional [|Status == 0|] SupportedRates SupportedRates;
+    optional [|Status == 0|] ExtendedSupportedRates ExtendedSupportedRates;
+    optional HTCapabilities HTCapabilities;
+}
+
+// 802.11 section 7.4.3.3 DLSTeardown
+type DLSTeardown
+{
+    (byte where value == 2) Category;
+    (byte where value == 2) Action;
+    MacAddress Destination;
+    MacAddress Source;
+    ushort Reason;
+}
+
+//BlockAckAction
+//pattern BlockAckAction = ADDBARequest |//0
+//ADDBAResponse |//1
+//DELBA;//2
+
+// 802.11 section 7.4.4.1 ADDBARequest
+type ADDBARequest
+{
+    (byte where value == 3) Category;
+    (byte where value == 0) Action;
+    byte DialogToken;
+    BlockAckParameterSet BlockAckParameterSet;
+    ushort BlockAckTimeoutValue;
+    BlockAckStartingSequenceControl BlockAckStartingSequenceControl;
+}
+
+// 802.11 Section 7.3.1.14 Block Ack Parameter Set field
+type BlockAckParameterSet
+{
+    byte BufferSizeL    with BinaryEncoding{Width = 2};
+    byte TID            with BinaryEncoding{Width = 4};
+    byte BlockAckPolicy with BinaryEncoding{Width = 1};
+    byte Reserved where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved", "BlockAckParameterSet", value) with BinaryEncoding{Width = 1};
+    byte BufferSizeH;
+}
+
+// 802.11 section 7.4.4.2 ADDBAResponse
+type ADDBAResponse
+{
+    (byte where value == 3) Category;
+    (byte where value == 1) Action;
+    byte DialogToken;
+    ushort Status;
+    BlockAckParameterSet BlockAckParameterSet;
+    ushort BlockAckTimeoutValue;
+}
+
+// 802.11 section 7.4.4.3 DELBA
+type DELBA
+{
+    (byte where value == 3) Category;
+    (byte where value == 2) Action;
+    DELBAParameterSet DELBAParameterSet;
+    ushort Reason;
+}
+
+// 802.11 7.3.1.16 DELBA Parameter Set field
+type DELBAParameterSet
+{
+    byte Reserved1 where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved1", "DELBAParameterSet", value);
+    byte TID            with BinaryEncoding{Width = 4};
+    byte BlockAckPolicy with BinaryEncoding{Width = 1};
+    byte Reserved2 where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved2", "DELBAParameterSet", value) with BinaryEncoding{Width = 3};
+}
+
+// 802.11 section 7.4.5 Vendor-specific
+type VendorSpecificFrame
+{
+    (byte where value == 127) Category;
+    binary OUI with BinaryEncoding{Length = 3};
+    binary Content;
+}
+
+//PublicAction
+//pattern PublicAction = WiFi20or40BSSCoexistenceManagement;
+// 802.11n 7.4.7.1a 20/40 BSS Coexistence Management frame format
+type WiFi20or40BSSCoexistenceManagement
+{
+    (byte where value == 4) Category;
+    (byte where value == 0) Action;
+    WiFi20or40BSSCoexistence WiFi20or40BSSCoexistence;
+    optional array<WiFi20and40BSSIntolerantChannelReport> WiFi20and40BSSIntolerantChannelReports;
+}
+
+// 802.11y section 7.4.7.3
+// 802.11w setion 7.4.9a.2
+type DSEEnablement
+{
+    (byte where value in {4, 9}) Category;
+    (byte where value == 1) Action;
+    MacAddress RequesterSTAAddress;
+    MacAddress ResponderSTAAddress;
+    byte Reason;
+    ushort EnablementIdentifier;
+}
+
+// 802.11y section 7.4.7.4
+// 802.11w setion 7.4.9a.3
+type DSEDeEnablement
+{
+    (byte where value in {4, 9}) Category;
+    (byte where value == 2) Action;
+    MacAddress RequesterSTAAddress;
+    MacAddress ResponderSTAAddress;
+    byte Reason;
+}
+
+// 802.11y section 7.4.7.5
+type DSERegisteredLocationAnnouncement
+{
+    (byte where value == 4) Category;
+    (byte where value == 3) Action;
+    DSERLBody Body;
+}
+
+// 802.11y section 7.4.7.6
+// 802.11w setion 7.4.9a.4
+type ExtendedChannelSwitchAnnouncementForAction
+{
+    (byte where value in {4, 9}) Category;
+    (byte where value == 4) Action;
+    byte ChannelSwitchMode;
+    byte NewRegulatoryClass;
+    byte NewChannelNumber;
+    byte ChannelSwitchCount;
+}
+
+// 802.11y section 7.4.7.7
+// 802.11w setion 7.4.9a.5
+type DSEMeasurementRequest
+{
+    (byte where value in {4, 9}) Category;
+    (byte where value == 5) Action;
+    MacAddress RequesterSTAAddress;
+    MacAddress ResponderSTAAddress;
+    byte RegulatoryClass;
+    byte ChannelNumber;
+    ulong MeasurementStartTime;
+    ushort MeasurementDuration;
+}
+
+// 802.11y section 7.4.7.8
+// 802.11w setion 7.4.9a.6
+type DSEMeasurementReport
+{
+    (byte where value in {4, 9}) Category;
+    (byte where value == 6) Action;
+    MacAddress RequesterSTAAddress;
+    MacAddress ResponderSTAAddress;
+    ushort Length;
+    byte RegulatoryClass;
+    byte ChannelNumber;
+    MeasurementReportMode MeasurementReportMode;
+    ulong ActualMeasurementStartTime;
+    ushort MeasurementDuration;
+    MacAddress SaAddress;
+    DSERLBody DSELCI;
+}
+
+// 802.11k section 7.4.7.2
+type MeasurementPilot
+{
+    (byte where value == 4) Category;
+    (byte where value == 7) Action;
+    byte Reserved where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved", "MeasurementPilot", value) with BinaryEncoding{Width = 6};
+    bool ShortSlotTime      with BinaryEncoding{Width = 1};
+    bool SpectrumManagement with BinaryEncoding{Width = 1};
+    ushort CondensedCountryString;
+    byte RegulatoryClass;
+    byte Channel;
+    byte MeasurementPilotInterval;
+    array<SubElementForMeasurementPilot> SubElements;
+}
+
+type SubElementForMeasurementPilot
+{
+    (MultipleBSSID | VendorSpecificInformation) Element;
+}
+
+// 802.11y section 7.4.7.9
+// 802.11w setion 7.4.9a.7
+type DSEPowerConstraint
+{
+    (byte where value in {4, 9}) Category;
+    (byte where value == 8) Action;
+    MacAddress RequesterSTAAddress;
+    MacAddress ResponderSTAAddress;
+    byte Reason;
+    uint LocalPowerConstraint;
+}
+
+// 802.11w section 7.4.7.10 Vendor-specific
+type VendorSpecificForPublic
+{
+    (byte where value == 4) Category;
+    (byte where value == 9) Action;
+    binary OUI with BinaryEncoding{Length = 3};
+    binary Content;
+}
+
+// 802.11k section 7.4.6.1
+type RadioMeasurementRequest
+{
+    (byte where value == 5) Category;
+    (byte where value == 0) Action;
+    byte DialogToken;
+    ushort NumberOfRepetitions;
+    array<MeasurementRequest> MeasurementRequests;
+}
+
+// 802.11k section 7.4.6.2
+type RadioMeasurementReport
+{
+    (byte where value == 5) Category;
+    (byte where value == 1) Action;
+    byte DialogToken;
+    array<MeasurementReport> MeasurementReports;
+}
+
+// 802.11k section 7.4.6.3
+type LinkMeasurementRequest
+{
+    (byte where value == 5) Category;
+    (byte where value == 2) Action;
+    byte DialogToken;
+    byte TransmitPowerUsed;
+    byte MaxTransmitPower;
+    array<VendorSpecificInformation> SubElements;
+}
+
+// 802.11k section 7.4.6.4
+type LinkMeasurementReport
+{
+    (byte where value == 5) Category;
+    (byte where value == 3) Action;
+    byte DialogToken;
+    TPCReport TPCReport;
+    byte ReceiveAntennaID;
+    byte TransmitAntennaID;
+    byte RCPI;
+    byte RSNI;
+    array<VendorSpecificInformation> SubElements;
+}
+
+// 802.11k section 7.4.6.5
+type NeighborReportRequest
+{
+    (byte where value == 5) Category;
+    (byte where value == 4) Action;
+    byte DialogToken;
+    array<SubElementForNeighborReportRequest> SubElements;
+}
+
+type SubElementForNeighborReportRequest
+{
+    (SSID | VendorSpecificInformation) Element;
+}
+
+// 802.11k section 7.4.6.6
+type NeighborReportResponse
+{
+    (byte where value == 5) Category;
+    (byte where value == 5) Action;
+    byte DialogToken;
+    array<NeighborReport> NeighborReports;
+}
+
+// 802.11r section 7.4.8.1
+type FTRequest
+{
+    (byte where value == 6) Category;
+    (byte where value == 1) Action;
+    MacAddress StaAddress;
+    MacAddress TargetAPAddress;
+    optional RSN RSN;
+    MobilityDomain MobilityDomain;
+    optional FastBSSTransition FastBSSTransition;
+}
+
+// 802.11r section 7.4.8.2
+type FTResponse
+{
+    (byte where value == 6) Category;
+    (byte where value == 2) Action;
+    MacAddress StaAddress;
+    MacAddress TargetAPAddress;
+    ushort Status;
+    optional RSN RSN;
+    MobilityDomain MobilityDomain;
+    optional FastBSSTransition FastBSSTransition;
+}
+
+// 802.11r section 7.4.8.3
+type FTConfirm
+{
+    (byte where value == 6) Category;
+    (byte where value == 3) Action;
+    MacAddress StaAddress;
+    MacAddress TargetAPAddress;
+    optional RSN RSN;
+    MobilityDomain MobilityDomain;
+    optional FastBSSTransition FastBSSTransition;
+    optional RICData RICData;
+    optional RICDescriptor RICDescriptor;
+}
+
+// 802.11r section 7.4.8.4
+type FTAck
+{
+    (byte where value == 6) Category;
+    (byte where value == 4) Action;
+    MacAddress StaAddress;
+    MacAddress TargetAPAddress;
+    ushort Status;
+    optional RSN RSN;
+    MobilityDomain MobilityDomain;
+    optional FastBSSTransition FastBSSTransition;
+    optional TimeoutInterval TimeoutInterval;
+    optional RICData RICData;
+    optional RICDescriptor RICDescriptor;
+}
+
+//HTAction
+//pattern HTAction = NotifyChannelWidth |//0
+//SMPowerSave |//1
+//PSMP |//2
+//SetPCOPhase |//3
+//CSI |//4
+//NoncompressedBeamforming |//5
+//CompressedBeamforming |//6
+//ASELIndicesFeedback;//7
+
+// 802.11n section 7.4.10.2 NotifyChannelWidth
+type NotifyChannelWidth
+{
+    (byte where value == 7) Category;
+    (byte where value == 0) Action;
+    byte ChannelWidth;
+}
+
+// 802.11n section 7.4.10.3 SMPowerSave
+type SMPowerSave
+{
+    (byte where value == 7) Category;
+    (byte where value == 1) Action;
+    SMPowerControl SMPowerControl;
+}
+
+// 802.11n 7.3.1.22 SM Power Control field
+type SMPowerControl
+{
+    byte Reserved where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved", "SMPowerControl", value) with BinaryEncoding{Width = 6};
+    byte SMMode             with BinaryEncoding{Width = 1};
+    byte SMPowerSaveEnabled with BinaryEncoding{Width = 1};
+}
+
+// 802.11n section 7.4.10.4 PSMP
+type PSMP
+{
+    (byte where value == 7) Category;
+    (byte where value == 2) Action;
+    PSMPParameterSet PSMPParameterSet;
+    array<PSMPSTAInfo> PSMPSTAInfo with BinaryEncoding{Length = PSMPParameterSet.NSTA};
+}
+
+type PSMPParameterSet
+{
+    byte PSMPSequenceDurationL  with BinaryEncoding{Width = 2};
+    byte MorePSMP               with BinaryEncoding{Width = 1};
+    byte NSTA                   with BinaryEncoding{Width = 5};
+    byte PSMPSequenceDurationH;
+}
+
+type PSMPSTAInfo
+{
+    (PSMPSTAInfoGroupAddressed | PSMPSTAInfoIndividuallyAddressed) Info;
+}
+
+type PSMPSTAInfoGroupAddressed
+{
+    byte PSMPDTTStartOffsetL    with BinaryEncoding{Width = 6};
+    byte STAINFOType where value == 1 with BinaryEncoding{Width = 2};
+    byte PSMPDTTDurationL       with BinaryEncoding{Width = 6};
+    byte PSMPDTTStartOffsetH    with BinaryEncoding{Width = 2};
+    byte PSMPGroupAddressIDL    with BinaryEncoding{Width = 3};
+    byte PSMPDTTDurationH       with BinaryEncoding{Width = 5};
+    byte PSMPGroupAddressIDM;
+    uint PSMPGroupAddressIDH;
+}
+
+type PSMPSTAInfoIndividuallyAddressed
+{
+    byte PSMPDTTStartOffsetL    with BinaryEncoding{Width = 6};
+    byte STAINFOType where value == 2 with BinaryEncoding{Width = 2};
+    byte PSMPDTTDurationL       with BinaryEncoding{Width = 6};
+    byte PSMPDTTStartOffsetH    with BinaryEncoding{Width = 2};
+    byte StaIdL                 with BinaryEncoding{Width = 3};
+    byte PSMPDTTDurationH       with BinaryEncoding{Width = 5};
+    byte StaIdM;
+    byte PSMPUTTStartOffsetL    with BinaryEncoding{Width = 3};
+    byte StaIdH                 with BinaryEncoding{Width = 5};
+    byte PSMPUTTStartOffsetH;
+    byte PSMPUTTDurationL;
+    byte Reserved where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved", "PSMPSTAInfoIndividuallyAddressed", value) with BinaryEncoding{Width = 6};
+    byte PSMPUTTDurationH       with BinaryEncoding{Width = 2};
+}
+
+// 802.11n section 7.4.10.5 SetPCOPhase
+type SetPCOPhase
+{
+    (byte where value == 7) Category;
+    (byte where value == 3) Action;
+    byte PCOPhaseControl;
+}
+
+// 802.11n section 7.4.10.6 CSI
+type CSI
+{
+    (byte where value == 7) Category;
+    (byte where value == 4) Action;
+    MIMOControl MIMOControl;
+    ([|MIMOControl.MIMOControlChannelWidth == 0|] CSIReport[CountIncrease(MIMOControl.NcIndex as uint), CSIReportNbCountTransform(MIMOControl.CoefficientSize as uint), CountIncrease(MIMOControl.NrIndex as uint), CarrierCountTransform20MHz(MIMOControl.Grouping as uint)] | 
+    [|MIMOControl.MIMOControlChannelWidth == 1|] CSIReport[CountIncrease(MIMOControl.NcIndex as uint), CSIReportNbCountTransform(MIMOControl.CoefficientSize as uint), CountIncrease(MIMOControl.NrIndex as uint), CarrierCountTransform40MHz(MIMOControl.Grouping as uint)]) CSIReport;
+}
+
+type MIMOControl
+{
+    byte CoefficientSizeL          with BinaryEncoding{Width = 1};
+    byte Grouping                  with BinaryEncoding{Width = 2};
+    byte MIMOControlChannelWidth   with BinaryEncoding{Width = 1};
+    byte NrIndex                   with BinaryEncoding{Width = 2};
+    byte NcIndex                   with BinaryEncoding{Width = 2};
+    byte Reserved where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved", "MIMOControl", value) with BinaryEncoding{Width = 2};
+    byte RemainingMatrixSegment    with BinaryEncoding{Width = 3};
+    byte CodebookInformation       with BinaryEncoding{Width = 2};
+    byte CoefficientSizeH          with BinaryEncoding{Width = 1};
+    uint SoundingTimestamp;
+}
+
+int get CoefficientSize(this MIMOControl mimo)
+{
+    return mimo.CoefficientSizeH * 2 + mimo.CoefficientSizeL;
+}
+
+type CSIReport[uint NcCount, uint NbCount, uint NrCount, uint CarrierCount]
+{
+    array<byte> SNR with BinaryEncoding{Length = NrCount};
+    array<Matrix[NcCount, NbCount, NrCount]> Matrixes with BinaryEncoding{Length = CarrierCount};
+}
+
+type Matrix[uint NcCount, uint NbCount, uint NrCount]
+{
+    array<Bit> Bits with BinaryEncoding{Length = (3 + 2 * NbCount * NcCount * NrCount)};
+}
+
+uint CountIncrease(uint Input)
+{
+    return Input + 1;
+}
+
+uint CSIReportNbCountTransform(uint Input)
+{
+    if (Input == 0)
+    {
+        return 4;
+    }
+    else if (Input == 1)
+    {
+        return 5;
+    }
+    else if (Input == 2)
+    {
+        return 6;
+    }
+    else if (Input == 3)
+    {
+        return 8;
+    }
+    else
+    {
+        return 0;
+    }
+}
+
+uint CarrierCountTransform20MHz(uint Input)
+{
+    if (Input == 0)
+    {
+        return 56;
+    }
+    else if (Input == 1)
+    {
+        return 30;
+    }
+    else if (Input == 2)
+    {
+        return 16;
+    }
+    else
+    {
+        return 0;
+    }
+}
+
+uint CarrierCountTransform40MHz(uint Input)
+{
+    if (Input == 0)
+    {
+        return 114;
+    }
+    else if (Input == 1)
+    {
+        return 58;
+    }
+    else if (Input == 2)
+    {
+        return 30;
+    }
+    else
+    {
+        return 0;
+    }
+}
+
+type Bit
+{
+    byte Bit with BinaryEncoding{Width = 1};
+}
+
+// 802.11n section 7.4.10.7 NoncompressedBeamforming
+type NoncompressedBeamforming
+{
+    (byte where value == 7) Category;
+    (byte where value == 5) Action;
+    MIMOControl MIMOControl;
+    ((NoncompressedBeamformingReport[CountIncrease(MIMOControl.NcIndex as uint), NoncompressedBeamformingReportNbCountTransform(MIMOControl.CoefficientSize as uint), CountIncrease(MIMOControl.NrIndex as uint), CarrierCountTransform20MHz(MIMOControl.Grouping as uint)] where MIMOControl.MIMOControlChannelWidth == 0) | 
+    (NoncompressedBeamformingReport[CountIncrease(MIMOControl.NcIndex as uint), NoncompressedBeamformingReportNbCountTransform(MIMOControl.CoefficientSize as uint), CountIncrease(MIMOControl.NrIndex as uint), CarrierCountTransform40MHz(MIMOControl.Grouping as uint)] where MIMOControl.MIMOControlChannelWidth == 1)) CSIReport;
+}
+
+type NoncompressedBeamformingReport[uint NcCount, uint NbCount, uint NrCount, uint CarrierCount]
+{
+    array<byte> SNR with BinaryEncoding{Length = NcCount};
+    array<NoncompressedBeamformingFeedbackMatrix[NcCount, NbCount, NrCount]> Matrixes with BinaryEncoding{Length = CarrierCount};
+}
+
+type NoncompressedBeamformingFeedbackMatrix[uint NcCount, uint NbCount, uint NrCount]
+{
+    array<Bit> Bits with BinaryEncoding{Length = 2 * NbCount * NcCount * NrCount};
+}
+
+uint NoncompressedBeamformingReportNbCountTransform(uint Input)
+{
+    if (Input == 0)
+    {
+        return 4;
+    }
+    else if (Input == 1)
+    {
+        return 2;
+    }
+    else if (Input == 2)
+    {
+        return 6;
+    }
+    else if (Input == 3)
+    {
+        return 8;
+    }
+    else
+    {
+        return 0;
+    }
+}
+
+// 802.11n section 7.4.10.8 CompressedBeamforming
+type CompressedBeamforming
+{
+    (byte where value == 7) Category;
+    (byte where value == 6) Action;
+    MIMOControl MIMOControl;
+    ([|MIMOControl.MIMOControlChannelWidth == 0|] CompressedBeamformingReport[CountIncrease(MIMOControl.NcIndex as uint), NaCountTransform(CountIncrease(MIMOControl.NcIndex as uint), CountIncrease(MIMOControl.NrIndex as uint)), CarrierCountTransform20MHz(MIMOControl.Grouping as uint), Bit1Count(MIMOControl.CodebookInformation as uint), Bit2Count(MIMOControl.CodebookInformation as uint)] | 
+    [|MIMOControl.MIMOControlChannelWidth == 1|] CompressedBeamformingReport[CountIncrease(MIMOControl.NcIndex as uint), NaCountTransform(CountIncrease(MIMOControl.NcIndex as uint), CountIncrease(MIMOControl.NrIndex as uint)), CarrierCountTransform40MHz(MIMOControl.Grouping as uint), Bit1Count(MIMOControl.CodebookInformation as uint), Bit2Count(MIMOControl.CodebookInformation as uint)]) CSIReport;
+}
+
+type CompressedBeamformingReport[uint NcCount, uint NaCount, uint Bit1Count, uint Bit2Count, uint CarrierCount]
+{
+    array<byte> SNR with BinaryEncoding{Length = NcCount};
+    array<CompressedBeamformingFeedbackMatrix[NaCount, Bit1Count, Bit2Count]> Matrixes with BinaryEncoding{Length = CarrierCount};
+}
+
+type CompressedBeamformingFeedbackMatrix[uint NaCount, uint Bit1Count, uint Bit2Count]
+{
+    array<Bit> Bits with BinaryEncoding{Length = NaCount * ((Bit1Count + Bit2Count) / 2)};
+}
+
+uint NaCountTransform(uint NcCount, uint NrCount)
+{
+    if (NrCount == 2 && NcCount == 1)
+    {
+        return 2;
+    }
+    else if (NrCount == 2 && NcCount == 2)
+    {
+        return 2;
+    }
+    else if (NrCount == 3 && NcCount == 1)
+    {
+        return 4;
+    }
+    else if (NrCount == 3 && NcCount == 2)
+    {
+        return 6;
+    }
+    else if (NrCount == 3 && NcCount == 3)
+    {
+        return 6;
+    }
+    else if (NrCount == 4 && NcCount == 1)
+    {
+        return 6;
+    }
+    else if (NrCount == 4 && NcCount == 2)
+    {
+        return 10;
+    }
+    else if (NrCount == 4 && NcCount == 3)
+    {
+        return 10;
+    }
+    else if (NrCount == 4 && NcCount == 4)
+    {
+        return 2;
+    }
+    else
+    {
+        return 0;
+    }
+}
+
+uint Bit1Count(uint Input)
+{
+    return Input + 1;
+}
+
+uint Bit2Count(uint Input)
+{
+    return Input + 3;
+}
+
+// 802.11n section 7.4.10.9 ASELIndicesFeedback
+type ASELIndicesFeedback
+{
+    byte Category where value == 7;
+    byte Action where value == 7;
+    byte AntennaSelectionIndices;
+}
+
+// 802.11w section 7.4.9.1
+type SAQueryRequest
+{
+    (byte where value == 8) Category;
+    (byte where value == 0) Action;
+    ushort TransactionIdentifier;
+}
+
+// 802.11w section 7.4.9.2
+type SAQueryResponse
+{
+    (byte where value == 8) Category;
+    (byte where value == 1) Action;
+    ushort TransactionIdentifier;
+}
+
+// 802.11 section 7.3.1.4
+type Capability
+{
+    bool ChannelAgility     with BinaryEncoding{Width = 1};
+    bool PBCC               with BinaryEncoding{Width = 1};
+    bool ShortPreamble      with BinaryEncoding{Width = 1};
+    bool Privacy            with BinaryEncoding{Width = 1};
+    bool CFPollRequest      with BinaryEncoding{Width = 1};
+    bool CFPollable         with BinaryEncoding{Width = 1};
+    bool IBSS               with BinaryEncoding{Width = 1};
+    bool ESS                with BinaryEncoding{Width = 1};
+    bool ImmediateBlockAck  with BinaryEncoding{Width = 1};
+    bool DelayedBlockAck    with BinaryEncoding{Width = 1};
+    bool DSSSOFDM           with BinaryEncoding{Width = 1};
+    bool RadioMeasurement   with BinaryEncoding{Width = 1};
+    bool APSD               with BinaryEncoding{Width = 1};
+    bool ShortSlotTime      with BinaryEncoding{Width = 1};
+    bool QoS                with BinaryEncoding{Width = 1};
+    bool SpectrumManagement with BinaryEncoding{Width = 1};
+}
+
+pattern InformationField =
+SSID |
+SupportedRates |
+FHParameterSet |
+DSParameterSet |
+CFParameterSet |
+TIM |
+IBSSParameterSet |
+Country |
+HoppingPatternParameters |
+HoppingPatternTable |
+Request |
+BSSLoad |
+EDCAParameterSet |
+TSPEC |
+TCLAS |
+Schedule |
+ChallengeText |
+PowerConstraint |
+PowerCapability |
+TPCRequest |
+TPCReport |
+SupportedChannels |
+ChannelSwitchAnnouncement |
+MeasurementRequest |
+MeasurementReport |
+Quiet |
+IBSSDFS |
+ERPInformation |
+TSDelay |
+TCLASProcessing |
+QoSCapability |
+RSN |
+ExtendedSupportedRates |
+ExtendedCapabilities |
+HTCapabilities |
+HTOperation |
+SecondaryChannelOffset |
+WiFi20or40BSSCoexistence |
+WiFi20and40BSSIntolerantChannelReport |
+OverlappingBSSScanParameters |
+VendorSpecificInformation |
+Reserved |
+APChannelReport |
+NeighborReport |
+RCPI |
+BSSAverageAccessDelay |
+AntennaInformation |
+RSNI |
+MeasurementPilotTransmissionInformation |
+BSSAvailableAdmissionCapacity |
+BSSACAccessDelay |
+RRMEnabledCapabilities |
+MultipleBSSID |
+MobilityDomain |
+TimeoutInterval |
+RICData |
+RICDescriptor |
+DSERegisteredLocation |
+SupportedRegulatoryClasses |
+ExtendedChannelSwitchAnnouncement |
+ManagementMicInformation;
+
+//Information elements
+// 802.11 section 7.3.2.1
+type SSID
+{
+    (byte where value == 0) ElementID;
+    (byte where value >=0 && value <= 32) Length;
+    optional [|Length > 0|]string SSID with BinaryEncoding{Length = Length};
+}
+
+// 802.11 section 7.3.2.2
+type SupportedRates
+{
+    (byte where value == 1) ElementID;
+    (byte where value >=1 && value <= 8) Length;
+    binary SupportedRates with BinaryEncoding{Length = Length};
+}
+
+// 802.11 section 7.3.2.3
+type FHParameterSet
+{
+    (byte where value == 2) ElementID;
+    (byte where value == 5) Length;
+    ushort DwellTime;
+    byte HopSet;
+    byte HopPattern;
+    byte HopIndex;
+}
+
+// 802.11 section 7.3.2.4
+type DSParameterSet
+{
+    (byte where value == 3) ElementID;
+    (byte where value == 1) Length;
+    byte CurrentChannel;
+}
+
+// 802.11 section 7.3.2.5
+type CFParameterSet
+{
+    (byte where value == 4) ElementID;
+    (byte where value == 6) Length;
+    byte CFPCount;
+    byte CFPPeriod;
+    ushort CFPMaxDuration;
+    ushort CFPDurRemaining;
+}
+
+// 802.11 section 7.3.2.6
+type TIM
+{
+    (byte where value == 5) ElementID;
+    byte Length;
+    byte DTIMCount;
+    byte DTIMPeriod;
+    BitmapControl BitmapControl;
+    binary VirtualBitmap with BinaryEncoding{Length = (Length - 3) as uint};
+}
+
+type BitmapControl
+{
+    byte BitmapOffset     with BinaryEncoding{Width = 7};
+    bool TrafficIndicator with BinaryEncoding{Width = 1};
+}
+
+// 802.11 section 7.3.2.7
+type IBSSParameterSet
+{
+    (byte where value == 6) ElementID;
+    (byte where value == 2) Length;
+    ushort ATIMWindow;
+}
+
+// 802.11 section 7.3.2.9
+type Country
+{
+    (byte where value == 7) ElementID;
+    (byte where value >= 6) Length;
+    string CountryString with BinaryEncoding{Length = 3};
+    array<Channel> Channel with BinaryEncoding{Length = ((Length - 3) / 3) as uint};
+    optional [|(Length - 1) % 3 == 0|] byte Padding;
+}
+
+type Channel
+{
+    byte FirstChannelNumber;
+    byte NumChannels;
+    byte MaxTransmitPowerLevel;
+}
+
+// 802.11 section 7.3.2.10
+type HoppingPatternParameters
+{
+    (byte where value == 8) ElementID;
+    (byte where value == 2) Length;
+    byte PrimeRadix;
+    byte NumChannels;
+}
+
+// 802.11 section 7.3.2.11
+type HoppingPatternTable
+{
+    (byte where value == 9) ElementID;
+    byte Length;
+    byte Flag;
+    byte NumSets;
+    byte Modulus;
+    byte Offset;
+    optional [|Flag == 1|] binary RandomTable with BinaryEncoding{Length = (Length - 4) as uint};
+}
+
+// 802.11 section 7.3.2.12
+type Request
+{
+    (byte where value == 10) ElementID;
+    byte Length;
+    array<byte> RequestedElementID with BinaryEncoding{Length = Length};
+}
+
+// 802.11 section 7.3.2.28
+type BSSLoad
+{
+    (byte where value == 11) ElementID;
+    (byte where value == 5) Length;
+    ushort STACount;
+    byte ChannelUtilization;
+    ushort AvailableAdmissionCapacit;
+}
+
+// 802.11 section 7.3.2.29
+type EDCAParameterSet
+{
+    (byte where value == 12) ElementID;
+    (byte where value == 18) Length;
+    (QoSInfoAP | QoSInfoNonAP) QoSInfo;
+    byte Reserved where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved", "EDCAParameterSet", value);
+    EDCAParameterRecord ACBEParameterRecord;
+    EDCAParameterRecord ACBKParameterRecord;
+    EDCAParameterRecord ACVIParameterRecord;
+    EDCAParameterRecord ACVOParameterRecord;
+}
+
+// 802.11 section 7.3.1.17 STA is an AP
+type QoSInfoAP
+{
+    byte Reserved where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved", "QoSInfoAP", value) with BinaryEncoding{Width = 1};
+    byte TXOPRequest                 with BinaryEncoding{Width = 1};
+    byte QueueRequest                with BinaryEncoding{Width = 1};
+    byte QAck                        with BinaryEncoding{Width = 1};
+    byte EDCAParameterSetUpdateCount with BinaryEncoding{Width = 4};
+}
+
+// 802.11 section 7.3.1.17 non-AP STA
+type QoSInfoNonAP
+{
+    byte MoreDataAck    with BinaryEncoding{Width = 1};
+    byte MaxSPLength    with BinaryEncoding{Width = 2};
+    byte QAck           with BinaryEncoding{Width = 1};
+    byte ACBEUAPSD      with BinaryEncoding{Width = 1};
+    byte ACBKUAPSD      with BinaryEncoding{Width = 1};
+    byte ACVIUAPSD      with BinaryEncoding{Width = 1};
+    byte ACVOUAPSD      with BinaryEncoding{Width = 1};
+}
+
+type EDCAParameterRecord
+{
+    byte Reserved where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved", "EDCAParameterRecord", value) with BinaryEncoding{Width = 1};
+    byte ACI       with BinaryEncoding{Width = 2};
+    byte ACM       with BinaryEncoding{Width = 1};
+    byte AIFSN     with BinaryEncoding{Width = 4};
+    byte ECWmax    with BinaryEncoding{Width = 4};
+    byte ECWMin    with BinaryEncoding{Width = 4};
+    ushort TXOPLimit;
+}
+
+// 802.11 section 7.3.2.30
+type TSPEC
+{
+    (byte where value == 13) ElementID;
+    (byte where value == 55) Length;
+    TSInfo TSInfo;
+    ushort NominalMSDUSize;
+    ushort MaximumMSDUSize;
+    uint MinimumServiceInterval;
+    uint MaximumServiceInterval;
+    uint InactivityInterval;
+    uint SuspensionInterval;
+    uint ServiceStartTime;
+    uint MinimumDataRate;
+    uint MeanDataRate;
+    uint PeakDataRate;
+    uint BurstSize;
+    uint DelayBound;
+    uint MinimumPHYRate;
+    ushort SurplusBandwidthAllowance;
+    ushort MediumTime;
+}
+
+type TSInfo
+{
+    byte AccessPolicyL   with BinaryEncoding{Width = 1};
+    byte Direction       with BinaryEncoding{Width = 2};
+    byte TSID            with BinaryEncoding{Width = 4};
+    byte TrafficType     with BinaryEncoding{Width = 1};
+    byte TSInfoAckPolicy with BinaryEncoding{Width = 2};
+    byte UserPriority    with BinaryEncoding{Width = 3};
+    byte APSD            with BinaryEncoding{Width = 1};
+    byte Aggregation     with BinaryEncoding{Width = 1};
+    byte AccessPolicyH   with BinaryEncoding{Width = 1};
+    byte Reserved where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved", "TSInfo", value) with BinaryEncoding{Width = 7};
+    byte Schedule        with BinaryEncoding{Width = 1};
+}
+
+// 802.11 section 7.3.2.31
+type TCLAS
+{
+    (byte where value == 14) ElementID;
+    byte Length;
+    byte UserPriority;
+    (EthernetParameters | TCPUDPIPParametersIPv4 | TCPUDPIPParametersIPv6 | IEEE8021DQParameters) FrameClassifier;
+}
+
+type EthernetParameters
+{
+    (byte where value == 0) ClassifierType;
+    byte ClassifierMask;
+    MacAddress sourceaddress;
+    MacAddress destinationaddress;
+    ushort Type;
+}
+
+type TCPUDPIPParametersIPv4
+{
+    (byte where value == 1) ClassifierType;
+    byte ClassifierMask;
+    (byte where value == 4) Version;
+    IPv4Address SourceIPAddress;
+    IPv4Address DestinationIPAddress;
+    ushort SourcePort;
+    ushort DestinationPort;
+    byte DSCP;
+    byte Protocol;
+    byte Reserved where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved", "TCPUDPIPParametersIPv4", value);
+}
+
+type TCPUDPIPParametersIPv6
+{
+    (byte where value == 1) ClassifierType;
+    byte ClassifierMask;
+    (byte where value == 6) Version;
+    IPv6Address SourceIPAddress;
+    IPv6Address DestinationIPAddress;
+    ushort SourcePort;
+    ushort DestinationPort;
+    binary FlowLabel with BinaryEncoding{Length = 3};
+}
+
+type IEEE8021DQParameters
+{
+    (byte where value == 2) ClassifierType;
+    byte ClassifierMask;
+    ushort WiFi8021QTagType;
+}
+
+// 802.11 section 7.3.2.34
+type Schedule
+{
+    (byte where value == 15) ElementID;
+    (byte where value == 12) Length;
+    ScheduleInfo ScheduleInfo;
+    uint ServiceStartTime;
+    uint ServiceInterval;
+    ushort SpecificationInterval;
+}
+
+type ScheduleInfo
+{
+    byte Reserved1 where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved1", "ScheduleInfo", value) with BinaryEncoding{Width = 1};
+    byte Direction   with BinaryEncoding{Width = 2};
+    byte TSID        with BinaryEncoding{Width = 4};
+    bool Aggregation with BinaryEncoding{Width = 1};
+    byte Reserved2 where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved2", "ScheduleInfo", value);
+}
+
+// 802.11 section 7.3.2.8
+type ChallengeText
+{
+    (byte where value == 16) ElementID;
+    byte Length;
+    binary ChallengeText with BinaryEncoding{Length = Length};
+}
+
+// 802.11 section 7.3.2.15
+type PowerConstraint
+{
+    (byte where value == 32) ElementID;
+    (byte where value == 1) Length;
+    byte PowerConstraint;
+}
+
+// 802.11 section 7.3.2.16
+type PowerCapability
+{
+    (byte where value == 33) ElementID;
+    (byte where value == 2) Length;
+    byte MinimumTransmitPowerCapability;
+    byte MaximumTransmitPowerCapability;
+}
+
+// 802.11 section 7.3.2.17
+type TPCRequest
+{
+    (byte where value == 34) ElementID;
+    (byte where value == 0) Length;
+}
+
+// 802.11 section 7.3.2.18
+type TPCReport
+{
+    (byte where value == 35) ElementID;
+    (byte where value == 2) Length;
+    byte TransmitPower;
+    byte LinkMargin;
+}
+
+// 802.11 section 7.3.2.19
+type SupportedChannels
+{
+    (byte where value == 36) ElementID;
+    byte Length;
+    array<SupportedChannel> SupportedChannel with BinaryEncoding{Length = (Length / 2) as uint};
+}
+
+type SupportedChannel
+{
+    byte FirstChannelNumber;
+    byte NumChannels;
+}
+
+// 802.11 section 7.3.2.20
+type ChannelSwitchAnnouncement
+{
+    (byte where value == 37) ElementID;
+    (byte where value == 3) Length;
+    byte ChannelSwitchMode;
+    byte NewChannelNumber;
+    byte ChannelSwitchCount;
+}
+
+// 802.11 section 7.3.2.21
+type MeasurementRequest
+{
+    (byte where value == 38) ElementID;
+    byte Length;
+    byte MeasurementToken;
+    MeasurementRequestMode MeasurementRequestMode;
+    (SpectrumManagement | ChannelLoadRequest | NoiseHistogramRequest | BeaconRequest
+    | FrameRequest | StaStatisticsRequest | LocationConfigurationInformationRequest
+    | TransmitStreamCategoryMeasurementRequest | MeasurementPauseRequest) MeasurementRequest;
+}
+
+// 802.11 802.11k Figure 7-59—Measurement Request Mode field
+type MeasurementRequestMode
+{
+    byte Reserved where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved", "MeasurementRequestMode", value) with BinaryEncoding{Width = 3};
+    bool DurationMandatory with BinaryEncoding{Width = 1};
+    bool Report            with BinaryEncoding{Width = 1};
+    bool Request           with BinaryEncoding{Width = 1};
+    bool Enable            with BinaryEncoding{Width = 1};
+    bool Parallel          with BinaryEncoding{Width = 1};
+}
+
+// 802.11 section 7.3.2.21.1
+type SpectrumManagement
+{
+    (byte where value in {0, 1, 2}) MeasurementType;
+    byte ChannelNumber;
+    ulong MeasurementStartTime;
+    ushort MeasurementDuration;
+}
+
+// 802.11k section 7.3.2.21.4
+type ChannelLoadRequest
+{
+    (byte where value == 3) MeasurementType;
+    byte RegulatoryClass;
+    byte ChannelNumber;
+    ushort RandomizationInterval;
+    ushort MeasurementDuration;
+    array<SubElementForChannelLoadRequest> SubElements;
+}
+
+type SubElementForChannelLoadRequest
+{
+    (ChannelLoadReportingInformation | VendorSpecificInformation) Element;
+}
+
+type ChannelLoadReportingInformation
+{
+    (byte where value == 1) SubElementID;
+    (byte where value == 2) Length;
+    byte ReportingCondition;
+    byte ChannelLoadReferenceValue;
+}
+
+// 802.11k section 7.3.2.21.5
+type NoiseHistogramRequest
+{
+    (byte where value == 4) MeasurementType;
+    byte RegulatoryClass;
+    byte ChannelNumber;
+    ushort RandomizationInterval;
+    ushort MeasurementDuration;
+    array<SubElementForNoiseHistogramRequest> SubElements;
+}
+
+type SubElementForNoiseHistogramRequest
+{
+    (NoiseHistogramReportingInformation | VendorSpecificInformation) Element;
+}
+
+type NoiseHistogramReportingInformation
+{
+    (byte where value == 1) SubElementID;
+    (byte where value == 2) Length;
+    byte ReportingCondition;
+    byte ANPIReferenceValue;
+}
+
+// 802.11k section 7.3.2.21.6
+type BeaconRequest
+{
+    (byte where value == 5) MeasurementType;
+    byte RegulatoryClass;
+    byte ChannelNumber;
+    ushort RandomizationInterval;
+    ushort MeasurementDuration;
+    byte MeasurementMode;
+    MacAddress BSSID;
+    array<SubElementForBeaconRequest> SubElements;
+}
+
+type SubElementForBeaconRequest
+{
+    (SSID | BeaconReportingInformation | ReportingDetail | Request | APChannelReport | VendorSpecificInformation) Element;
+}
+
+type BeaconReportingInformation
+{
+    (byte where value == 1) SubElementID;
+    (byte where value == 2) Length;
+    byte ReportingCondition;
+    byte ThresholdOffsetReferenceValue;
+}
+
+type ReportingDetail
+{
+    (byte where value == 2) SubElementID;
+    (byte where value == 1) Length;
+    byte DetailValue;
+}
+
+// 802.11k section 7.3.2.21.7
+type FrameRequest
+{
+    (byte where value == 6) MeasurementType;
+    byte RegulatoryClass;
+    byte ChannelNumber;
+    ushort RandomizationInterval;
+    ushort MeasurementDuration;
+    byte FrameRequestType;
+    MacAddress Address;
+    array<VendorSpecificInformation> SubElements;
+}
+
+// 802.11k section 7.3.2.21.8
+type StaStatisticsRequest
+{
+    (byte where value == 7) MeasurementType;
+    MacAddress PeerAddress;
+    ushort RandomizationInterval;
+    ushort MeasurementDuration;
+    byte GroupIdentity;
+    array<VendorSpecificInformation> SubElements;
+}
+
+// 802.11k section 7.3.2.21.9
+type LocationConfigurationInformationRequest
+{
+    (byte where value == 8) MeasurementType;
+    byte LocationSubject;
+    byte LatitudeRequestedResolution;
+    byte LongitudeRequestedResolution;
+    byte AltitudeRequestedResolution;
+    array<SubElementForLCIRequest> SubElements;
+}
+
+type SubElementForLCIRequest
+{
+    (AzimuthRequest | VendorSpecificInformation) Element;
+}
+
+type AzimuthRequest
+{
+    (byte where value == 1) SubElementID;
+    (byte where value == 1) Length;
+    byte AzimuthRequest;
+}
+
+// 802.11k section 7.3.2.21.10
+type TransmitStreamCategoryMeasurementRequest
+{
+    (byte where value == 9) MeasurementType;
+    ushort RandomizationInterval;
+    ushort MeasurementDuration;
+    MacAddress PeerAddress;
+    byte TrafficIdentifier;
+    byte Range;
+    array<SubElementForTSCMRequest> SubElements;
+}
+
+type SubElementForTSCMRequest
+{
+    (TriggeredReporting | VendorSpecificInformation) Element;
+}
+
+type TriggeredReporting
+{
+    (byte where value == 1) SubElementID;
+    (byte where value == 6) Length;
+    byte Reserved where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved", "TriggeredReporting", value) with BinaryEncoding{Width = 5};
+    byte Delay            with BinaryEncoding{Width = 1};
+    byte Consecutive      with BinaryEncoding{Width = 1};
+    byte Average          with BinaryEncoding{Width = 1};
+    byte AverageErrorThreshold;
+    byte ConsecutiveErrorThreshold;
+    byte DelayedMSDUCount with BinaryEncoding{Width = 6};
+    byte DelayedMSDURange with BinaryEncoding{Width = 2};
+    byte MeasurementCount;
+    byte TriggerTimeout;
+}
+
+// 802.11k section 7.3.2.21.11
+type MeasurementPauseRequest
+{
+    (byte where value == 255) MeasurementType;
+    ushort PauseTime;
+    array<VendorSpecificInformation> SubElements;
+}
+
+// 802.11 section 7.3.2.22
+type MeasurementReport
+{
+    (byte where value == 39) ElementID;
+    byte Length;
+    byte MeasurementToken;
+    MeasurementReportMode MeasurementReportMode;
+    optional [|MeasurementReportMode.Refused && MeasurementReportMode.Incapable && MeasurementReportMode.Late|]
+    (BasicReport | CCAReport | RPIHistogramReport | ChannelLoadReport | NoiseHistogramReport
+    | BeaconReport | FrameReport | STAStatisticsReport | LCIReport | TransmitStreamCategoryMeasurementReport) MeasurementReport;
+}
+
+type MeasurementReportMode
+{
+    byte Reserved where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved", "MeasurementReportMode", value) with BinaryEncoding{Width = 5};
+    bool Refused   with BinaryEncoding{Width = 1};
+    bool Incapable with BinaryEncoding{Width = 1};
+    bool Late      with BinaryEncoding{Width = 1};
+}
+
+type BasicReport
+{
+    (byte where value == 0) MeasurementType;
+    byte ChannelNumber;
+    ulong MeasurementStartTime;
+    ushort MeasurementDuration;
+    BasicReportMap Map;
+}
+
+type BasicReportMap
+{
+    byte Reserved where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved", "BasicReportMap", value) with BinaryEncoding{Width = 3};
+    byte Unmeasured         with BinaryEncoding{Width = 1};
+    byte Radar              with BinaryEncoding{Width = 1};
+    byte UnidentifiedSignal with BinaryEncoding{Width = 1};
+    byte OFDMPreamble       with BinaryEncoding{Width = 1};
+    byte BSS                with BinaryEncoding{Width = 1};
+}
+
+type CCAReport
+{
+    (byte where value == 1) MeasurementType;
+    byte ChannelNumber;
+    ulong MeasurementStartTime;
+    ushort MeasurementDuration;
+    byte CCABusyFraction;
+}
+
+type RPIHistogramReport
+{
+    (byte where value == 2) MeasurementType;
+    byte ChannelNumber;
+    ulong MeasurementStartTime;
+    ushort MeasurementDuration;
+    byte RPI0Density;
+    byte RPI1Density;
+    byte RPI2Density;
+    byte RPI3Density;
+    byte RPI4Density;
+    byte RPI5Density;
+    byte RPI6Density;
+    byte RPI7Density;
+}
+
+// 802.11k section 7.3.2.22.4
+type ChannelLoadReport
+{
+    (byte where value == 3) MeasurementType;
+    byte RegulatoryClass;
+    byte ChannelNumber;
+    ulong ActualMeasurementStartTime;
+    ushort MeasurementDuration;
+    byte ChannelLoad;
+    array<VendorSpecificInformation> SubElements;
+}
+
+// 802.11k section 7.3.2.22.5
+type NoiseHistogramReport
+{
+    (byte where value == 4) MeasurementType;
+    byte RegulatoryClass;
+    byte ChannelNumber;
+    ulong ActualMeasurementStartTime;
+    ushort MeasurementDuration;
+    byte AntennaID;
+    byte ANPI;
+    byte IPI0Density;
+    byte IPI1Density;
+    byte IPI2Density;
+    byte IPI3Density;
+    byte IPI4Density;
+    byte IPI5Density;
+    byte IPI6Density;
+    byte IPI7Density;
+    byte IPI8Density;
+    byte IPI9Density;
+    byte IPI10Density;
+    array<VendorSpecificInformation> SubElements;
+}
+
+// 802.11k section 7.3.2.22.6
+type BeaconReport
+{
+    (byte where value == 5) MeasurementType;
+    byte RegulatoryClass;
+    byte ChannelNumber;
+    ulong ActualMeasurementStartTime;
+    ushort MeasurementDuration;
+    byte ReportedFrameType with BinaryEncoding{Width = 1};
+    byte CondensedPHYType with BinaryEncoding{Width = 7};
+    byte RCPI;
+    byte RSNI;
+    MacAddress BSSID;
+    byte AntennaID;
+    uint ParentTSF;
+    array<SubElementForBeaconReport> SubElements;
+}
+
+type SubElementForBeaconReport
+{
+    (ReportedFrameBody | VendorSpecificInformation) Element;
+}
+
+type ReportedFrameBody
+{
+    (byte where value == 1) SubElementID;
+    byte Length;
+    binary Body with BinaryEncoding{Length = Length};
+}
+
+// 802.11k section 7.3.2.22.7
+type FrameReport
+{
+    (byte where value == 6) MeasurementType;
+    byte RegulatoryClass;
+    byte ChannelNumber;
+    ulong ActualMeasurementStartTime;
+    ushort MeasurementDuration;
+    array<SubElementForFrameReport> SubElements;
+}
+
+type SubElementForFrameReport
+{
+    (FrameCountReport | VendorSpecificInformation) Element;
+}
+
+type FrameCountReport
+{
+    (byte where value == 1) SubElementID;
+    (byte where value % 19 == 0) Length;
+    array<FrameReportEntry> FrameReportEntries with BinaryEncoding{Length = (Length / 19) as uint};
+}
+
+type FrameReportEntry
+{
+    MacAddress TransmitAddress;
+    MacAddress BSSID;
+    byte PHYType;
+    byte AverageRCPI;
+    byte LastRSNI;
+    byte LastRCPI;
+    byte AntennaID;
+    ushort FrameCount;
+}
+
+// 802.11k section 7.3.2.22.8
+type STAStatisticsReport
+{
+    (byte where value == 7) MeasurementType;
+    ushort MeasurementDuration;
+    byte GroupIdentity;
+    ([|GroupIdentity == 0|] Dot11Counters | [|GroupIdentity == 1|] Dot11MACStatistics | [|GroupIdentity == 10|] Dot11BSSAverageAccessDelay
+    | [|GroupIdentity in {2, 3, 4, 5, 6, 7, 8, 9}|] Dot11QosCounters) StatisticsGroupData;
+    array<VendorSpecificInformation> SubElements;
+}
+
+type Dot11Counters
+{
+    uint Dot11TransmittedFragmentCount;
+    uint Dot11MulticastTransmittedFrameCount;
+    uint Dot11FailedCount;
+    uint Dot11ReceivedFragmentCount;
+    uint Dot11MulticastReceivedFrameCount;
+    uint Dot11FCSErrorCount;
+    uint Dot11TransmittedFrameCount;
+}
+
+type Dot11MACStatistics
+{
+    uint Dot11RetryCount;
+    uint Dot11MultipleRetryCount;
+    uint Dot11FrameDuplicateCount;
+    uint Dot11RTSSuccessCount;
+    uint Dot11RTSFailureCount;
+    uint Dot11ACKFailureCount;
+}
+
+type Dot11QosCounters
+{
+    uint Dot11QosTransmittedFragmentCount;
+    uint Dot11QosFailedCount;
+    uint Dot11QosRetryCount;
+    uint Dot11QosMultipleRetryCount;
+    uint Dot11QosFrameDuplicateCount;
+    uint Dot11QosRTSSuccessCount;
+    uint Dot11QosRTSFailureCount;
+    uint Dot11QosACKFailureCount;
+    uint Dot11QosReceivedFragmentCount;
+    uint Dot11QosTransmittedFrameCount;
+    uint Dot11QosDiscardedFrameCount;
+    uint Dot11QosMPDUsReceivedCount;
+    uint Dot11QosRetriesReceivedCount;
+}
+
+type Dot11BSSAverageAccessDelay
+{
+    uint Dot11STAStatisticsAPAverageAccessDelay;
+    uint Dot11STAStatisticsAverageAccessDelayBestEffort;
+    uint Dot11STAStatisticsAverageAccessDelayBackGround;
+    uint Dot11STAStatisticsAverageAccessDelayVideo;
+    uint Dot11STAStatisticsAverageAccessDelayVoice;
+    uint Dot11STAStatisticsStationCount;
+    uint Dot11STAStatisticsChannelUtilization;
+}
+
+// 802.11k section 7.3.2.22.9
+type LCIReport
+{
+    byte ElementID;
+    byte Length;
+    byte LatitudeFractionL     with BinaryEncoding{Width = 2};
+    byte LatitudeResolution    with BinaryEncoding{Width = 6};
+    ushort LatitudeFractionM;
+    byte LatitudeIntegerL      with BinaryEncoding{Width = 1};
+    byte LatitudeFractionH     with BinaryEncoding{Width = 7};
+    byte LatitudeIntegerH;
+    byte LongitudeFractionL    with BinaryEncoding{Width = 2};
+    byte LongitudeResolution   with BinaryEncoding{Width = 6};
+    ushort LongitudeFractionM;
+    byte LongitudeIntegerL     with BinaryEncoding{Width = 1};
+    byte LongitudeFractionH    with BinaryEncoding{Width = 7};
+    byte LongitudeIntegerH;
+    byte AltitudeResolutionL   with BinaryEncoding{Width = 4};
+    byte AltitudeType          with BinaryEncoding{Width = 4};
+    byte AltitudeFractionL     with BinaryEncoding{Width = 6};
+    byte AltitudeResolutionH   with BinaryEncoding{Width = 2};
+    byte AltitudeIntegerL      with BinaryEncoding{Width = 6};
+    byte AltitudeFractionH     with BinaryEncoding{Width = 2};
+    ushort AltitudeIntegerH;
+    byte Datum;
+    array<SubElementForLCIReport> SubElements;
+}
+
+type SubElementForLCIReport
+{
+    (AzimuthReport | VendorSpecificInformation) Element;
+}
+
+type AzimuthReport
+{
+    (byte where value == 1) SubElementID;
+    (byte where value == 2) Length;
+    byte AzimuthL          with BinaryEncoding{Width = 1};
+    byte AzimuthResolution with BinaryEncoding{Width = 4};
+    byte AzimuthType       with BinaryEncoding{Width = 1};
+    byte Reserved where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved", "AzimuthReport", value) with BinaryEncoding{Width = 2};
+    byte AzimuthH;
+}
+
+// 802.11k section 7.3.2.22.10
+type TransmitStreamCategoryMeasurementReport
+{
+    (byte where value == 9) MeasurementType;
+    ulong ActualMeasurementStartTime;
+    ushort MeasurementDuration;
+    MacAddress PeerAddress;
+    byte Trafficidentifier;
+    byte Reserved where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved", "TransmitStreamCategoryMeasurementReport", value) with BinaryEncoding{Width = 5};
+    byte DelayTrigger       with BinaryEncoding{Width = 1};
+    byte ConsecutiveTrigger with BinaryEncoding{Width = 1};
+    byte AverageTrigger     with BinaryEncoding{Width = 1};
+    uint TransmittedMSDUCount;
+    uint MSDUDiscardedCount;
+    uint MSDUFailedCount;
+    uint MSDUMultipleRetryCount;
+    uint QoSCFPollsLostCount;
+    uint AverageQueueDelay;
+    uint AverageTransmitDelay;
+    byte Bin0Range;
+    uint Bin0;
+    uint Bin1;
+    uint Bin2;
+    uint Bin3;
+    uint Bin4;
+    uint Bin5;
+    array<VendorSpecificInformation> SubElements;
+}
+
+// 802.11 section 7.3.2.23
+type Quiet
+{
+    (byte where value == 40) ElementID;
+    (byte where value == 6) Length;
+    byte QuietCount;
+    byte QuietPeriod;
+    ushort QuietDuration;
+    ushort QuietOffset;
+}
+
+// 802.11 section 7.3.2.24
+type IBSSDFS
+{
+    (byte where value == 41) ElementID;
+    byte Length;
+    MacAddress DFSOwner;
+    byte DfsRecoveryInterval;
+    array<IBSSDFSChannelMap> ChannelMap with BinaryEncoding{Length = ((Length - 7) / 2) as uint};
+}
+
+type IBSSDFSChannelMap
+{
+    byte ChannelNumber;
+    byte Map;
+}
+
+// 802.11 section 7.3.2.13
+type ERPInformation
+{
+    (byte where value == 42) ElementID;
+    (byte where value == 1) Length;
+    byte Reserved where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved", "ERPInformation", value) with BinaryEncoding{Width = 5};
+    bool BarkerPreambleMode with BinaryEncoding{Width = 1};
+    bool UseProtection      with BinaryEncoding{Width = 1};
+    bool NonERPPresent      with BinaryEncoding{Width = 1};
+}
+
+// 802.11 section 7.3.2.32
+type TSDelay
+{
+    (byte where value == 43) ElementID;
+    (byte where value == 4) Length;
+    uint Delay;
+}
+
+// 802.11 section 7.3.2.33
+type TCLASProcessing
+{
+    (byte where value == 44) ElementID;
+    (byte where value == 1) Length;
+    byte Processing;
+}
+
+// 802.11n section 7.3.2.56
+type HTCapabilities
+{
+    (byte where value == 45) ElementID;
+    (byte where value == 26) Length;
+    HTCapabilitiesInfo HTCapabilitiesInfo;
+    AMPDUParameters AMPDUParameters;
+    MCSSet SupportedMCSSet;
+    HTExtendedCapabilities HTExtendedCapabilities;
+    TransmitBeamformingCapabilities TransmitBeamformingCapabilities;
+    ASELCapabilities ASELCapabilities;
+}
+
+type HTCapabilitiesInfo
+{
+    bool TxSTBC                     with BinaryEncoding{Width = 1};
+    bool ShortGIfor40MHz            with BinaryEncoding{Width = 1};
+    bool ShortGIfor20MHz            with BinaryEncoding{Width = 1};
+    bool HTGreenfield               with BinaryEncoding{Width = 1};
+    byte SMPowerSave                with BinaryEncoding{Width = 2};
+    byte SupportedChannelWidthSet   with BinaryEncoding{Width = 1};
+    byte LDPCCodingCapability       with BinaryEncoding{Width = 1};
+    byte LSIGTXOPProtectionSupport  with BinaryEncoding{Width = 1};
+    byte FortyMHzIntolerant         with BinaryEncoding{Width = 1};
+    byte Reserved where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved", "HTCapabilitiesInfo", value) with BinaryEncoding{Width = 1};
+    byte DSSSCCKModein40MHz         with BinaryEncoding{Width = 1};
+    byte MaximumAMSDULength         with BinaryEncoding{Width = 1};
+    byte HTDelayedBlockAck          with BinaryEncoding{Width = 1};
+    byte RxSTBC                     with BinaryEncoding{Width = 2};
+}
+
+type AMPDUParameters
+{
+    byte Reserved where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved", "AMPDUParameters", value) with BinaryEncoding{Width = 3};
+    byte MinimumMPDUStartSpacing    with BinaryEncoding{Width = 3};
+    byte MaximumAMPDULengthExponet  with BinaryEncoding{Width = 2};
+}
+
+type HTExtendedCapabilities
+{
+    byte Reserved where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved", "HTExtendedCapabilities", value) with BinaryEncoding{Width = 5};
+    byte PCOTransitionTime  with BinaryEncoding{Width = 2};
+    byte PCO                with BinaryEncoding{Width = 1};
+    byte Reserved1 where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved1", "HTExtendedCapabilities", value) with BinaryEncoding{Width = 4};
+    byte RDResponder        with BinaryEncoding{Width = 1};
+    byte HTCSupport         with BinaryEncoding{Width = 1};
+    byte MCSFeedback        with BinaryEncoding{Width = 2};
+}
+
+type TransmitBeamformingCapabilities
+{
+    byte Calibration                                                with BinaryEncoding{Width = 2};
+    byte ImplicitTransmitBeamformingCapable                         with BinaryEncoding{Width = 1};
+    byte TransmitNDPCapable                                         with BinaryEncoding{Width = 1};
+    byte ReceiveNDPCapable                                          with BinaryEncoding{Width = 1};
+    byte TransmitStaggeredSoundingCapable                           with BinaryEncoding{Width = 1};
+    byte ReceiveStaggeredSoundingCapable                            with BinaryEncoding{Width = 1};
+    byte ImplicitTransmitBeamformingReceivingCapable                with BinaryEncoding{Width = 1};
+    byte ExplicitCompressedBeamformingFeedbackCapableL              with BinaryEncoding{Width = 1};
+    byte ExplicitNoncompressedBeamformingFeedbackCapable            with BinaryEncoding{Width = 2};
+    byte ExplicitTransmitBeamformingCSIFeedback                     with BinaryEncoding{Width = 2};
+    byte ExplicitCompressedSteeringCapable                          with BinaryEncoding{Width = 1};
+    byte ExplicitNoncompressedSteeringCapable                       with BinaryEncoding{Width = 1};
+    byte ExplicitCSITransmitBeamformingCapable                      with BinaryEncoding{Width = 1};
+    byte CompressedSteeringNumberofBeamformerAntennasSupportedL     with BinaryEncoding{Width = 1};
+    byte NoncompressedSteeringNumberofBeamformerAntennasSupported   with BinaryEncoding{Width = 2};
+    byte CSINumberofBeamformerAntennasSupported                     with BinaryEncoding{Width = 2};
+    byte MinimalGrouping                                            with BinaryEncoding{Width = 2};
+    byte ExplicitCompressedBeamformingFeedbackCapableH              with BinaryEncoding{Width = 1};
+    byte Reserved where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved", "TransmitBeamformingCapabilities", value) with BinaryEncoding{Width = 3};
+    byte ChannelEstimationCapability                                with BinaryEncoding{Width = 2};
+    byte CSIMaxNumberofRowsBeamformerSupported                      with BinaryEncoding{Width = 2};
+    byte CompressedSteeringNumberofBeamformerAntennasSupportedH     with BinaryEncoding{Width = 1};
+}
+
+type ASELCapabilities
+{
+    byte Reserved where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved", "ASELCapabilities", value) with BinaryEncoding{Width = 1};
+    byte TransmitSoundingPPDUsCapable                   with BinaryEncoding{Width = 1};
+    byte ReceiveASELCapable                             with BinaryEncoding{Width = 1};
+    byte AntennaIndicesFeedbackCapable                  with BinaryEncoding{Width = 1};
+    byte ExplicitCSIFeedbackCapable                     with BinaryEncoding{Width = 1};
+    byte AntennaIndicesFeedbackBasedTransmitASELCapable with BinaryEncoding{Width = 1};
+    byte ExplicitCSIFeedbackBasedTransmitASELCapable    with BinaryEncoding{Width = 1};
+    byte AntennaSelectionCapable                        with BinaryEncoding{Width = 1};
+}
+
+type MCSSet
+{
+    binary RxMCSBitmask with BinaryEncoding{Length = 10};
+    byte RxHighestSupportedDataRateL;
+    byte Reserved1 where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved1", "MCSSet", value) with BinaryEncoding{Width = 6};
+    byte RxHighestSupportedDataRateH           with BinaryEncoding{Width = 2};
+    byte Reserved2 where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved2", "MCSSet", value) with BinaryEncoding{Width = 3};
+    byte TxUnequalModulationSupported           with BinaryEncoding{Width = 1};
+    byte TxMaximumNumberSpatialStreamsSupported with BinaryEncoding{Width = 2};
+    byte TxRxMCSSetNotEqual                     with BinaryEncoding{Width = 1};
+    byte TxMCSSetDefined                        with BinaryEncoding{Width = 1};
+    uint Reserved3 where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved3", "MCSSet", value) with BinaryEncoding{Width = 24};
+}
+
+// 802.11 section 7.3.2.35
+type QoSCapability
+{
+    (byte where value == 46) ElementID;
+    (byte where value == 1) Length;
+    (QoSInfoAP | QoSInfoNonAP) QoSInfo;
+}
+
+type Reserved
+{
+    (byte where value == 47) ElementID;
+    byte Length;
+    binary Data with BinaryEncoding{Length = Length};
+}
+
+// 802.11 section 7.3.2.25 
+type RSN
+{
+    (byte where value == 48) ElementID;
+    byte Length;
+    ushort Version;
+    CipherSuite GroupCipherSuite;
+    ushort PairwiseCipherSuiteCount;
+    array<CipherSuite> PairwiseCipherSuiteList with BinaryEncoding{Length = PairwiseCipherSuiteCount as uint};
+    ushort AKMSuiteCount;
+    array<CipherSuite> AKMSuiteList with BinaryEncoding{Length = AKMSuiteCount as uint};
+    RSNCapabilities RSNCapabilities;
+    optional [|(Length - 12 - (PairwiseCipherSuiteCount + AKMSuiteCount)* 4) > 0|] PMKIDs PMKIDs;
+}
+
+type PMKID
+{
+    array<byte> PMKID with BinaryEncoding{Length = 16};
+}
+
+type PMKIDs
+{
+    ushort PMKIDCount;
+    array<PMKID> PMKID with BinaryEncoding{Length = PMKIDCount as uint};
+}
+
+type CipherSuite
+{
+    array<byte> OUI with BinaryEncoding{Length = 3};
+    byte SuiteType;
+}
+
+type RSNCapabilities
+{
+    bool MFPC               with BinaryEncoding{Width = 1};
+    bool MFPR               with BinaryEncoding{Width = 1};
+    byte GTKSAReplayCounter with BinaryEncoding{Width = 2};
+    byte PTKSAReplayCounter with BinaryEncoding{Width = 2};
+    bool NoParawise         with BinaryEncoding{Width = 1};
+    bool PreAuth            with BinaryEncoding{Width = 1};
+    byte Reserved2 where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved2", "RSNCapabilities", value) with BinaryEncoding{Width = 3};
+    bool PBAC               with BinaryEncoding{Width = 1};
+    bool SPPAMSDURequired   with BinaryEncoding{Width = 1};
+    bool SPPAMSDUEnabled    with BinaryEncoding{Width = 1};
+    bool PeerKeyEnabled     with BinaryEncoding{Width = 1};
+    byte Reserved1 where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved1", "RSNCapabilities", value) with BinaryEncoding{Width = 1};
+}
+
+// 802.11 section 7.3.2.14
+type ExtendedSupportedRates
+{
+    (byte where value == 50) ElementID;
+    byte Length;
+    binary ExtendedSupportedRates with BinaryEncoding{Length = Length};
+}
+
+// 802.11k section 7.3.2.36
+type APChannelReport
+{
+    (byte where value == 51) ElementID;
+    byte Length;
+    byte RegulatoryClass;
+    array<byte> ChannelNumber with BinaryEncoding{Length = (Length - 1) as uint};
+}
+
+// 802.11k section 7.3.2.37
+type NeighborReport
+{
+    (byte where value == 52) ElementID;
+    byte Length;
+    MacAddress BSSID;
+    BSSIDInformation BSSIDInformation;
+    byte RegulatoryClass;
+    byte ChannelNumber;
+    byte PHYType;
+    array<SubElementForNeighborReport> SubElements;
+}
+
+type BSSIDInformation
+{
+    byte RadioMeasurement   with BinaryEncoding{Width = 1};
+    byte APSD               with BinaryEncoding{Width = 1};
+    byte QoS                with BinaryEncoding{Width = 1};
+    byte SpectrumManagement with BinaryEncoding{Width = 1};
+    byte KeyScope           with BinaryEncoding{Width = 1};
+    byte Security           with BinaryEncoding{Width = 1};
+    byte APReachability     with BinaryEncoding{Width = 2};
+    byte Reserved1 where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved1", "BSSIDInformation", value) with BinaryEncoding{Width = 5};
+    byte MobilityDomain     with BinaryEncoding{Width = 1};
+    byte ImmediateBlockAck  with BinaryEncoding{Width = 1};
+    byte DelayedBlockAck    with BinaryEncoding{Width = 1};
+    ushort Reserved2 where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved2", "BSSIDInformation", value);
+}
+
+type SubElementForNeighborReport
+{
+    (TSFInformation | CondensedCountryString | MeasurementPilotTransmissionInformation
+    | RRMEnabledCapabilities | MultipleBSSID | VendorSpecificInformation) Element;
+}
+
+type TSFInformation
+{
+    (byte where value == 1) SubElementID;
+    (byte where value == 4) Length;
+    ushort TFSOffset;
+    ushort BeaconInterval;
+}
+
+type CondensedCountryString
+{
+    (byte where value == 2) SubElementID;
+    (byte where value == 2) Length;
+    ushort Dot11CountryString;
+}
+
+// 802.11k section 7.3.2.38
+type RCPI
+{
+    (byte where value == 53) ElementID;
+    (byte where value == 1) Length;
+    byte RCPI;
+}
+
+// 802.11r section 7.3.2.47
+type MobilityDomain
+{
+    (byte where value == 54) ElementID;
+    (byte where value == 3) Length;
+    ushort MDID;
+    byte Reserved where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved", "MobilityDomain", value) with BinaryEncoding{Width = 6};
+    byte ResourceRequestProtocolCapability with BinaryEncoding{Width = 1};
+    byte FastBSSTransitionOverDS           with BinaryEncoding{Width = 1};
+}
+
+// 802.11r section 7.3.2.48
+type FastBSSTransition
+{
+    (byte where value == 55) ElementID;
+    byte Length;
+    byte Reserved where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved", "FastBSSTransition", value);
+    byte InformationElementCount;
+    binary MIC with BinaryEncoding{Length = 16};
+    binary ANonce with BinaryEncoding{Length = 32};
+    binary SNonce with BinaryEncoding{Length = 32};
+    array<SubElementForFastBSSTransition> SubElements;
+}
+
+type SubElementForFastBSSTransition
+{
+    (R1KHID | GTK | R0KHID | IGTK) Element;
+}
+
+type R1KHID
+{
+    (byte where value == 1) SubElementID;
+    (byte where value == 6) Length;
+    binary Data with BinaryEncoding{Length = Length};
+}
+
+type GTK
+{
+    (byte where value == 2) SubElementID;
+    (byte where value >= 15 && value <= 42) Length;
+    byte Reserved1 where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved1", "GTK", value) with BinaryEncoding{Width = 6};
+    byte KeyID     with BinaryEncoding{Width = 2};
+    byte Reserved2 where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved2", "GTK", value);
+    byte keyLength;
+    binary RSC with BinaryEncoding{Length = 8};
+    binary Key with BinaryEncoding{Length = keyLength};
+}
+
+type R0KHID
+{
+    (byte where value == 3) SubElementID;
+    (byte where value >= 1 && value <= 48) Length;
+    binary Data with BinaryEncoding{Length = Length};
+}
+
+// 802.11w section 7.3.2.48
+type IGTK
+{
+    (byte where value == 2) SubElementID;
+    (byte where value == 35) Length;
+    ushort KeyID;
+    binary RSC with BinaryEncoding{Length = 6};
+    byte keyLength;
+    binary Key with BinaryEncoding{Length = keyLength};
+}
+
+
+// 802.11r section 7.3.2.49
+type TimeoutInterval
+{
+    (byte where value == 56) ElementID;
+    (byte where value == 5) Length;
+    byte TimeoutIntervalType;
+    uint TimeoutIntervalValue;
+}
+
+// 802.11r section 7.3.2.50
+type RICData
+{
+    (byte where value == 57) ElementID;
+    (byte where value == 4) Length;
+    byte RDIEIdentifier;
+    byte ResourceDescriptorCount;
+    ushort Status;
+}
+
+// 802.11y section 7.3.2.52
+type DSERegisteredLocation
+{
+    (byte where value == 58) ElementID;
+    (byte where value == 20) Length;
+    DSERLBody Body;
+}
+
+type DSERLBody
+{
+    byte LatitudeFractionL     with BinaryEncoding{Width = 2};
+    byte LatitudeResolution    with BinaryEncoding{Width = 6};
+    ushort LatitudeFractionM;
+    byte LatitudeIntegerL      with BinaryEncoding{Width = 1};
+    byte LatitudeFractionH     with BinaryEncoding{Width = 7};
+    byte LatitudeIntegerH;
+    byte LongitudeFractionL    with BinaryEncoding{Width = 2};
+    byte LongitudeResolution   with BinaryEncoding{Width = 6};
+    ushort LongitudeFractionM;
+    byte LongitudeIntegerL     with BinaryEncoding{Width = 1};
+    byte LongitudeFractionH    with BinaryEncoding{Width = 7};
+    byte LongitudeIntegerH;
+    byte AltitudeResolutionL   with BinaryEncoding{Width = 4};
+    byte AltitudeType          with BinaryEncoding{Width = 4};
+    byte AltitudeFractionL     with BinaryEncoding{Width = 6};
+    byte AltitudeResolutionH   with BinaryEncoding{Width = 2};
+    byte AltitudeIntegerL      with BinaryEncoding{Width = 6};
+    byte AltitudeFractionH     with BinaryEncoding{Width = 2};
+    ushort AltitudeIntegerH;
+    byte Reserved where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved", "DSERLBody", value) with BinaryEncoding{Width = 2};
+    byte DependentSTA          with BinaryEncoding{Width = 1};
+    byte RegLocDSE             with BinaryEncoding{Width = 1};
+    byte RegLocAgreement       with BinaryEncoding{Width = 1};
+    byte Datum                 with BinaryEncoding{Width = 3};
+    ushort DependentEnablementIdentifier;
+    byte RegulatoryClass;
+    byte ChannelNumber;
+}
+
+// 802.11y section 7.3.2.54
+type SupportedRegulatoryClasses
+{
+    (byte where value == 59) ElementID;
+    byte Length;
+    byte CurrentRegulatoryClass;
+    binary ListOfRegulatoryClasses with BinaryEncoding{Length = (Length - 1) as uint};
+}
+
+// 802.11y section 7.3.2.53
+type ExtendedChannelSwitchAnnouncement
+{
+    (byte where value == 60) ElementID;
+    (byte where value == 4) Length;
+    byte ChannelSwitchMode;
+    byte NewRegulatoryClass;
+    byte NewChannelNumber;
+    byte ChannelSwitchCount;
+}
+
+// 802.11n section 7.3.2.57
+type HTOperation
+{
+    (byte where value == 61) ElementID;
+    (byte where value == 22) Length ;
+    byte PrimaryChannel;
+    byte Reserved where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved", "HTOperation", value) with BinaryEncoding{Width = 4};
+    byte RIFSMode                       with BinaryEncoding{Width = 1};
+    byte STAChannelWidth                with BinaryEncoding{Width = 1};
+    byte SecondaryChannelOffset         with BinaryEncoding{Width = 2};
+    
+    byte Reserved1 where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved1", "HTOperation", value) with BinaryEncoding{Width = 3};
+    byte OBSSNonHTSTAsPresent           with BinaryEncoding{Width = 1};
+    byte Reserved2 where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved2", "HTOperation", value) with BinaryEncoding{Width = 1};
+    byte NongreenfieldHTSTAsPresent     with BinaryEncoding{Width = 1};
+    byte HTProtection                   with BinaryEncoding{Width = 2};
+    byte Reserved3 where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved3", "HTOperation", value);
+    
+    byte DualCTSProtection              with BinaryEncoding{Width = 1};
+    byte DualBeacon                     with BinaryEncoding{Width = 1};
+    byte Reserved4 where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved4", "HTOperation", value) with BinaryEncoding{Width = 6};
+    
+    byte Reserved5 where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved5", "HTOperation", value) with BinaryEncoding{Width = 4};
+    byte PCOPhase                       with BinaryEncoding{Width = 1};
+    byte PCOActive                      with BinaryEncoding{Width = 1};
+    byte LSIGTXOPProtectionFullSupport  with BinaryEncoding{Width = 1};
+    byte STBCBeacon                     with BinaryEncoding{Width = 1};
+    MCSSet BasicMCSSet;
+}
+
+// 802.11n section 7.3.2.20a
+type SecondaryChannelOffset
+{
+    (byte where value == 62) ElementID;
+    (byte where value == 1) Length;
+    byte SecondaryChannelOffset;
+}
+
+// 802.11k section 7.3.2.39
+type BSSAverageAccessDelay
+{
+    (byte where value == 63) ElementID;
+    (byte where value == 1) Length;
+    byte APAverageAccessDelay;
+}
+
+// 802.11k section 7.3.2.40
+type AntennaInformation
+{
+    (byte where value == 64) ElementID;
+    (byte where value == 1) Length;
+    byte AntennaID;
+}
+
+// 802.11k section 7.3.2.41
+type RSNI
+{
+    (byte where value == 65) ElementID;
+    (byte where value == 1) Length;
+    byte RSNI;
+}
+
+// 802.11k section 7.3.2.42
+type MeasurementPilotTransmissionInformation
+{
+    (byte where value == 66) ElementID;
+    byte Length;
+    byte MeasurementPilotTransmission;
+    array<VendorSpecificInformation> SubElements;
+}
+
+// 802.11k section 7.3.2.43
+type BSSAvailableAdmissionCapacity
+{
+    (byte where value == 67) ElementID;
+    byte Length;
+    AvailableAdmissionCapacityBitmask AvailableAdmissionCapacityBitmask;
+    binary AvailableAdmissionCapacityList with BinaryEncoding{Length = (Length - 2) as uint};
+}
+
+type AvailableAdmissionCapacityBitmask
+{
+    byte UP;
+    byte Reserved where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved", "AvailableAdmissionCapacityBitmask", value) with BinaryEncoding{Width = 4};
+    byte AC       with BinaryEncoding{Width = 4};
+}
+
+// 802.11k section 7.3.2.44
+type BSSACAccessDelay
+{
+    (byte where value == 68) ElementID;
+    (byte where value == 4) Length;
+    byte ACBE;
+    byte ACBK;
+    byte ACVI;
+    byte ACVO;
+}
+
+// 802.11k section 7.3.2.45
+type RRMEnabledCapabilities
+{
+    (byte where value == 70) ElementID;
+    (byte where value == 5) Length;
+    RRMEnabledCapabilitiesField  RRMEnabledCapabilities;
+}
+
+type RRMEnabledCapabilitiesField
+{
+    byte BeaconMeasurementReportingConditions         with BinaryEncoding{Width = 1};
+    byte BeaconTableMeasurement                       with BinaryEncoding{Width = 1};
+    byte BeaconActiveMeasurement                      with BinaryEncoding{Width = 1};
+    byte BeaconPassiveMeasurement                     with BinaryEncoding{Width = 1};
+    byte RepeatedMeasurements                         with BinaryEncoding{Width = 1};
+    byte ParallelMeasurements                         with BinaryEncoding{Width = 1};
+    byte NeighborReport                               with BinaryEncoding{Width = 1};
+    byte LinkMeasurement                              with BinaryEncoding{Width = 1};
+    byte TriggeredTransmitStreamCategoryMeasurement   with BinaryEncoding{Width = 1};
+    byte TransmitStreamCategoryMeasurement            with BinaryEncoding{Width = 1};
+    byte LCIAzimuth                                   with BinaryEncoding{Width = 1};
+    byte LCIMeasurement                               with BinaryEncoding{Width = 1};
+    byte StatisticsMeasurement                        with BinaryEncoding{Width = 1};
+    byte NoiseHistogramMeasurement                    with BinaryEncoding{Width = 1};
+    byte ChannelLoadMeasurement                       with BinaryEncoding{Width = 1};
+    byte FrameMeasurement                             with BinaryEncoding{Width = 1};
+    byte NonOperatingChannelMaxMeasurementDuration    with BinaryEncoding{Width = 3};
+    byte OperatingChannelMaxMeasurementDuration       with BinaryEncoding{Width = 3};
+    byte RRMMIB                                       with BinaryEncoding{Width = 1};
+    byte APChannelReport                              with BinaryEncoding{Width = 1};
+    byte BSSAverageAccessDelay                        with BinaryEncoding{Width = 1};
+    byte RSNIMeasurement                              with BinaryEncoding{Width = 1};
+    byte RCPIMeasurement                              with BinaryEncoding{Width = 1};
+    byte NeighborReportTSFOffset                      with BinaryEncoding{Width = 1};
+    byte MeasurementPilotTransmissionInformation      with BinaryEncoding{Width = 1};
+    byte MeasurementPilot                             with BinaryEncoding{Width = 3};
+    byte Reserved where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved", "RRMEnabledCapabilitiesField", value) with BinaryEncoding{Width = 6};
+    byte AntennaInformation                           with BinaryEncoding{Width = 1};
+    byte BSSAvailableAdmissionCapacity                with BinaryEncoding{Width = 1};
+}
+
+// 802.11k section 7.3.2.46
+type MultipleBSSID
+{
+    (byte where value == 71) ElementID;
+    byte Length;
+    byte MaxBSSIDIndicator;
+    optional array<VendorSpecificInformation> SubElements;
+}
+
+// 802.11n section 7.3.2.60
+type WiFi20or40BSSCoexistence
+{
+    (byte where value == 72) ElementID;
+    (byte where value == 1) Length;
+    byte Reserved where ValidationCheckReservedZero(value == 0, null, false, ReferenceType.Type, "WiFi", "Reserved", "WiFi20or40BSSCoexistence", value) with BinaryEncoding{Width = 3};
+    bool OBSSScanningExemptionGrant     with BinaryEncoding{Width = 1};
+    bool OBSSScanningExemptionRequest   with BinaryEncoding{Width = 1};
+    bool TwentyMHzBSSWidthRequest       with BinaryEncoding{Width = 1};
+    bool FortyMHzIntolerant             with BinaryEncoding{Width = 1};
+    bool InformationRequest             with BinaryEncoding{Width = 1};
+}
+
+// 802.11n section 7.3.2.58
+type WiFi20and40BSSIntolerantChannelReport
+{
+    (byte where value == 73) ElementID;
+    byte Length;
+    byte RegulatoryClass;
+    array<byte> ChannelList with BinaryEncoding{Length = (Length - 1) as uint};
+}
+
+// 802.11n section 7.3.2.59
+type OverlappingBSSScanParameters
+{
+    (byte where value == 74) ElementID;
+    (byte where value == 14) Length;
+    ushort OBSSScanPassiveDwell;
+    ushort OBSSScanActiveDwell;
+    ushort BSSChannelWidthTriggerScanInterval;
+    ushort OBSSScanPassiveTotalPerChannel;
+    ushort OBSSScanActiveTotalPerChannel;
+    ushort BSSWidthChannelTransitionDelayFactor;
+    ushort OBSSScanActivityThreshold;
+}
+
+// 802.11r section 7.3.2.51
+type RICDescriptor
+{
+    (byte where value == 75) ElementID;
+    byte Length;
+    byte ResourceType;
+    binary Parameters with BinaryEncoding{Length = (Length - 1) as uint};
+}
+
+// 802.11w section 7.3.2.55
+type ManagementMicInformation
+{
+    (byte where value == 76) ElementID;
+    (byte where value == 16) Length;
+    ushort KeyID;
+    binary IPN with BinaryEncoding{Length = 6};
+    binary MIC with BinaryEncoding{Length = 8};
+}
+
+// 802.11 section 7.3.2.27
+type ExtendedCapabilities
+{
+    (byte where value == 127) ElementID;
+    byte Length;
+    array<byte> ExtendedCapabilities with BinaryEncoding{Length = Length};
+}
+
+// 802.11k section 7.3.2.26
+type VendorSpecificInformation
+{
+    (byte where value == 221) ElementID;
+    byte Length;
+    binary OUI with BinaryEncoding{Length = 3};
+    (binary | any) VendorSpecificContent with BinaryEncoding{Length = (Length - 3) as uint};
+}
+
+// WORKAROUND: BUG#31792 - IPv6 Parse Error in LLMNR message
+type Fcs
+{
+    uint Value;
+}
+
+pattern MessageType = enum byte
+{
+    Management = 0,
+    Control = 1,
+    Data = 2,
+    Reserved = 3
+};
+
+pattern ManagementSubType = enum byte
+{
+    AssociationRrequest = 0,
+    AssociationResponse = 1,
+    ReassociationRequest = 2,
+    ReassociationResponse = 3,
+    ProbeRequest = 4,
+    ProbeResponse = 5,
+    Beacon = 8,
+    ATIM = 9,
+    Disassociation = 10,
+    Authentication = 11,
+    Deauthentication = 12,
+    Action = 13,
+};
+
+pattern ControlSubType = enum byte
+{
+    BlockAckReq = 8,
+    BlockAck = 9,
+    PSPoll = 10,
+    RTS = 11,
+    CTS = 12,
+    ACK = 13,
+    CFEnd = 14,
+    CFEndCFAck = 15
+};
+
+pattern DataSubType = enum byte
+{
+    Data = 0,
+    DataCFAck = 1,
+    DataCFPoll = 2,
+    DataCFAckCFPoll = 3,
+    Null = 4,
+    CFAck = 5,
+    CFPoll = 6,
+    CFAckCFPoll = 7,
+    QoSData = 8,
+    QoSDataCFAck = 9,
+    QoSDataCFPoll = 10,
+    QoSDataCFAckCFPoll = 11,
+    QoSNull = 12,
+    Reserved= 13,
+    QoSCFPoll= 14,
+    QoSCFAckCFPoll= 15
+};
+
+string MessageNaming(byte Type, byte SubType)
+{
+    if (Type == MessageType.Management && SubType == ManagementSubType.AssociationRrequest)
+    {
+        return "Management Association Rrequest";
+    }
+    else if (Type == MessageType.Management && SubType == ManagementSubType.AssociationResponse)
+    {
+        return "Management Association Response";
+    }
+    else if (Type == MessageType.Management && SubType == ManagementSubType.ReassociationRequest)
+    {
+        return "Management Reassociation Request";
+    }
+    else if (Type == MessageType.Management && SubType == ManagementSubType.ReassociationResponse)
+    {
+        return "Management Reassociation Response";
+    }
+    else if (Type == MessageType.Management && SubType == ManagementSubType.ProbeRequest)
+    {
+        return "Management Probe Request";
+    }
+    else if (Type == MessageType.Management && SubType == ManagementSubType.ProbeResponse)
+    {
+        return "Management Probe Response";
+    }
+    else if (Type == MessageType.Management && SubType == ManagementSubType.Beacon)
+    {
+        return "Management Beacon";
+    }
+    else if (Type == MessageType.Management && SubType == ManagementSubType.ATIM)
+    {
+        return "Management ATIM";
+    }
+    else if (Type == MessageType.Management && SubType == ManagementSubType.Disassociation)
+    {
+        return "Management Disassociation";
+    }
+    else if (Type == MessageType.Management && SubType == ManagementSubType.Authentication)
+    {
+        return "Management Authentication";
+    }
+    else if (Type == MessageType.Management && SubType == ManagementSubType.Deauthentication)
+    {
+        return "Management Deauthentication";
+    }
+    else if (Type == MessageType.Management && SubType == ManagementSubType.Action)
+    {
+        return "Management Action";
+    }
+    else if (Type == MessageType.Control && SubType == ControlSubType.BlockAckReq)
+    {
+        return "Control Block Ack Request";
+    }
+    else if (Type == MessageType.Control && SubType == ControlSubType.BlockAck)
+    {
+        return "Control Block Ack";
+    }
+    else if (Type == MessageType.Control && SubType == ControlSubType.PSPoll)
+    {
+        return "Control PS-Poll";
+    }
+    else if (Type == MessageType.Control && SubType == ControlSubType.RTS)
+    {
+        return "Control RTS";
+    }
+    else if (Type == MessageType.Control && SubType == ControlSubType.CTS)
+    {
+        return "Control CTS";
+    }
+    else if (Type == MessageType.Control && SubType == ControlSubType.ACK)
+    {
+        return "Control ACK";
+    }
+    else if (Type == MessageType.Control && SubType == ControlSubType.CFEnd)
+    {
+        return "Control CF-End";
+    }
+    else if (Type == MessageType.Control && SubType == ControlSubType.CFEndCFAck)
+    {
+        return "Control CF-End + CF-Ack";
+    }
+    else if (Type == MessageType.Data && SubType == DataSubType.Data)
+    {
+        return "Data";
+    }
+    else if (Type == MessageType.Data && SubType == DataSubType.DataCFAck)
+    {
+        return "Data + CF-Ack";
+    }
+    else if (Type == MessageType.Data && SubType == DataSubType.DataCFPoll)
+    {
+        return "Data + CF-Poll";
+    }
+    else if (Type == MessageType.Data && SubType == DataSubType.DataCFAckCFPoll)
+    {
+        return "Data + CF-Ack + CF-Poll";
+    }
+    else if (Type == MessageType.Data && SubType == DataSubType.Null)
+    {
+        return "Null(no data)";
+    }
+    else if (Type == MessageType.Data && SubType == DataSubType.CFAck)
+    {
+        return "CF-Ack(no data)";
+    }
+    else if (Type == MessageType.Data && SubType == DataSubType.CFPoll)
+    {
+        return "CF-Poll(no data)";
+    }
+    else if (Type == MessageType.Data && SubType == DataSubType.CFAckCFPoll)
+    {
+        return "CF-Ack + CF-Poll(no data)";
+    }
+    else if (Type == MessageType.Data && SubType == DataSubType.QoSData)
+    {
+        return "QoS Data";
+    }
+    else if (Type == MessageType.Data && SubType == DataSubType.QoSDataCFAck)
+    {
+        return "QoS Data + CF-Ack";
+    }
+    else if (Type == MessageType.Data && SubType == DataSubType.QoSDataCFPoll)
+    {
+        return "QoS Data + CF-Poll";
+    }
+    else if (Type == MessageType.Data && SubType == DataSubType.QoSDataCFAckCFPoll)
+    {
+        return "QoS Data + CF-Ack + CFPoll";
+    }
+    else if (Type == MessageType.Data && SubType == DataSubType.QoSNull)
+    {
+        return "QoS Null(no data)";
+    }
+    else if (Type == MessageType.Data && SubType == DataSubType.Reserved)
+    {
+        return "Reserved";
+    }
+    else if (Type == MessageType.Data && SubType == DataSubType.QoSCFPoll)
+    {
+        return "QoS CF-Poll(no data)";
+    }
+    else if (Type == MessageType.Data && SubType == DataSubType.QoSCFAckCFPoll)
+    {
+        return "QoS CF-Ack + CF-Poll(no data)";
+    }
+    else
+    {
+        return "Unknown message type, Type: " + (Type as string) + "SubType: " + (SubType as string);
+    }
+}
+
+string GetSSIDString(WiFiMessage msg, byte SubType)
+{
+    var Frame = msg.Frame;
+    switch(SubType)
+    {
+        case 0 =>
+            foreach(var e in (Frame as AssociationRequestFrame).InformationElements)
+            {
+                if (e is SSID && (e as SSID).Length > 0)
+                    return ", SSID: " + (e as SSID).SSID.ToString();
+            }
+        case 1 =>
+            foreach(var e in (Frame as AssociationResponseFrame).InformationElements)
+            {
+                if (e is SSID && (e as SSID).Length > 0)
+                    return ", SSID: " + (e as SSID).SSID.ToString();
+            }
+        case 2 =>
+            foreach(var e in (Frame as ReassociationRequestFrame).InformationElements)
+            {
+                if (e is SSID && (e as SSID).Length > 0)
+                    return ", SSID: " + (e as SSID).SSID.ToString();
+            }
+        case 3 =>
+            foreach(var e in (Frame as ReassociationResponseFrame).InformationElements)
+            {
+                if (e is SSID && (e as SSID).Length > 0)
+                    return ", SSID: " + (e as SSID).SSID.ToString();
+            }
+        case 4 =>
+            foreach(var e in (Frame as ProbeRequestFrame).InformationElements)
+            {
+                if (e is SSID && (e as SSID).Length > 0)
+                    return ", SSID: " + (e as SSID).SSID.ToString();
+            }
+        case 5 =>
+            foreach(var e in (Frame as ProbeResponseFrame).InformationElements)
+            {
+                if (e is SSID && (e as SSID).Length > 0)
+                    return ", SSID: " + (e as SSID).SSID.ToString();
+            }
+        case 8 =>
+            foreach(var e in (Frame as BeaconFrame).InformationElements)
+            {
+                if (e is SSID && (e as SSID).Length > 0)
+                    return ", SSID: " + (e as SSID).SSID.ToString();
+            }
+        case 10 =>
+            foreach(var e in (Frame as DisassociationFrame).InformationElements)
+            {
+                if (e is SSID && (e as SSID).Length > 0)
+                    return ", SSID: " + (e as SSID).SSID.ToString();
+            }
+        case 11 =>
+            foreach(var e in (Frame as AuthenticationFrame).InformationElements)
+            {
+                if (e is SSID && (e as SSID).Length > 0)
+                    return ", SSID: " + (e as SSID).SSID.ToString();
+            }  
+        case 12 =>
+            foreach(var e in (Frame as Deauthentication).InformationElements)
+            {
+                if (e is SSID && (e as SSID).Length > 0)
+                    return ", SSID: " + (e as SSID).SSID.ToString();
+            }
+        case 13 =>
+            foreach(var e in (Frame as ActionNoAckFrame).InformationElements)
+            {
+                if (e is SSID && (e as SSID).Length > 0)
+                    return ", SSID: " + (e as SSID).SSID.ToString();
+            }                                                  
+    }
+    return "";
+}
+
+string GetControlInfor(WiFiMessage frame)
+{
+    string summary = "";
+    summary = summary + (frame.ToDS ? "T" : ".");
+    summary = summary + (frame.FromDS ? "F" : ".");
+    summary = summary + (frame.MoreFrag == true ? "M" : ".");
+    summary = summary + (frame.Retry == true ? "R" : ".");
+    summary = summary + (frame.PwrMgt == true ? "P" : ".");
+    summary = summary + (frame.MoreData == true ? "D" : ".");
+    summary = summary + (frame.ProtectedFrame == true ? "P" : ".");
+    summary = summary + (frame.Order == true ? "O" : ".");
+    return summary;
+}

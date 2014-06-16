@@ -1,0 +1,100 @@
+﻿protocol Netmon with
+BinaryEncodingDefaults{Endian = Endian.Big,TextEncoding = TextEncoding.UTF16},
+Documentation
+{
+    ProtocolName = "Netmon Internal Address Family Constants",
+    ShortName = "Netmon",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+        ],// No References, from Netmon.npl directly
+    RevisionSummary =
+        [
+            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "11/25/2011"}
+        ]
+};
+
+using Standard;
+using Ethernet;
+using IANA;
+using Utility;
+using IPv4;
+using IPv6;
+
+endpoint Node
+    accepts NetmonFilter
+    accepts NetworkInfoEx
+    accepts NetworkInfo; 
+
+message NetmonFilter
+{
+    ushort Version;
+    uint FilterType;
+    uint AppMajorVersion;
+    uint AppMinorVersion;
+    string ApplicationName with BinaryEncoding{Endian = Endian.Little};
+    string Filter with BinaryEncoding{Endian = Endian.Little};
+    
+    override string ToString()
+    {
+        switch (FilterType)
+            {
+                case 1 => return "Network Monitor, Capture Filter: " + (Filter as string);
+                default => return "Network Monitor, Display Filter: " + (Filter as string);
+            }
+    }
+}
+
+message NetworkInfoEx
+{
+    ushort Version;
+    ushort AdapterCount;
+    string ComputerName with BinaryEncoding{Endian = Endian.Little};
+    NetMonNetworkAdapter[false] NetworkAdapter;
+    
+    override string ToString()
+    {
+        return "NetworkInfoEx, ComputerName: " + (ComputerName as string ) + ", AdapterCount: " + (AdapterCount as string );
+    }
+}
+
+message NetworkInfo
+{
+    ushort AdapterCount;
+    string ComputerName with BinaryEncoding{Endian = Endian.Little};
+    NetMonNetworkAdapter[true] NetworkAdapter;
+    
+    override string ToString()
+    {
+        return "NetworkInfo, ComputerName: " + (ComputerName as string ) + ", AdapterCount: " + (AdapterCount as string );
+    }
+}
+
+type NetMonNetworkAdapter[bool isMessageNetworkInfo]
+{
+    string FriendLyName with BinaryEncoding{Endian = Endian.Little};
+    string Description with BinaryEncoding{Endian = Endian.Little};
+    optional [|isMessageNetworkInfo|] string LayerName with BinaryEncoding{Endian = Endian.Little};
+    string MiniportGuid with BinaryEncoding{Endian = Endian.Little};
+    uint MediaType;
+    uint Mtu;
+    ulong LinkSpeed;
+    MacAddress HardwareAddress;
+    ushort IPv4AddressCount;
+    ushort IPv6AddressCount;
+    ushort GatewayAddressCount;
+    ushort DhcpServerAddressCount;
+    ushort DnsIpv4AddressCount;
+    ushort DnsIpv6AddressCount;
+    array<IPv4Address> IPv4Address with BinaryEncoding{Length = IPv4AddressCount as uint};
+    array<IPv4Address> SubnetMask with BinaryEncoding{Length = IPv4AddressCount as uint};
+    array<IPv6Address> IPv6Address with BinaryEncoding{Length = IPv6AddressCount as uint};
+    array<IPv4Address> GatewayAddress with BinaryEncoding{Length = GatewayAddressCount as uint};
+    array<IPv4Address> DhcpServerAddress with BinaryEncoding{Length = DhcpServerAddressCount as uint};
+    array<IPv4Address>  DnsIpv4Address with BinaryEncoding{Length = DnsIpv4AddressCount as uint};
+    array<IPv6Address> DnsIpv6Address with BinaryEncoding{Length = DnsIpv6AddressCount as uint};
+}

@@ -1,0 +1,166 @@
+protocol TFTP with 
+BinaryEncodingDefaults{Endian = Endian.Big},
+Documentation
+{
+    ProtocolName = "Trivial File Transfer Protocol",
+    ShortName = "TFTP",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+            new Reference{Name = "RFC 783"}, 
+            new Reference{Name = "TFTP", Link = "http://www.networksorcery.com/enp/protocol/tftp.htm"},
+        ],
+    RevisionSummary =
+        [
+            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "11/1/2011"}
+        ]
+};
+
+using Standard;
+using Utility;
+using IANA;
+using UDP;
+
+// WORKAROUND: Using global variable to keep first TFTP message's TID.
+ushort TFTPPort;
+
+endpoint Node
+    over UDP.Host
+    accepts Packet;
+
+
+autostart actor TFTPOverUDP(UDP.Host host)
+{
+    process host accepts d:UDP.Datagram where ((d.SourcePort in {Port.TFTP, TFTPPort} && d.SourcePort != 0)|| (d.DestinationPort in {Port.TFTP, TFTPPort}) && d.DestinationPort != 0)
+    {
+        switch (d.Payload)
+        {
+            case p:Packet from BinaryDecoder<Packet> =>
+                if (d.DestinationPort == Port.TFTP)
+                {
+                    TFTPPort = d.SourcePort;
+                }
+                dispatch (endpoint Node over host) accepts p;
+            default => 
+                ThrowDecodingException("TFTP");
+        }
+    }
+} 
+
+message Packet
+{
+    ushort OpCode;
+    ([|OpCode == 1|] TftpRRQ
+    | [|OpCode == 2|] TftpWRQ
+    | [|OpCode == 3|] TftpDATA
+    | [|OpCode == 4|] TftpACK
+    | [|OpCode == 5|] TftpERROR
+    | [|OpCode == 6|] TftpOACK
+    | binary) TftpMessage;
+    
+    override string ToString()
+    {
+        string summary;
+        switch (OpCode)
+        {
+            case 1 =>
+                TftpRRQ m = TftpMessage as TftpRRQ;
+                summary = TftpOpCode(OpCode) + " - File: " + m.Filename + ", Transfer Mode: " + m.Mode;
+            case 2 =>
+                TftpWRQ m = TftpMessage as TftpWRQ;
+                summary = TftpOpCode(OpCode) + " - File: " + m.Filename + ", Transfer Mode: " + m.Mode;
+            case 3 =>
+                TftpDATA m = TftpMessage as TftpDATA;
+                summary = TftpOpCode(OpCode) + " - Block Number: " + (m.BlockNum as string);
+            case 4 =>
+                TftpACK m = TftpMessage as TftpACK;
+                summary = TftpOpCode(OpCode) + " - Block Number: " + (m.BlockNum as string);
+            case 5 =>
+                TftpERROR m = TftpMessage as TftpERROR;
+                summary = TftpOpCode(OpCode) + " - Error Code:" + (m.ErrorCode as string) + "(" + TftpErrorCode(m.ErrorCode) + "), ErrorMessage: " + m.ErrorMessage;
+            case 6 =>
+                summary = TftpOpCode(OpCode);
+            default =>
+                summary = "Unknown Payload - " + TftpOpCode(OpCode);
+        }
+        return summary;
+    }
+}
+
+
+type TftpRRQ
+{
+    string Filename with BinaryEncoding{TextEncoding = TextEncoding.ASCII};
+    string Mode with BinaryEncoding{TextEncoding = TextEncoding.ASCII};
+    optional array<TftpOption> Options;
+}
+
+type TftpWRQ
+{
+    string Filename with BinaryEncoding{TextEncoding = TextEncoding.ASCII};
+    string Mode with BinaryEncoding{TextEncoding = TextEncoding.ASCII};
+    optional array<TftpOption> Options;
+}
+
+type TftpDATA
+{
+    ushort BlockNum;
+    binary Data;
+}
+
+type TftpACK
+{
+    ushort BlockNum;
+}
+
+type TftpERROR
+{
+    ushort ErrorCode;
+    string ErrorMessage with BinaryEncoding{TextEncoding = TextEncoding.ASCII};
+}
+
+type TftpOACK
+{
+    optional array<TftpOption> Options;
+}
+
+type TftpOption
+{
+    string Option where value.Count > 0 with BinaryEncoding{TextEncoding = TextEncoding.ASCII};
+    string Value with BinaryEncoding{TextEncoding = TextEncoding.ASCII};
+}
+
+string  TftpOpCode(ushort opCode)
+{
+    switch (opCode)
+    {
+        case 0x01  => return "Read Request";
+        case 0x02  => return "Write Request";
+        case 0x03  => return "Data";
+        case 0x04  => return "Acknowledgement";
+        case 0x05  => return "Error";
+        case 0x06  => return "Option Acknowledgement";
+        default    => return "Unknown OpCode: " + (opCode as string);
+    }
+}
+
+string TftpErrorCode(ushort errorCode)
+{
+    switch (errorCode)
+    {
+        case 0x00  => return "No Error";
+        case 0x01  => return "File not found";
+        case 0x02  => return "Access violation";
+        case 0x03  => return "Disk full or allocation exceeded";
+        case 0x04  => return "Illegal TFTP operation";
+        case 0x05  => return "Unknown transfer ID";
+        case 0x06  => return "File already exists";
+        case 0x07  => return "No such user";
+        case 0x08  => return "Terminate transfer due to option negotiation";
+        default    => return "Unknown error code: " + (errorCode as string);
+    }
+}

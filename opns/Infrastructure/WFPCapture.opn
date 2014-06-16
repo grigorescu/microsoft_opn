@@ -1,0 +1,433 @@
+protocol WFPCapture with 
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+        ],
+    RevisionSummary = 
+        [
+            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "09/02/2011"}
+        ]
+};
+
+using Etw;
+using EtwEvent;
+using Utility;
+using WfpUtility;
+
+public const guid EtwProviderIDWfpCapture = {c22d1b14-c242-49de-9f17-1d76b8b9c458};
+
+endpoint WFPFrame[binary Address]
+    accepts MessageV4
+    accepts MessageV6
+    accepts Message2V4
+    accepts Message2V6
+    accepts AuthMessageV4
+    accepts AuthMessageV6
+    accepts DriverInfo
+    accepts CalloutInfo
+    accepts CalloutNotifyInfo
+    accepts DriverError
+    accepts CalloutError
+    accepts Discard;
+
+
+autostart actor WfpOverEtwEvent(EtwEvent.Node etw)
+{
+
+    process etw accepts etwMsg:EtwProviderMsg
+        where etwMsg.EventRecord.Header.ProviderId == EtwProviderIDWfpCapture
+    {
+        var ep = endpoint WFPFrame[$[]];
+        switch (etwMsg.EventRecord.Header.Descriptor.Id) // event ID
+        {
+            // Diagnostic driver operation events
+
+            // DriverLoad
+            case 10001 =>
+                DriverInfo msg;
+                DecodeBinaryWithErrorOnFail<DriverInfo>(etwMsg.Payload, "WfpCapture", "DriverInfo", ref msg);
+                dispatch ep accepts msg;
+
+            // DriverUnload
+            case 10002 =>
+                DriverInfo msg;
+                DecodeBinaryWithErrorOnFail<DriverInfo>(etwMsg.Payload, "WfpCapture", "DriverInfo", ref msg);
+                dispatch ep accepts msg;
+
+            // CalloutRegister
+            case 10003 =>
+                CalloutInfo msg;
+                DecodeBinaryWithErrorOnFail<CalloutInfo>(etwMsg.Payload, "WfpCapture", "CalloutInfo", ref msg);
+                dispatch ep accepts msg;
+
+            // CalloutUnregister
+            case 10004 =>
+                CalloutInfo msg;
+                DecodeBinaryWithErrorOnFail<CalloutInfo>(etwMsg.Payload, "WfpCapture", "CalloutInfo", ref msg);
+                dispatch ep accepts msg;
+
+            // CalloutNotifyFilterAdd
+            case 10005 =>
+                CalloutNotifyInfo msg;
+                DecodeBinaryWithErrorOnFail<CalloutNotifyInfo>(etwMsg.Payload, "WfpCapture", "CalloutNotifyInfo", ref msg);
+                dispatch ep accepts msg;
+
+            // CalloutNotifyFilterDelete
+            case 10006 =>
+                CalloutNotifyInfo msg;
+                DecodeBinaryWithErrorOnFail<CalloutNotifyInfo>(etwMsg.Payload, "WfpCapture", "CalloutNotifyInfo", ref msg);
+                dispatch ep accepts msg;
+
+
+            // Diagnostic driver error events
+
+            // DriverLoadError
+            case 20001 =>
+                DriverError msg;
+                DecodeBinaryWithErrorOnFail<DriverError>(etwMsg.Payload, "WfpCapture", "DriverError", ref msg);
+                dispatch ep accepts msg;
+
+            // DriverUnloadError
+            case 20002 =>
+                DriverError msg;
+                DecodeBinaryWithErrorOnFail<DriverError>(etwMsg.Payload, "WfpCapture", "DriverError", ref msg);
+                dispatch ep accepts msg;
+
+            // CalloutRegisterError
+            case 20003 =>
+                CalloutError msg;
+                DecodeBinaryWithErrorOnFail<CalloutError>(etwMsg.Payload, "WfpCapture", "CalloutError", ref msg);
+                dispatch ep accepts msg;
+
+            // CalloutUnregisterError
+            case 20004 =>
+                CalloutError msg;
+                DecodeBinaryWithErrorOnFail<CalloutError>(etwMsg.Payload, "WfpCapture", "CalloutError", ref msg);
+                dispatch ep accepts msg;
+
+            // CalloutClassifyError
+            case 20005 =>
+                CalloutError msg;
+                DecodeBinaryWithErrorOnFail<CalloutError>(etwMsg.Payload, "WfpCapture", "CalloutError", ref msg);
+                dispatch ep accepts msg;
+
+
+            // Message Trace Events
+
+            // TransportMessageV4
+            case 60011 =>
+                MessageV4 msg;
+                DecodeBinaryWithErrorOnFail<MessageV4>(etwMsg.Payload, "WfpCapture", "MessageV4", ref msg);
+                dispatch (endpoint WFPFrame[msg.DestinationAddress.FlatAddress < msg.SourceAddress.FlatAddress ? msg.DestinationAddress.FlatAddress : msg.SourceAddress.FlatAddress]) accepts msg;
+
+            // TransportMessage2V4
+            case 60012 =>
+                Message2V4 msg;
+                DecodeBinaryWithErrorOnFail<Message2V4>(etwMsg.Payload, "WfpCapture", "Message2V4", ref msg);
+                dispatch (endpoint WFPFrame[msg.DestinationAddress.FlatAddress < msg.SourceAddress.FlatAddress ? msg.DestinationAddress.FlatAddress : msg.SourceAddress.FlatAddress]) accepts msg;
+
+            // TransportMessageV6
+            case 60021 =>
+                MessageV6 msg;
+                DecodeBinaryWithErrorOnFail<MessageV6>(etwMsg.Payload, "WfpCapture", "MessageV6", ref msg);
+                dispatch (endpoint WFPFrame[msg.DestinationAddress.FlatAddress < msg.SourceAddress.FlatAddress ? msg.DestinationAddress.FlatAddress : msg.SourceAddress.FlatAddress]) accepts msg;
+
+            // TransportMessage2V6
+            case 60022 =>
+                Message2V6 msg;
+                DecodeBinaryWithErrorOnFail<Message2V6>(etwMsg.Payload, "WfpCapture", "Message2V6", ref msg);
+                dispatch (endpoint WFPFrame[msg.DestinationAddress.FlatAddress < msg.SourceAddress.FlatAddress ? msg.DestinationAddress.FlatAddress : msg.SourceAddress.FlatAddress]) accepts msg;
+
+            // AleAuthMessageV4
+            case 60031 =>
+                AuthMessageV4 msg;
+                DecodeBinaryWithErrorOnFail<AuthMessageV4>(etwMsg.Payload, "WfpCapture", "AuthMessageV4", ref msg);
+                dispatch (endpoint WFPFrame[msg.DestinationAddress.FlatAddress < msg.SourceAddress.FlatAddress ? msg.DestinationAddress.FlatAddress : msg.SourceAddress.FlatAddress]) accepts msg;
+            
+            // AleAuthMessageV6
+            case 60041 =>
+                AuthMessageV6 msg;
+                DecodeBinaryWithErrorOnFail<AuthMessageV6>(etwMsg.Payload, "WfpCapture", "AuthMessageV6", ref msg);
+                dispatch (endpoint WFPFrame[msg.DestinationAddress.FlatAddress < msg.SourceAddress.FlatAddress ? msg.DestinationAddress.FlatAddress : msg.SourceAddress.FlatAddress]) accepts msg;
+            
+            // Discard
+            case 60050 =>
+                Discard msg;
+                DecodeBinaryWithErrorOnFail<Discard>(etwMsg.Payload, "WfpCapture", "Discard", ref msg);
+                dispatch ep accepts msg;
+
+
+            default =>
+                ThrowDecodingExceptionWithReason("WFPCapture", "invalid event ID");
+        }
+    }
+}
+
+message MessageV4
+{
+    IPv4Address   SourceAddress with Visualization{AliasName = "Address"};
+    IPv4Address   DestinationAddress with Visualization{AliasName = "Address"};
+    byte   Protocol;
+    short  PayloadLength;
+    binary Payload;
+}
+
+message MessageV6
+{
+    IPv6Address SourceAddress with Visualization{AliasName = "Address"};
+    IPv6Address DestinationAddress with Visualization{AliasName = "Address"};
+    byte Protocol;
+    short PayloadLength;
+    binary Payload;
+}
+
+message Message2V4
+{
+    IPv4Address   SourceAddress with Visualization{AliasName = "Address"};
+    IPv4Address   DestinationAddress with Visualization{AliasName = "Address"};
+    byte   Protocol;
+    long FlowContext;
+    short  PayloadLength;
+    binary Payload;
+}
+
+message Message2V6
+{
+    IPv6Address SourceAddress with Visualization{AliasName = "Address"};
+    IPv6Address DestinationAddress with Visualization{AliasName = "Address"};
+    byte Protocol;
+    long FlowContext;
+    short PayloadLength;
+    binary Payload;
+}
+
+message AuthMessageV4
+{
+    IPv4Address   SourceAddress with Visualization{AliasName = "Address"};
+    IPv4Address   DestinationAddress with Visualization{AliasName = "Address"};
+    ushort  SourcePort;
+    ushort  DestinationPort;
+    long   InterfaceId;
+    byte   Direction;
+    byte   Protocol;
+    long   FlowContext;
+    long   ProcessId;
+    short  PathLength;
+    string ProcessPath with BinaryEncoding{TextEncoding = TextEncoding.UTF16};
+
+    override string ToString()
+    {
+        return "WFP ALE-AUTH V4, pid = " + (ProcessId as string) + ", app path = " + ProcessPath;;
+    }
+}
+
+message AuthMessageV6
+{
+    IPv6Address SourceAddress with Visualization{AliasName = "Address"};
+    IPv6Address DestinationAddress with Visualization{AliasName = "Address"};
+    ushort  SourcePort;
+    ushort  DestinationPort;
+    long   InterfaceId;
+    byte   Direction;
+    byte   Protocol;
+    long   FlowContext;
+    long   ProcessId;
+    short  PathLength;
+    string ProcessPath with BinaryEncoding{TextEncoding = TextEncoding.UTF16};
+
+    override string ToString()
+    {
+        return "WFP ALE-AUTH V6, pid = " + (ProcessId as string) + ", app path = " + ProcessPath;
+    }
+}
+
+message Discard
+{
+    FWPS_DISCARD_MODULE DiscardModule;
+    
+    (
+      [| DiscardModule == FWPS_DISCARD_MODULE.FWPS_DISCARD_MODULE_NETWORK |] IP_DISCARD_REASON
+    | [| DiscardModule == FWPS_DISCARD_MODULE.FWPS_DISCARD_MODULE_TRANSPORT |] INET_DISCARD_REASON
+    | [| DiscardModule == FWPS_DISCARD_MODULE.FWPS_DISCARD_MODULE_GENERAL |] FWPS_GENERAL_DISCARD_REASON
+    )
+    DiscardReason;
+    
+    ulong FilterId;
+}
+
+
+IPv4Address get Source(this WFPCapture.MessageV4 msg)
+{
+    return msg.SourceAddress;
+}
+
+IPv4Address get Destination(this WFPCapture.MessageV4 msg)
+{
+    return msg.DestinationAddress;
+}
+
+IPv6Address get Source(this WFPCapture.MessageV6 msg)
+{
+    return msg.SourceAddress;
+}
+
+IPv6Address get Destination(this WFPCapture.MessageV6 msg)
+{
+    return msg.DestinationAddress;
+}
+
+string get Network(this WFPCapture.MessageV4 msg)
+{
+     return "WFPCapture: " + (msg.SourceAddress.Octets > msg.DestinationAddress.Octets
+        ? msg.DestinationAddress.ToString() + " - " + msg.SourceAddress.ToString()
+        : msg.SourceAddress.ToString() + " - " + msg.DestinationAddress.ToString());
+}
+
+string get Network(this WFPCapture.MessageV6 msg)
+{
+     return "WFPCapture: " + (msg.SourceAddress.Octets > msg.DestinationAddress.Octets
+        ? msg.DestinationAddress.ToString() + " - " + msg.SourceAddress.ToString()
+        : msg.SourceAddress.ToString() + " - " + msg.DestinationAddress.ToString());
+}
+
+IPv4Address get Source(this WFPCapture.Message2V4 msg)
+{
+    return msg.SourceAddress;
+}
+
+IPv4Address get Destination(this WFPCapture.Message2V4 msg)
+{
+    return msg.DestinationAddress;
+}
+
+IPv6Address get Source(this WFPCapture.Message2V6 msg)
+{
+    return msg.SourceAddress;
+}
+
+IPv6Address get Destination(this WFPCapture.Message2V6 msg)
+{
+    return msg.DestinationAddress;
+}
+
+string get Network(this WFPCapture.Message2V4 msg)
+{
+     return "WFPCapture: " + (msg.SourceAddress.Octets > msg.DestinationAddress.Octets
+        ? msg.DestinationAddress.ToString() + " - " + msg.SourceAddress.ToString()
+        : msg.SourceAddress.ToString() + " - " + msg.DestinationAddress.ToString());
+}
+
+string get Network(this WFPCapture.Message2V6 msg)
+{
+     return "WFPCapture: " + (msg.SourceAddress.Octets > msg.DestinationAddress.Octets
+        ? msg.DestinationAddress.ToString() + " - " + msg.SourceAddress.ToString()
+        : msg.SourceAddress.ToString() + " - " + msg.DestinationAddress.ToString());
+}
+
+IPv4Address get Source(this WFPCapture.AuthMessageV4 msg)
+{
+    return msg.SourceAddress;
+}
+
+IPv4Address get Destination(this WFPCapture.AuthMessageV4 msg)
+{
+    return msg.DestinationAddress;
+}
+
+IPv6Address get Source(this WFPCapture.AuthMessageV6 msg)
+{
+    return msg.SourceAddress;
+}
+
+IPv6Address get Destination(this WFPCapture.AuthMessageV6 msg)
+{
+    return msg.DestinationAddress;
+}
+
+string get Network(this WFPCapture.AuthMessageV4 msg)
+{
+    return "WFPCapture: " + (msg.SourceAddress.Octets > msg.DestinationAddress.Octets
+        ? msg.DestinationAddress.ToString() + " - " + msg.SourceAddress.ToString()
+        : msg.SourceAddress.ToString() + " - " + msg.DestinationAddress.ToString());
+}
+
+string get Network(this WFPCapture.AuthMessageV6 msg)
+{
+    return "WFPCapture: " + (msg.SourceAddress.Octets > msg.DestinationAddress.Octets
+        ? msg.DestinationAddress.ToString() + " - " + msg.SourceAddress.ToString()
+        : msg.SourceAddress.ToString() + " - " + msg.DestinationAddress.ToString());
+}
+
+// Diagnostic Driver Operation Events
+message DriverError
+{
+    string ErrorMessage;
+    uint NTStatus;
+}
+
+message CalloutError
+{
+    CalloutMap Callout;
+    string ErrorMessage;
+    uint NTStatus;
+}
+
+message DriverInfo
+{
+    string DriverName;
+    ushort MajorVersion;
+    ushort MinorVersion;
+}
+
+message CalloutInfo
+{
+    CalloutMap Callout;
+}
+
+message CalloutNotifyInfo
+{
+    ulong FilterId;
+    CalloutMap Callout;
+    ulong FilterWeight;
+}
+
+pattern CalloutMap = enum uint
+{
+    CALLOUT_INBOUND_TRANSPORT_V4 = 0,
+    CALLOUT_OUTBOUND_TRANSPORT_V4,
+    CALLOUT_INBOUND_TRANSPORT_V6,
+    CALLOUT_OUTBOUND_TRANSPORT_V6,
+    CALLOUT_ALE_AUTH_CONNECT_V4,
+    CALLOUT_ALE_AUTH_CONNECT_V6,
+    CALLOUT_ALE_AUTH_RECV_ACCEPT_V4,
+    CALLOUT_ALE_AUTH_RECV_ACCEPT_V6,
+    CALLOUT_INBOUND_IPPACKET_V4_DISCARD,
+    CALLOUT_INBOUND_IPPACKET_V6_DISCARD,
+    CALLOUT_OUTBOUND_IPPACKET_V4_DISCARD,
+    CALLOUT_OUTBOUND_IPPACKET_V6_DISCARD,
+    CALLOUT_IPFORWARD_V4_DISCARD,
+    CALLOUT_IPFORWARD_V6_DISCARD,
+    CALLOUT_INBOUND_TRANSPORT_V4_DISCARD,
+    CALLOUT_INBOUND_TRANSPORT_V6_DISCARD,
+    CALLOUT_OUTBOUND_TRANSPORT_V4_DISCARD,
+    CALLOUT_OUTBOUND_TRANSPORT_V6_DISCARD,
+    // Future Reference: stream discard layers not implemented.
+    CALLOUT_DATAGRAM_DATA_V4_DISCARD,
+    CALLOUT_DATAGRAM_DATA_V6_DISCARD,
+    CALLOUT_INBOUND_ICMP_ERROR_V4_DISCARD,
+    CALLOUT_INBOUND_ICMP_ERROR_V6_DISCARD,
+    CALLOUT_OUTBOUND_ICMP_ERROR_V4_DISCARD,
+    CALLOUT_OUTBOUND_ICMP_ERROR_V6_DISCARD,
+    CALLOUT_ALE_RESOURCE_ASSIGNMENT_V4_DISCARD,
+    CALLOUT_ALE_RESOURCE_ASSIGNMENT_V6_DISCARD,
+    CALLOUT_ALE_AUTH_LISTEN_V4_DISCARD,
+    CALLOUT_ALE_AUTH_LISTEN_V6_DISCARD,
+    CALLOUT_ALE_AUTH_RECV_ACCEPT_V4_DISCARD,
+    CALLOUT_ALE_AUTH_RECV_ACCEPT_V6_DISCARD,
+    CALLOUT_ALE_AUTH_CONNECT_V4_DISCARD,
+    CALLOUT_ALE_AUTH_CONNECT_V6_DISCARD,
+    CALLOUT_ALE_FLOW_ESTABLISHED_V4_DISCARD,
+    CALLOUT_ALE_FLOW_ESTABLISHED_V6_DISCARD
+};

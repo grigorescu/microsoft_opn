@@ -1,0 +1,44 @@
+﻿module CapFileActors with 
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+        ],
+    RevisionSummary =
+        [
+            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "09/02/2011"}
+        ]
+};
+
+using Standard;
+using CapFile;
+using PPP;
+using Utility;
+
+autostart actor CapFileToPPP(CapFile.CapFileEndpoint cap) precedes CapFileToEthernet
+{
+    binary marker1 = $[2053454E44];
+    binary marker2 = $[2052454356];
+
+    /* For each PPP frame, the Ethernet-like source and destination addresses are both set to either
+     * " SEND"(hex: 0x2053454E44) or " RECV"(hex: 0x2052454356) to indicate that the PPP frame 
+     * was either sent or received by the computer on which the capture was taken.
+     */
+    process cap accepts cf:CapFile.CapFrame where IsPPPPayload(cf.Payload)
+    {
+        switch (cf.Payload)
+        {
+            case f:PPP.Frame from BinaryDecoder<PPP.Frame> =>
+                dispatch (endpoint PPP.Node) accepts f;
+            default =>
+                ThrowDecodingException("PPP");
+        }
+    }
+    
+    bool IsPPPPayload(binary payload)
+    {
+        var segment = payload.Segment(0, 5);
+        return segment == marker1 || segment == marker2;
+    }
+}

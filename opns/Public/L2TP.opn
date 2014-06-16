@@ -1,0 +1,940 @@
+﻿protocol L2TP with 
+BinaryEncodingDefaults{Endian = Endian.Big},
+Documentation
+{
+    ProtocolName = "Layer 2 Tunneling Protocol",
+    ShortName = "L2TP",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+            new Reference{Name = "RFC 2661"},
+            new Reference{Name = "RFC 1994"},
+            new Reference{Name = "RFC 3301"},
+            new Reference{Name = "RFC 3145"},
+            new Reference{Name = "RFC 3308"},
+            new Reference{Name = "RFC 3437"},
+            new Reference{Name = "RFC 3573"},
+            new Reference{Name = "RFC 3817"},
+            new Reference{Name = "RFC 3931"},
+            new Reference{Name = "RFC 4045"},
+            new Reference{Name = "RFC 4951"},
+            new Reference{Name = "RFC 4591"},
+            new Reference{Name = "RFC 4454"},
+            new Reference{Name = "RFC 4667"},
+        ],
+    RevisionSummary =
+        [
+            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "11/18/2011"}
+        ]
+};
+
+using Standard;
+using IANA;
+using Utility;
+using UDP;
+using IPv4;
+using IPv6;
+
+endpoint Node over IPv4.Node | over IPv6.Node | over UDP.Host 
+    accepts PacketOverIP
+    accepts PacketOverUDP;
+
+autostart actor L2TPOverIPv4(IPv4.Node node)
+{
+    uint cookieLength = 0;
+    uint specificSublayer = 0;
+
+    process node accepts d:IPv4.Datagram where d.Protocol == ProtocolType.L2TP
+    {
+        PacketOverIP p = L2TPOverIPDecoder(d.Payload, ref cookieLength, ref specificSublayer);
+        p.SourceData = d.Payload;
+        dispatch (endpoint Node over node) accepts p;
+    }
+}
+
+autostart actor L2TPOverIPv6(IPv6.Node node)
+{
+    uint cookieLength = 0;
+    uint specificSublayer = 0;
+
+    process node accepts d:IPv6.Datagram where d.NextProtocol == ProtocolType.L2TP
+    {
+        PacketOverIP p = L2TPOverIPDecoder(d.Payload, ref cookieLength, ref specificSublayer);
+        p.SourceData = d.Payload;
+        dispatch (endpoint Node over node) accepts p;
+    }
+} 
+
+autostart actor L2TPOverUDP(UDP.Host node)
+{
+    uint cookieLength = 0;
+    uint specificSublayer = 0;
+
+    process node accepts d:UDP.Datagram where (d.SourcePort is Port.L2TP || d.DestinationPort is Port.L2TP)
+    {
+        PacketOverUDP p = L2TPOverUDPDecoder(d.Payload, ref cookieLength, ref specificSublayer);
+        p.SourceData = d.Payload;
+        dispatch (endpoint Node over node) accepts p;
+    }
+}
+
+annotation string PacketOverIP#SummaryOverIP;
+annotation string PacketOverUDP#SummaryOverUDP;
+
+message PacketOverIP
+{
+    MessageOverIP[0, 0] Message;
+    optional binary Payload;
+
+    override string ToString()
+    {
+        return this#SummaryOverIP as string;
+    }
+}
+
+message PacketOverUDP
+{
+    MessageOverUDP[0, 0] Message;
+    optional binary Payload;
+
+    override string ToString()
+    {
+        return this#SummaryOverUDP as string;
+    }
+}
+
+type MessageOverIP[uint CookieLength, uint SpecificSublayer]
+{
+    (ControlMessageOverIP | DataMessageOverIP[CookieLength, SpecificSublayer]) Message;
+}
+
+type ControlMessageOverIP
+{
+    (ControlMessageHeaderOverIP where (value != null && value.SessionID == 0)) Header;
+    array<AvpFormat> Avps;
+}
+
+type DataMessageOverIP[uint CookieLength, uint SpecificSublayerType]
+{
+    SessionHeaderOverIP[CookieLength] Header;
+    optional [|SpecificSublayerType == 1|] DefaultL2SpecificSublayer SpecificSublayer;
+    binary Payload;
+}
+
+// [RFC 3931    4.1.1.1 L2TPv3 Session Header Over IP]
+type SessionHeaderOverIP[uint CookieLength]
+{
+    uint SessionID;
+    optional [|CookieLength > 0|] binary Cookie with BinaryEncoding{Length = CookieLength};
+}
+
+// [RFC 3931    4.1.1.2 L2TP Control and Data Traffic over IP]
+type ControlMessageHeaderOverIP
+{
+    (uint where value == 0) SessionID;
+    (FlagsType where (value != null && value.L is true && value.S is true)) Flags;
+    VersionType Version;
+    ushort Length;
+    uint   ControlConnectionID;
+    ushort SequenceNumber;
+    ushort SequenceNumberExpected;
+}
+
+type MessageOverUDP[uint CookieLength, uint SpecificSublayer]
+{
+    (ControlMessageOverUDP | DataMessageOverUDP[CookieLength, SpecificSublayer]) Message;
+}
+
+type ControlMessageOverUDP
+{
+    (ControlMessageHeaderOverUDP where (value != null && value.Flags.T is true && value.Flags.L is true && value.Flags.S is true)) Header;
+    array<AvpFormat> Avps;
+}
+
+// [RFC 3931    3.2.1.  L2TP Control Message Header]
+type ControlMessageHeaderOverUDP
+{
+    FlagsType Flags;
+    VersionType Version;
+    ushort Length;
+    uint   ControlConnectionID;
+    ushort SequenceNumber;
+    ushort SequenceNumberExpected;
+}
+
+type FlagsType
+{
+    bool T with BinaryEncoding{Width = 1};
+    bool L with BinaryEncoding{Width = 1};
+    byte Reserved1 with BinaryEncoding{Width = 2};
+    bool S with BinaryEncoding{Width = 1};
+    byte Reserved2 with BinaryEncoding{Width = 3};
+}
+
+type VersionType
+{
+    byte Reserved with BinaryEncoding{Width = 4};
+    byte Version with BinaryEncoding{Width = 4};
+}
+
+// [RFC 3931    3.2.2 L2TP Data Message]
+type DataMessageOverUDP[uint CookieLength, uint SpecificSublayerType]
+{
+    SessionHeaderOverUDP[CookieLength] Header;
+    optional [|SpecificSublayerType == 1|] DefaultL2SpecificSublayer SpecificSublayer;
+    binary Payload;
+}
+
+// [RFC 3931    4.1.2.1 L2TP Session Header Over UDP]
+type SessionHeaderOverUDP[uint CookieLength]
+{
+    FlagsOverUDP Flags;
+    VersionType Version;
+    ushort Reserved;
+    uint   SessionID;
+    optional [|CookieLength > 0|] binary Cookie with BinaryEncoding{Length = CookieLength};
+}
+
+type FlagsOverUDP
+{
+    bool T with BinaryEncoding{Width = 1};
+    byte Reserved with BinaryEncoding{Width = 7};
+}
+
+// [RFC 3931    4.6 Default L2-Specific Sublayer]
+type DefaultL2SpecificSublayer
+{
+    FlagsDefault Flags;
+    uint SequenceNumber with BinaryEncoding{Width = 24};
+}
+
+type FlagsDefault
+{
+    byte Reserved1 with BinaryEncoding{Width = 1};
+    bool S with BinaryEncoding{Width = 1};
+    byte Reserved2 with BinaryEncoding{Width = 6};
+}
+
+// [RFC 3931    5.1 AVP Format]
+type AvpFormat
+{
+    (AvpFlagsType where value != null) Flags;
+    optional ExtendedVendorIDAvpFormat Extended;
+    ([|Extended == nothing|] ushort | uint) VendorID;
+    ushort AttributeType;
+    ([|Flags.H|] HidingAttributeValues                                                                        |
+        ([|AttributeType == 0|] AvpMessageType                                                                |
+        [|AttributeType == 1|] ResultErrorCode[(Extended == nothing) ? (Flags.Length-6) : (Flags.Length-12)]  |
+        [|AttributeType == 2|] ProtocolVersion                                                                |
+        [|(AttributeType == 3 || AttributeType == 19)|] FramingCapabilities                                   |
+        [|(AttributeType == 4 || AttributeType == 18)|] BearerCapabilities                                    |
+        [|AttributeType == 5|] TieBreak                                                                       |
+        [|AttributeType == 6|] FirmwareRevisionType                                                           |
+        [|AttributeType == 7|] HostNameType[(Extended == nothing) ? (Flags.Length-6) : (Flags.Length-12)]     |
+        [|AttributeType == 8|] VendorNameType[(Extended == nothing) ? (Flags.Length-6) : (Flags.Length-12)]   |
+        [|AttributeType == 9|] AssignedTunnel                                                                 |
+        [|AttributeType == 10|] WindowSizeType                                                                |
+        [|(AttributeType == 11 || AttributeType == 31)|] ChallengeType[(Extended == nothing) ? 
+        (Flags.Length-6) : (Flags.Length-12)]                                                                   |
+        [|AttributeType == 12|] CauseCodeAVP[(Extended == nothing) ? (Flags.Length-6) : (Flags.Length-12)]    |
+        [|AttributeType == 13|] ChallengeResponseType[(Extended == nothing) ? 
+        (Flags.Length-6) : (Flags.Length-12)]                                                                   |
+        [|AttributeType == 14|] AssignedSession                                                               |
+        [|AttributeType == 15|] CallSerialNumberType                                                          |
+        [|AttributeType == 16|] MinimumBpsType                                                                |
+        [|AttributeType == 17|] MaximumBpsType                                                                |
+        [|AttributeType == 21|] CalledNumberType[(Extended == nothing) ?
+        (Flags.Length-6) : (Flags.Length-12)]                                                                   |
+        [|AttributeType == 22|] CallingNumberType[(Extended == nothing) ?
+        (Flags.Length-6) : (Flags.Length-12)]                                                                   |
+        [|AttributeType == 23|] SubAddressType[(Extended == nothing) ? (Flags.Length-6) : (Flags.Length-12)]  |
+        [|(AttributeType == 24 || AttributeType == 38)|] BpsType                                              |
+        [|AttributeType == 25|] PhysicalChannel                                                               |
+        [|(AttributeType == 26 || AttributeType == 27 || AttributeType == 28)|] 
+        LcpConfreqType[(Extended == nothing) ? (Flags.Length-6) : (Flags.Length-12)]                            |
+        [|AttributeType == 29|] AuthenType                                                                    |
+        [|AttributeType == 30|] AuthenNameType[(Extended == nothing) ? (Flags.Length-6) : (Flags.Length-12)]  |
+        [|AttributeType == 32|] ProxyAuthen)                                                                  |
+        [|AttributeType == 33|] ResponseType[(Extended == nothing) ? (Flags.Length-6) : (Flags.Length-12)]    |
+        [|AttributeType == 34|] CallErrors                                                                    |
+        [|AttributeType == 35|] AccmAvp                                                                       |
+        [|AttributeType == 36|] RandomOcter[(Extended == nothing) ? (Flags.Length-6) : (Flags.Length-12)]     |
+        [|AttributeType == 37|] PrivateGroup[(Extended == nothing) ? (Flags.Length-6) : (Flags.Length-12)]    |
+        [|AttributeType == 40|] RxMinimumBpsType                                                              |
+        [|AttributeType == 41|] RxMaximumBpsType                                                              |
+        [|AttributeType == 42|] ServiceCategory                                                               |
+        [|AttributeType == 43|] ServiceNameType[(Extended == nothing) ? (Flags.Length-6) : (Flags.Length-12)] |
+        [|AttributeType == 44|] CallSubAddress[(Extended == nothing) ? (Flags.Length-6) : (Flags.Length-12)]  |
+        [|AttributeType == 45|] VpiVciType                                                                    |
+        [|AttributeType == 46|] DisconnectCause[(Extended == nothing) ? (Flags.Length-6) : (Flags.Length-12)] |
+        [|(AttributeType == 47 || AttributeType == 48)|] PhbCodeType                                          |
+        [|AttributeType == 49|] WantOptions[(Extended == nothing) ? (Flags.Length-6) : (Flags.Length-12)]     |
+        [|AttributeType == 50|] AllowOptions[(Extended == nothing) ? (Flags.Length-6) : (Flags.Length-12)]    |
+        [|AttributeType == 51|] LastSent[(Extended == nothing) ? (Flags.Length-6) : (Flags.Length-12)]        |
+        [|AttributeType == 52|] LastReceived[(Extended == nothing) ? (Flags.Length-6) : (Flags.Length-12)]    |
+        [|AttributeType == 54|] ModemOnHoldStatus                                                             |
+        [|AttributeType == 55|] PoeRelay[(Extended == nothing) ? (Flags.Length-6) : (Flags.Length-12)]        |
+        [|AttributeType == 59|] MessageDigest[(Extended == nothing) ? (Flags.Length-6) : (Flags.Length-12)]   |
+        [|AttributeType == 60|] RouterID                                                                      |
+        [|AttributeType == 61|] AssignedControlConnection                                                     |
+        [|AttributeType == 62|] PWType[(Extended == nothing) ? (Flags.Length-6) : (Flags.Length-12)]          |
+        [|AttributeType == 63|] LocalSession                                                                  |
+        [|AttributeType == 64|] RemoteSession                                                                 |
+        [|AttributeType == 65|] Cookie[(Extended == nothing) ? (Flags.Length-6) : (Flags.Length-12)]          |
+        [|AttributeType == 66|] RemoteEnd[(Extended == nothing) ? (Flags.Length-6) : (Flags.Length-12)]       |
+        [|AttributeType == 68|] PseudowireType                                                                |
+        [|AttributeType == 69|] L2SpecificSublayer                                                            |
+        [|AttributeType == 70|] DataSequencingLevelType                                                       |
+        [|AttributeType == 71|] CircuitStatus                                                                 |
+        [|AttributeType == 72|] PreferredLang[(Extended == nothing) ? (Flags.Length-6) : (Flags.Length-12)]   |
+        [|AttributeType == 73|] Nonce[(Extended == nothing) ? (Flags.Length-6) : (Flags.Length-12)]           |
+        [|AttributeType == 74|] TxConnectSpeedType                                                            |
+        [|AttributeType == 75|] RxConnectSpeedType                                                            |
+        [|AttributeType == 76|] FailoverCapability                                                            |
+        [|AttributeType == 77|] TunnelRecovery                                                                |
+        [|AttributeType == 78|] SuggestedControlSequence                                                      |
+        [|AttributeType == 79|] FailoverSessionState                                                          |
+        [|AttributeType == 83|] OutgoingSessions[(Extended == nothing)? (Flags.Length-6) : (Flags.Length-12)] |
+        [|AttributeType == 84|] MulticastPacketsPriority                                                      |
+        [|AttributeType == 85|] FrameRelayHeaderLengthType                                                    |
+        [|AttributeType == 86|] ATMMaximumConcatenatedCellsType                                               |
+        [|AttributeType == 88|] AtmAlarmStatus                                                                |
+        [|AttributeType == 89|] GroupID[(Extended == nothing) ? (Flags.Length-6) : (Flags.Length-12)]         |
+        [|AttributeType == 90|] EndID[(Extended == nothing) ? (Flags.Length-6) : (Flags.Length-12)]           |
+        [|AttributeType == 91|] TransmissionUnit[(Extended == nothing)? (Flags.Length-6) : (Flags.Length-12)] |
+        (UnKnownType[(Extended == nothing) ? (Flags.Length-6) : (Flags.Length-12)]))                            AttributeValue;
+}
+
+// [RFC 3931    5.1 AVP Format]
+type ExtendedVendorIDAvpFormat
+{
+    ushort VendorID where value == 0;
+    ushort AttributeType where value == 58;
+}
+
+type AvpFlagsType
+{
+    bool M with BinaryEncoding{Width = 1};
+    bool H with BinaryEncoding{Width = 1};
+    byte Reserved with BinaryEncoding{Width = 4};
+    ushort Length with BinaryEncoding{Width = 10};
+}
+
+// [RFC 3931    5.3 Hiding of AVP Attribute Values]
+type HidingAttributeValues
+{
+    ushort ValueLength;
+    binary Value with BinaryEncoding{Length = ValueLength};
+    optional binary Pad;
+}
+
+type AvpMessageType
+{
+    ushort MessageType;
+}
+
+// [RFC 3931    5.4.2 Result and Error Codes]
+type ResultErrorCode[int Length]
+{
+    ushort ResultCode;
+    optional ushort ErrorCode;
+    // WORKAROUND: BUG23734: Binary Encoding does not support UTF8 as Text Encoding.
+    // optional string ErrorMessage with BinaryEncoding{TextEncoding = TextEncoding.UTF8, Length = (Length-4) as uint};
+    optional binary ErrorMessage with BinaryEncoding{Length = (Length-4) as uint};
+}
+
+// [RFC 3931    4.4.3 Control Connection Management AVPs]
+type ProtocolVersion
+{
+    byte Version;
+    byte Reversion;
+}
+
+type FramingCapabilities
+{
+    uint Reserved with BinaryEncoding{Width = 30};
+    bool A with BinaryEncoding{Width = 1};
+    bool S with BinaryEncoding{Width = 1};
+}
+
+type BearerCapabilities
+{
+    uint Reserved with BinaryEncoding{Width = 30};
+    bool A with BinaryEncoding{Width = 1};
+    bool D with BinaryEncoding{Width = 1};
+}
+
+type TieBreak
+{
+    long TieBreakValue;
+}
+
+type FirmwareRevisionType
+{
+    ushort FirmwareRevision;
+}
+
+type HostNameType[int Length]
+{
+    string HostName with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = Length as uint};
+}
+
+type VendorNameType[int Length]
+{
+    // WORKAROUND: BUG23734: Binary Encoding does not support UTF8 as Text Encoding.
+    // string VendorName with BinaryEncoding{TextEncoding = TextEncoding.UTF8, Length = Length as uint};
+    binary VendorName with BinaryEncoding{Length = Length as uint};
+}
+
+type AssignedTunnel
+{
+    ushort AssignedTunnelID;
+}
+
+type WindowSizeType
+{
+    ushort WindowSize;
+}
+
+type ChallengeType[int Length]
+{
+    string Challenge with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = Length as uint};
+}
+
+type ChallengeResponseType[int Length]
+{
+    string ChallengeResponse with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = Length as uint};
+}
+
+// [RFC 3931    4.4.4 Call Management AVPs]
+type CauseCodeAVP[int Length]
+{
+    ushort CauseCode;
+    byte CauseMsg;
+    string ErrorMessage with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = (Length-3) as uint};
+}
+
+type AssignedSession
+{
+    ushort AssignedSessionID;
+}
+
+type CallSerialNumberType
+{
+    uint CallSerialNumber;
+}
+
+type MinimumBpsType
+{
+    uint MinimumBps;
+}
+
+type MaximumBpsType
+{
+    uint MaximumBps;
+}
+
+type CalledNumberType[int Length]
+{
+    string CalledNumber with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = Length as uint};
+}
+
+type CallingNumberType[int Length]
+{
+    string CallingNumber with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = Length as uint};
+}
+
+type SubAddressType[int Length]
+{
+    string SubAddress with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = Length as uint};
+}
+
+type BpsType
+{
+    uint Bps;
+}
+
+type PhysicalChannel
+{
+    uint PhysicalChannelID;
+}
+
+type LcpConfreqType[int Length]
+{
+    string SubAddress with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = Length as uint};
+}
+
+type AuthenType
+{
+    ushort AuthenType;
+}
+
+type AuthenNameType[int Length]
+{
+    string AuthenName with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = Length as uint};
+}
+
+type ProxyAuthen
+{
+    ushort Reserved with BinaryEncoding{Width = 8};
+    ushort ProxyAuthenID with BinaryEncoding{Width = 8};
+}
+
+type ResponseType[int Length]
+{
+    string Response with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = Length as uint};
+}
+
+type CallErrors
+{
+    ushort Reserved;
+    uint HardwareOverruns;
+    uint BufferOverruns;
+    uint TimeoutErrors;
+    uint AlignmentErrors;
+}
+
+type AccmAvp
+{
+    ushort Reserved;
+    uint SendAccm;
+    uint ReceiveAccm;
+}
+
+type RandomOcter[int Length]
+{
+    string RandomOcterString with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = Length as uint};
+}
+
+type PrivateGroup[int Length]
+{
+    string PrivateGroupID with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = Length as uint};
+}
+
+// [RFC 3301    5.2 New AVP definition]
+type RxMinimumBpsType
+{
+    uint RxMinimumBps;
+}
+
+type RxMaximumBpsType
+{
+    uint RxMaximumBps;
+}
+
+type ServiceCategory
+{
+    ushort Reserved with BinaryEncoding{Width = 15};
+    bool S with BinaryEncoding{Width = 1};
+}
+
+type ServiceNameType[int Length]
+{
+    // WORKAROUND: BUG23734: Binary Encoding does not support UTF8 as Text Encoding.
+    // string ServiceName with BinaryEncoding{TextEncoding = TextEncoding.UTF8, Length = Length as uint};
+    binary ServiceName with BinaryEncoding{Length = Length as uint};
+}
+
+// Network Service Access Point
+type CallSubAddress[int Length]
+{
+    byte Afi;
+    ([|Afi == 0x39 || Afi == 0xBD|] Dcc     |
+    [|Afi == 0x47 || Afi == 0xC5|] Icd      |
+    [|Afi == 0x45 || Afi == 0xC3|] E164     |
+    [|Afi == 0x49 || Afi == 0xC7|] LocalTdi |
+    UnKnown[Length-1]) Address;
+}
+
+type Dcc
+{
+    ushort Idi;
+    binary Hodsp with BinaryEncoding{Length = 10};
+    binary Esi with BinaryEncoding{Length = 6};
+    byte Sel;
+}
+
+type Icd
+{
+    ushort Idi;
+    binary Hodsp with BinaryEncoding{Length = 10};
+    binary Esi with BinaryEncoding{Length = 6};
+    byte Sel;
+}
+
+type E164
+{
+    binary E164 with BinaryEncoding{Length = 8};
+    binary Hodsp with BinaryEncoding{Length = 4};
+    binary Esi with BinaryEncoding{Length = 6};
+    byte Sel;
+}
+
+type LocalTdi
+{
+    binary Hodsp with BinaryEncoding{Length = 12};
+    binary Esi with BinaryEncoding{Length = 6};
+    byte Sel;
+}
+
+type UnKnown[int Length]
+{
+    binary Data with BinaryEncoding{Length = Length as uint};
+}
+
+type VpiVciType
+{
+    ushort Reserved with BinaryEncoding{Width = 4};
+    ushort Vpi with BinaryEncoding{Width = 12};
+    ushort Vci;
+}
+
+// [RFC 3145    2.  PPP Disconnect Cause Code AVP]
+type DisconnectCause[int Length]
+{
+    ushort DisconnectCode;
+    ushort ControlProtocolNumber;
+    byte Direction;
+    // WORKAROUND: BUG23734: Binary Encoding does not support UTF8 as Text Encoding.
+    // optional string Message with BinaryEncoding{TextEncoding = TextEncoding.UTF8, Length = Length as uint};
+    optional binary Message with BinaryEncoding{Length = Length as uint};
+}
+
+// [RFC 3308    3.1. Control Connection DS AVP (SCCRQ, SCCRP)]
+type PhbCodeType
+{
+    ushort PhbCode;
+}
+
+// [RFC 3437    2.1 LCP Want Options (iccn, occn)]
+type WantOptions[int Length]
+{
+    string ConfigureRequest with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = Length as uint};
+}
+
+type AllowOptions[int Length]
+{
+    string ConfigureAck with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = Length as uint};
+}
+
+type LastSent[int Length]
+{
+    string LastSentLcpConfreq with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = Length as uint};
+}
+
+type LastReceived[int Length]
+{
+    string LastReceivedLcpConfreq with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = Length as uint};
+}
+
+// [RFC 3573    4.2.  Modem On-Hold Status AVP]
+type ModemOnHoldStatus
+{
+    bool H with BinaryEncoding{Width = 1};
+    ushort Reserved with BinaryEncoding{Width = 11};
+    ushort Timeout with BinaryEncoding{Width = 4};
+}
+
+// [RFC 3817    4.  PPPoE Relay AVP]
+type PoeRelay[int Length]
+{
+    string PadMessage with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = Length as uint};
+}
+
+// [RFC 3931    5.4.1 General Control Message AVPs]
+type MessageDigest[int Length]
+{
+    byte DigestType;
+    binary MessageDigest with BinaryEncoding{Length = (Length-1) as uint};
+}
+
+type Nonce[int Length]
+{
+    binary ControlMessageAuthenticationNonce with BinaryEncoding{Length = Length as uint};
+}
+
+type RouterID
+{
+    uint RouterIdentifier;
+}
+
+type AssignedControlConnection
+{
+    uint AssignedControlConnectionID;
+}
+
+type PWType[int Length]
+{
+    array<ushort> PWTypes with BinaryEncoding{Length = (Length / 2) as uint};
+}
+
+type PreferredLang[int Length]
+{
+    string PreferredLanguage with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = Length as uint};
+}
+
+type LocalSession
+{
+    uint LocalSessionID;
+}
+
+type RemoteSession
+{
+    uint RemoteSessionID;
+}
+
+type Cookie[int Length]
+{
+    binary AssignedCookie with BinaryEncoding{Length = Length as uint};
+}
+
+type RemoteEnd[int Length]
+{
+    binary RemoteEndID with BinaryEncoding{Length = Length as uint};
+}
+
+type PseudowireType
+{
+    ushort PseudowireType;
+}
+
+type L2SpecificSublayer
+{
+    ushort L2SpecificSublayerType;
+}
+
+type DataSequencingLevelType
+{
+    ushort DataSequencingLevel;
+}
+
+type TxConnectSpeedType
+{
+    ulong TxConnectSpeed;
+}
+
+type RxConnectSpeedType
+{
+    ulong RxConnectSpeed;
+}
+
+type CircuitStatus
+{
+    ushort Reserved with BinaryEncoding{Width = 14};
+    bool N with BinaryEncoding{Width = 1};
+    bool A with BinaryEncoding{Width = 1};
+}
+
+// [RFC 4951    5.1.  Failover Capability AVP]
+type FailoverCapability
+{
+    ushort Reserved with BinaryEncoding{Width = 14};
+    bool D with BinaryEncoding{Width = 1};
+    bool C with BinaryEncoding{Width = 1};
+    uint RecoveryTime;
+}
+
+type TunnelRecovery
+{
+    ushort Reserved;
+    uint RecoverTunnelId;
+    uint RecoverRemoteTunnelId;
+}
+
+type SuggestedControlSequence
+{
+    ushort Reserved;
+    ushort SuggestedNs;
+    ushort SuggestedNr;
+}
+
+type FailoverSessionState
+{
+    ushort Reserved;
+    uint SessionId;
+    uint RemoteSessionId;
+}
+
+// [RFC 4045    6.2.1.  New Outgoing Sessions AVP (MSI)]
+type OutgoingSessions[int Length]
+{
+    array<ushort> SessionID with BinaryEncoding{Length = (Length / 2) as uint};
+}
+
+type MulticastPacketsPriority
+{
+    ushort PriorityValue;
+}
+
+// [RFC 4591    3.5 Frame Relay Header Length AVP]
+type FrameRelayHeaderLengthType
+{
+    ushort FrameRelayHeaderLength;
+}
+
+// [RFC 4454    6.  ATM Maximum Concatenated Cells AVP]
+type ATMMaximumConcatenatedCellsType
+{
+    ushort ATMMaximumConcatenatedCells;
+}
+
+type AtmAlarmStatus
+{
+    ushort CircuitStatusReason;
+    ushort Alarm;
+}
+
+// [RFC 4667    4.3.  New AVPs for L2VPN]
+type GroupID[int Length]
+{
+    binary Agi with BinaryEncoding{Length = Length as uint};
+}
+
+type EndID[int Length]
+{
+    binary Saii with BinaryEncoding{Length = Length as uint};
+}
+
+type TransmissionUnit[int Length]
+{
+    binary InterfaceMtu with BinaryEncoding{Length = Length as uint};
+}
+
+type UnKnownType[int Length]
+{
+    binary UnknownAttributeValue with BinaryEncoding{Length = Length as uint};
+}
+
+string GetMessageTypeString(ushort messageType)
+{
+    switch (messageType)
+    {
+        case  0 => return "Reserved";
+        case  1 => return "(SCCRQ) Start-Control-Connection-Request";
+        case  2 => return "(SCCRP) Start-Control-Connection-Reply";
+        case  3 => return "(SCCCN) Start-Control-Connection-Connected";
+        case  4 => return "(StopCCN) Stop-Control-Connection-Notification";
+        case  5 => return "Reserved";
+        case  6 => return "(HELLO) hello";
+        case  7 => return "(OCRQ) Outgoing-Call-Request";
+        case  8 => return "(OCRP) Outgoing-Call-Reply";
+        case  9 => return "(OCCN) Outgoing-Call-Connected";
+        case 10 => return "(ICRQ) Incoming-Call-Request";
+        case 11 => return "(ICRP) Incoming-Call-Reply";
+        case 12 => return "(ICCN) Incoming-Call-Connected";
+        case 13 => return "Reserved";
+        case 14 => return "(CDN) Call-Disconnect-Notify";
+        case 15 => return "(WEN) WAN-Error-Notify";
+        case 16 => return "(SLI) Set-Link-Info";
+        case 17 => return "(MDMST) Modem Status";
+        case 18 => return "(SRRQ) Service Relay Request Message"; //[RFC3817]
+        case 19 => return "(SRRP) Service Relay Reply Message"; //[RFC3817]
+        case 20 => return "(ACK) Explicit Acknowledgement"; //[RFC3931]
+        case 21 => return "(FSQ) Failover Session Query Message"; //[draft-ietf-l2tpext-failover-04.txt]
+        case 22 => return "(FSR) Failover Session Response Message"; //[draft-ietf-l2tpext-failover-04.txt]
+        case 23 => return "(MSRQ) Multicast-Session-Request"; //[RFC4045]
+        case 24 => return "(MSRP) Multicast-Session-Response"; //[RFC4045]
+        case 25 => return "(MSE) Multicast-Session-Establishment"; //[RFC4045]
+        case 26 => return "(MSI) Multicast-Session-Information"; //[RFC4045]
+        case 27 => return "(MSEN) Multicast-Session-End-Notify"; //[RFC4045]
+        default => return "Unhandled L2TP Message Type";
+    }
+}
+
+PacketOverIP L2TPOverIPDecoder(stream payload, ref uint cookieLength, ref uint specificSublayer)
+{
+    uint len = cookieLength;
+    uint layer = specificSublayer;
+    PacketOverIP packet = new PacketOverIP{};
+
+    optional MessageOverIP msgOptional = BinaryDecoder<MessageOverIP[len, layer]>(payload);
+    
+    if (msgOptional != nothing)
+    {
+        packet.Message = msgOptional as MessageOverIP;
+        if (packet.Message.Message is ControlMessageOverIP)
+        {
+            ControlMessageOverIP msg = packet.Message.Message as ControlMessageOverIP;
+            packet#SummaryOverIP = "Control message, ";
+            foreach (AvpFormat avp in msg.Avps)
+            {
+                if (avp.AttributeValue is AvpMessageType)
+                {
+                    packet#SummaryOverIP = (packet#SummaryOverIP as string) + GetMessageTypeString((avp.AttributeValue as AvpMessageType).MessageType) + ", ";
+                }
+                else if (avp.AttributeValue is Cookie)
+                {
+                    cookieLength = (avp.AttributeValue as Cookie).AssignedCookie.Count as uint;
+                }
+                else if (avp.AttributeValue is L2SpecificSublayer)
+                {
+                    specificSublayer = (avp.AttributeValue as L2SpecificSublayer).L2SpecificSublayerType;
+                }
+            }
+            packet#SummaryOverIP = (packet#SummaryOverIP as string) + "ControlConnectionID = " + (msg.Header.ControlConnectionID as string);
+        }
+        else if (packet.Message.Message is DataMessageOverIP)
+        {
+            DataMessageOverIP[len, layer] data = packet.Message.Message as DataMessageOverIP[len, layer];
+            packet#SummaryOverIP = "Data message, SessionID = " + (data.Header.SessionID as string);
+            packet.Payload = data.Payload;
+        }
+    }
+    else
+    {
+        ThrowDecodingException("L2TP");
+    }
+
+    return packet;
+}
+
+PacketOverUDP L2TPOverUDPDecoder(stream payload, ref uint cookieLength, ref uint specificSublayer)
+{
+    uint len = cookieLength;
+    uint layer = specificSublayer;
+    PacketOverUDP packet = new PacketOverUDP{};
+
+    optional MessageOverUDP msgOptional = BinaryDecoder<MessageOverUDP[len, layer]>(payload);
+
+    if (msgOptional != nothing)
+    {
+        packet.Message = msgOptional as MessageOverUDP;
+        if (packet.Message.Message is ControlMessageOverUDP)
+        {
+            ControlMessageOverUDP msg = packet.Message.Message as ControlMessageOverUDP;
+            packet#SummaryOverUDP = "Control message, ";
+            foreach (AvpFormat avp in msg.Avps)
+            {
+                if (avp.AttributeValue is AvpMessageType)
+                {
+                    packet#SummaryOverUDP = (packet#SummaryOverUDP as string) + GetMessageTypeString((avp.AttributeValue as AvpMessageType).MessageType) + ", ";
+                }
+                else if (avp.AttributeValue is Cookie)
+                {
+                    cookieLength = (avp.AttributeValue as Cookie).AssignedCookie.Count as uint;
+                }
+                else if (avp.AttributeValue is L2SpecificSublayer)
+                {
+                    specificSublayer = (avp.AttributeValue as L2SpecificSublayer).L2SpecificSublayerType;
+                }
+            }
+            packet#SummaryOverUDP = (packet#SummaryOverUDP as string) + "ControlConnectionID = " + (msg.Header.ControlConnectionID as string);
+        }
+        else if (packet.Message.Message is DataMessageOverUDP)
+        {
+            DataMessageOverUDP[len, layer] data = packet.Message.Message as DataMessageOverUDP[len, layer];
+            packet#SummaryOverUDP = "Data message, SessionID = " + (data.Header.SessionID as string);
+            packet.Payload = data.Payload;
+        }
+    }
+    else
+    {
+        ThrowDecodingException("L2TP");
+    }
+
+    return packet;
+}

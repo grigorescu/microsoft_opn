@@ -1,0 +1,92 @@
+protocol HSRP with 
+BinaryEncodingDefaults{Endian = Endian.Big},
+Documentation
+{
+    ProtocolName = "Hot Standby Router Protocol",
+    ShortName = "HSRP",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+            new Reference{Name = "RFC 2281"},
+            new Reference{Name = "HSRP", Link = "http://www.networksorcery.com/enp/protocol/hsrp.htm"},
+        ],
+    RevisionSummary =
+        [
+            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "11/16/2011"}
+        ]
+};
+
+using Standard;
+using UDP;
+using IANA;
+using Utility;
+
+endpoint Node over UDP.Host accepts Packet;
+
+// Since Bug 36618, change all the "binding" to actor temporarily.
+//binding HSRPOverUDP: Node over node:UDP.Host
+//{
+    //rule node accepts UDP.Datagram{DestinationPort is Port.HSRP, Payload is d:Packet from BinaryDecoder<HSRP.Packet>} =>
+        //Node accepts d;
+    //rule node accepts UDP.Datagram{SourcePort is Port.HSRP, Payload is d:Packet from BinaryDecoder<HSRP.Packet>} =>
+        //Node accepts d;
+//}
+
+const set<byte> HSRPState = {0, 1, 2, 4, 8, 16};
+
+autostart actor HSRPOverUDP(UDP.Host host)
+{
+    process host accepts d:UDP.Datagram where (d.DestinationPort == Port.HSRP || d.SourcePort == Port.HSRP) && d.Payload[0] == 0 && HSRPState[d.Payload[2]]
+    {
+        switch (d.Payload)
+        {
+            case p:Packet from BinaryDecoder<HSRP.Packet> =>
+                dispatch (endpoint Node over host) accepts p;
+            default => 
+                ThrowDecodingException("HSRP");
+        }
+    }
+}
+
+message Packet
+{
+    byte Version where ValidationCheck(value == 0, null, "HSRP: The Version in message Packet must be zero.");
+    byte Opcode;
+    byte State;
+    byte HelloTime;
+    byte HoldTime;
+    byte Priority;
+    byte Group;
+    byte Reserved;
+    string AuthenticationData with BinaryEncoding{Length = 8, TextEncoding = TextEncoding.ASCII};
+    binary VirtualIPAddress where ValidationCheck(value.Count == 4, null, "Length of an IPv4 Address must be 4 bytes.");
+    
+    override string ToString()
+    {
+        string displayStr = "HSRP: ";
+        switch (Opcode)
+        {
+            case 0x00 => displayStr += "Hello (";
+            case 0x01 => displayStr += "Coup (";
+            case 0x02 => displayStr += "Resign (";
+            default   => displayStr += "Unknown Code (";
+        }
+        displayStr += (Opcode as string) + ") " + "State: ";
+        switch (State)
+        {
+            case 0 => displayStr += "Initial (";
+            case 1 => displayStr += "Learn (";
+            case 2 => displayStr += "Listen (";
+            case 4 => displayStr += "Speak (";
+            case 8 => displayStr += "Standby (";
+            case 16 => displayStr += "Active (";
+            default => displayStr += "Unknown State (";
+        }
+        displayStr += (State as string) + ")";
+        return displayStr;
+    }
+}

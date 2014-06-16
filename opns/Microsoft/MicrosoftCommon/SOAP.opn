@@ -1,0 +1,484 @@
+protocol SOAP with
+StreamEncodingDefaults{Encoding = TextEncoding.ASCII},
+Documentation
+{
+    ProtocolName = "Simple Object Access Protocol",
+    ShortName = "SOAP",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+            new Reference{Name = "SOAP", Link = "http://www.w3.org/TR/soap/"},
+        ],
+    RevisionSummary = 
+        [
+            new Revision{Class=RevisionClass.Major, Version="1.0.0", Date="09/02/2011"}
+        ]
+};
+
+using HTTP;
+using SOAP11;
+using SOAP12;
+using Utility;
+using IANA;
+using UDP;
+using MIME;
+
+// Endpoint: Server
+endpoint Server 
+    over HTTP.Server | over UDP.Host | over MIME.Server
+    accepts SoapMessage
+    issues SoapMessage;
+
+client endpoint Client connected to Server;
+
+// Actor: Decode soap message from HTTP server endpoint side
+autostart actor SoapServerOverHTTP(HTTP.Server server)
+{
+    SoapCache soapCache = new SoapCache{};
+    xml xmlValue;
+    
+    process server issues res:HttpContract.Response where res.Payload.Count > 0 && IsValidSoapFormat(res.HTTPContentType, res.Payload, out xmlValue)
+    {
+        if (!soapCache.HasInitialized)
+        {
+            soapCache.Initialize(server);
+        }
+        soapCache.SourceData = res.Payload;
+        SOAPDecoder(xmlValue, soapCache, soapCache.IssueDispatcher);
+    }
+    
+    process server accepts req:HttpContract.Request where req.Payload.Count > 0 && IsValidSoapFormat(req.HTTPContentType, req.Payload, out xmlValue)
+    {
+        if (!soapCache.HasInitialized)
+        {
+            soapCache.Initialize(server);
+        }
+        soapCache.SourceData = req.Payload;
+        soapCache.SoapAction = GetSOAPActionFromHTTPHeader(req);
+        SOAPDecoder(xmlValue, soapCache, soapCache.AcceptDispatcher);
+    }
+}
+
+// Actor: Decode soap message from MIME server endpoint side
+autostart actor SoapServerOverMIME(MIME.Server server)
+{
+    SoapCache soapCache = new SoapCache{};
+    
+    process server accepts p:MIME.Mime
+    {
+        if (!soapCache.HasInitialized)
+        {
+            soapCache.Initialize(server);
+        }
+        
+        if (!SoapOverMimeHandler(p, soapCache, soapCache.AcceptDispatcher))
+        {
+            reject;
+        }
+    }
+    
+    process server issues p:MIME.Mime
+    {
+        if (!soapCache.HasInitialized)
+        {
+            soapCache.Initialize(server);
+        }
+        
+        if (!SoapOverMimeHandler(p, soapCache, soapCache.IssueDispatcher))
+        {
+            reject;
+        }
+    }
+}
+
+autostart actor MIMEOverHTTPServer(HTTP.Server server)
+{
+    SoapCache soapCache = new SoapCache{}; 
+    
+    process server accepts p:HttpContract.Request where p.Headers.ContentTypeContains("multipart") && p.Payload.Count > 0
+    {
+        if (!soapCache.HasInitialized)
+        {
+            soapCache.Initialize(server);
+        }
+        
+        soapCache.SourceData = p.Payload;
+        var body = MIME.MimeBodyDecoder(p.Payload, p.Headers);
+        p#Embedded = {"MIME" -> body};
+        
+        soapCache.SoapAction = GetSOAPActionFromHTTPHeader(p);
+        if (!SoapOverMimeHandler(body, soapCache, soapCache.AcceptDispatcher))
+        {
+            reject;
+        }
+    }
+    
+    process server issues p:HttpContract.Response where p.Headers.ContentTypeContains("multipart") && p.Payload.Count > 0
+    {
+        if (!soapCache.HasInitialized)
+        {
+            soapCache.Initialize(server);
+        }
+        
+        soapCache.SourceData = p.Payload;
+        var body = MIME.MimeBodyDecoder(p.Payload, p.Headers);
+        p#Embedded = {"MIME" -> body};
+        
+        if (!SoapOverMimeHandler(body, soapCache, soapCache.IssueDispatcher))
+        {
+            reject;
+        }
+    }
+}
+
+void Initialize(this SoapCache soapCache, MIME.Server server)
+{
+    soapCache.Node = endpoint SOAP.Server over server;
+    soapCache.HasInitialized = true;
+}
+
+bool SoapOverMimeHandler((MimeBody | Mime) msg, SoapCache cache, void(SOAP.SoapMessage) dispatcher)
+{
+    array<any> bodies;
+    switch (msg)
+    {
+        case m:MimeBody =>
+            if (m.Bodies == null)
+            {
+                return false;
+            }
+            bodies = m.Bodies;
+            
+        case m:Mime =>
+            if (m.Bodies == nothing)
+            {
+                return false;
+            }
+            bodies = (m.Bodies as MimeBody).Bodies;
+    }
+
+    bool isSoapEncapsulated = false;
+    foreach (var b in bodies)
+    {
+        if (b is MultipartBodyType)
+        {
+            MultipartBodyType body = b as MultipartBodyType;
+            if ((body.Headers.ContentTypeContains("text/xml") || body.Headers.ContentTypeContains("application/xop+xml")) &&
+                body.Content is binary)
+            {
+                SOAPDecoder(body.Content as binary, cache, dispatcher);
+                isSoapEncapsulated = true;
+            }
+        }
+    }
+
+    return isSoapEncapsulated;
+}
+
+// Defines for the dispatcher function
+type SoapCache
+{
+    bool HasInitialized = false;
+    
+    optional string SoapAction;
+    Server Node;
+    binary SourceData;
+    
+    void AcceptDispatcher(SOAP.SoapMessage msg)
+    {
+        dispatch Node accepts msg;
+    }
+
+    void IssueDispatcher(SOAP.SoapMessage msg)
+    {
+        dispatch Node issues msg;
+    }
+    
+    void Initialize(HTTP.Server server)
+    {
+        Node = endpoint Server over server;
+        HasInitialized = true;
+    }
+}
+
+void SOAPDecoder(xml content, SoapCache soapCache, void(SOAP.SoapMessage) dispatcher)
+{
+    if (content.NamespaceUri == nothing)
+    {
+        throw "SOAP: Failed to get namespace for Envelope.";
+    }
+    string ns = content.NamespaceUri as string;
+    var soapAction = soapCache.SoapAction;
+    if (ns == Soap12Namespace)
+    {
+        switch (content)
+        {
+            case env12:SOAP12.Envelope from XmlDecoder<SOAP12.Envelope> =>
+                SOAP.SoapMessage msg = SoapMessageFromEnvelope(env12, soapCache.SourceData);
+                msg.Action = (soapAction == nothing) ? nothing : (soapAction as string).Trim();
+                dispatcher(msg);
+            default =>
+                ThrowDecodingException("SOAP 1.2", "Envelope");
+        }
+    }
+    else if (ns == Soap11Namespace)
+    {
+        switch (content)
+        {
+            case env11:SOAP11.Envelope from XmlDecoder<SOAP11.Envelope> =>
+                SOAP.SoapMessage msg = SoapMessageFromEnvelope(env11, soapCache.SourceData);
+                msg.Action = (soapAction == nothing) ? nothing : (soapAction as string).Trim();
+                dispatcher(msg);
+            default =>
+                ThrowDecodingException("SOAP 1.1", "Envelope");
+        }
+    }
+}
+
+void SOAPDecoder(binary bin, SoapCache soapCache, void(SOAP.SoapMessage) dispatcher)
+{
+    xml xmlValue = BuildXml(LiteralString(bin) as string);
+    if (xmlValue != null)
+    {
+        var envelope = (xmlValue.Children).Filter(e => (e as xml).Kind == XmlKind.Element && ((e as xml).Name as XmlName).LocalName == "Envelope");
+        if (envelope.Count > 0)
+        {
+            xmlValue = envelope[0];
+            SOAPDecoder(xmlValue, soapCache, dispatcher);
+        }
+        else
+        {
+            throw "SOAP: Xml payload does not contains Envelope element.";
+        }
+    }
+    else
+    {
+        throw "SOAP: Failed to decode raw data into xml.";
+    }
+}
+
+// Soap Message
+// Note: Soap message should be constructed in actor by OPN code,
+// not decoded directly from XmlDecoder
+message SoapMessage
+{
+    (SOAP12.Envelope | SOAP11.Envelope) Envelope;
+    // The following fields are cached to improve efficiency
+    optional xml Header;
+    xml Body;
+    bool ContainsFault;
+    optional (SOAP12.Fault | SOAP11.Fault) Fault;
+    optional xml FaultDetail;
+    optional string Action with Encoding{Ignore = true};
+    
+    override string ToString()
+    {
+        string summary = "SOAP" + (Action == nothing ? "" : ", Action: " + Action.ToString());
+        return summary + ", Version: " + this.Version;
+    }
+}
+
+string get Version(this SoapMessage soap)
+{
+	switch(soap.Envelope)
+	{
+		case SOAP11.Envelope => return "1.1";
+		case SOAP12.Envelope => return "1.2";
+		default => return null;
+	}
+}
+
+// Function which creates SoapMessage from envelope
+SoapMessage SoapMessageFromEnvelope((SOAP11.Envelope | SOAP12.Envelope) env, binary sourceData)
+{
+    SoapMessage soapMsg = null;
+    if (env is SOAP12.Envelope)
+    {
+        var env12 = env as SOAP12.Envelope;
+        soapMsg = new SoapMessage { Envelope = env12, Header = env12.Header, Body = env12.Body };
+        soapMsg.SourceData = sourceData;
+        
+        soapMsg.AssignFieldEncodingInfo("Envelope", 0, sourceData.Count * 8);
+        
+        /* Temporarily disabling XMLChunk related codes since Soumit disabled XMLChunk in Technology.
+        DataChunks headerChunk = new DataChunks();
+        headerChunk.DataSource = sourceData;
+        headerChunk.Chunks = [new XMLChunk{XPath = Soap12Namespace + ":Header"}];
+        soapMsg.AssociateField("Header", headerChunk);
+        
+        DataChunks bodyChunk = new DataChunks();
+        bodyChunk.DataSource = sourceData;
+        bodyChunk.Chunks = [new XMLChunk{XPath = Soap12Namespace + ":Body"}];
+        soapMsg.AssociateField("Body", bodyChunk);
+        */
+        var faults12 = env12.Body.GetChild(new XmlName{NamespaceUri = Soap12Namespace, LocalName = "Fault"});
+        if (faults12 != nothing)
+        {
+            soapMsg.ContainsFault = true;
+            var fault12 = XmlDecoder<SOAP12.Fault>(faults12 as xml);
+            
+            if (fault12 == nothing)
+            {
+                ValidationCheck(false, soapMsg, "Cannot parse Fault element, probably due to invalid data.");
+            }
+            else
+            {
+                soapMsg.Fault = fault12;
+                soapMsg.FaultDetail = (fault12 as SOAP12.Fault).Detail;
+                
+                /*
+                DataChunks faultChunk = new DataChunks();
+                faultChunk.DataSource = sourceData;
+                faultChunk.Chunks = [new XMLChunk{XPath = Soap12Namespace + ":Fault"}];
+                soapMsg.AssociateField("Fault", faultChunk);
+                
+                DataChunks detailChunk = new DataChunks();
+                detailChunk.DataSource = sourceData;
+                detailChunk.Chunks = [new XMLChunk{XPath = Soap12Namespace + ":Detail"}];
+                soapMsg.AssociateField("FaultDetail", detailChunk);
+                 */
+            }
+        }
+        else 
+        {
+            soapMsg.ContainsFault = false;
+            soapMsg.Fault = nothing;
+            soapMsg.FaultDetail = nothing;
+        }
+    }
+    else if (env is SOAP11.Envelope)
+    {
+        var env11 = env as SOAP11.Envelope;
+        soapMsg = new SoapMessage { Envelope = env11, Header = env11.Header, Body = env11.Body };
+        soapMsg.SourceData = sourceData;
+        
+        soapMsg.AssignFieldEncodingInfo("Envelope", 0, sourceData.Count * 8);
+        /*
+        DataChunks headerChunk = new DataChunks();
+        headerChunk.DataSource = sourceData;
+        headerChunk.Chunks = [new XMLChunk{XPath = Soap11Namespace + ":Header"}];
+        soapMsg.AssociateField("Header", headerChunk);
+        
+        DataChunks bodyChunk = new DataChunks();
+        bodyChunk.DataSource = sourceData;
+        bodyChunk.Chunks = [new XMLChunk{XPath = Soap11Namespace + ":Body"}];
+        soapMsg.AssociateField("Body", bodyChunk);
+        */
+        var faults11 = env11.Body.GetChild(new XmlName{NamespaceUri = Soap11Namespace, LocalName = "Fault"});
+        if (faults11 != nothing)
+        {
+            soapMsg.ContainsFault = true;
+            var fault11 = XmlDecoder<SOAP11.Fault>(faults11 as xml);
+            if (fault11 == nothing)
+            {
+                ValidationCheck(false, soapMsg, "SOPA: Failed to parse Fault element, maybe due to invalid data.");
+            }
+            else
+            {
+                soapMsg.Fault = fault11;
+                soapMsg.FaultDetail = (fault11 as SOAP11.Fault).Detail;
+                /*
+                DataChunks faultChunk = new DataChunks();
+                faultChunk.DataSource = sourceData;
+                faultChunk.Chunks = [new XMLChunk{XPath = Soap11Namespace + ":Fault"}];
+                soapMsg.AssociateField("Fault", faultChunk);
+                
+                DataChunks detailChunk = new DataChunks();
+                detailChunk.DataSource = sourceData;
+                detailChunk.Chunks = [new XMLChunk{XPath = Soap11Namespace + ":Detail"}];
+                soapMsg.AssociateField("FaultDetail", detailChunk);
+                 */
+            }
+        }
+        else
+        {
+            soapMsg.ContainsFault = false;
+            soapMsg.Fault = nothing;
+            soapMsg.FaultDetail = nothing;
+        }
+    }
+    return soapMsg;
+}
+
+autostart actor SoapOverUdpHost(UDP.Host host)
+{
+    SoapCache soapCache = new SoapCache{};
+    
+    process host accepts p:Datagram where p.Payload.Count > 0 && (p.SourcePort == IANA.Port.WSDiscovery || p.DestinationPort == IANA.Port.WSDiscovery)
+    {
+        if (!soapCache.HasInitialized)
+        {
+            soapCache.Node = endpoint Server over host;
+            soapCache.HasInitialized = true;
+        }
+        soapCache.SourceData = p.Payload;
+        SOAPDecoder(p.Payload, soapCache, soapCache.AcceptDispatcher);
+    }
+}
+
+bool IsValidSoapFormat(HeaderFieldType httpContentType, binary bin, out xml xmlValue)
+{
+    // In the SOAP 1.2 HTTP binding, the Content-type header should be "application/soap+xml" instead of "text/xml" as in SOAP 1.1.
+    if (httpContentType == null || httpContentType.Value.Contains("text/xml") || httpContentType.Value.Contains("application/soap+xml"))
+    {
+        // Valid XML starting characters: "<" or "&lt;", may have leading white characters.
+        if (XmlStartingLine(bin) != nothing)
+        {
+            xmlValue = BuildXml(LiteralString(bin) as string);
+            if (xmlValue != null)
+            {
+                // There may be an XML declaration node before "Envelope" node.
+                var envelope = (xmlValue.Children).Filter(e => (e as xml).Kind == XmlKind.Element && ((e as xml).Name as XmlName).LocalName == "Envelope");
+                if (envelope.Count > 0)
+                {
+                    xmlValue = envelope[0];
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+syntax decoder = TextDecoder;
+
+syntax XmlStartingLine = regex{[ \r\n]*} ("<" | "&lt;");
+syntax LiteralString = s:regex{[\x00-\x7F]+} => s;  
+
+const array<string> SoapContentSubtypes = ["xml", "soap+xml"];
+
+optional string GetSOAPActionFromHTTPHeader(HttpContract.Request req)
+{
+    string result;
+    bool SOAPActionExist = false;
+    set<string> keys = req.Headers.Keys;
+    if (keys["SOAPAction"] || keys["soapaction"])
+    {   
+        string k = keys["SOAPAction"] ? "SOAPAction" : "soapaction";
+        stream s = req.Headers[k] as string;
+        SOAPActionExist = true;
+        result = SOAPAction(s) as string;
+    }
+    
+    if (SOAPActionExist)
+    {
+        return result;
+    }
+    else if (req#SoapAction != nothing)
+    {
+        return req#SoapAction;
+    }
+    else
+    {
+        return nothing;
+    }
+}
+
+syntax SOAPAction = HTTP.SP? HTTP.Quote? uri:URIReference HTTP.Quote? HTTP.SP? => uri; 
+
+// WORKAROUND: Should follow <as defined in RFC 2396 [4]>
+syntax URIReference = regex{[^\"\r\n]*};

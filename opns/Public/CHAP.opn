@@ -1,0 +1,84 @@
+﻿protocol CHAP with 
+BinaryEncodingDefaults{Endian = Endian.Big},
+Documentation
+{
+    ProtocolName = "PPP Challenge Handshake Authentication Protocol ",
+    ShortName = "CHAP",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+            new Reference{Name = "RFC 1994"},
+        ],
+    RevisionSummary = 
+        [
+             new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "10/18/2011"}
+        ]
+};
+
+using Standard;
+using Utility;
+using PPP;
+
+endpoint Node
+    accepts Packet;
+
+autostart actor CHAPOverPPP(PPP.Node node)
+{
+    process node accepts f:PPP.Frame where GetPacketTypeValue(f.PacketType) == 0xC223
+    {
+        switch (f.Payload)
+        {
+            case p: Packet from BinaryDecoder<Packet> =>
+                dispatch (endpoint Node) accepts p;
+            default =>
+                ThrowDecodingException("CHAP");
+        }
+    }
+}
+
+message Packet
+{
+    Code Code;
+    byte Identifier;
+    ushort Length;
+    ([|Code in {1, 2}|] ChallengeOrResponse[Length] | [|Code in {3, 4}|] SuccessOrFailure[Length]) Data;
+    
+    override string ToString()
+    {
+        string DataInfo = "";
+        switch (Data)
+        {
+            case t: ChallengeOrResponse =>
+                DataInfo = (t.Name == "") ? "" : " Name = " + t.Name;
+            case t: SuccessOrFailure =>
+                DataInfo = ((t.Message == nothing) ? "" : " Message = " + (t.Message as string));
+        }
+        return EnumToString(Code, "CHAP.Code") + " ID = " + (Identifier as string) + " Length = " + (Length as string) + DataInfo;
+    }
+}
+
+// 4.1.  Challenge and Response
+type ChallengeOrResponse[ushort Length]
+{
+    byte ValueSize;
+    array<byte> Value with BinaryEncoding{Length = ValueSize};
+    string Name with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = (Length - ValueSize - 5) as uint};
+}
+
+// 4.2.  Success and Failure
+type SuccessOrFailure [ushort Length]
+{
+    optional ( [|Length > 4|] string) Message with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = (Length - 4) as uint};
+}
+
+pattern Code = enum byte
+{
+    Challenge     = 1,
+    Response      = 2,
+    Success       = 3,
+    Failure       = 4,
+};

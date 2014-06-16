@@ -1,0 +1,1354 @@
+protocol RPCBIND with 
+BinaryEncodingDefaults{Endian = Endian.Big, TextEncoding = TextEncoding.ASCII},
+Documentation
+{
+    ProtocolName = "Binding Protocols for ONC RPC Version 2",
+    ShortName = "RPCBIND",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References =
+        [
+            new Reference{Name = "RFC 1833"},
+            new Reference{Name = "RFC 4506"},
+        ],
+    RevisionSummary =
+        [
+            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "11/03/2011"}
+        ]
+};
+
+using Utility;
+using SunRPC;
+using TCP;
+using UDP;
+using IANA;
+using XDR;
+using VirtualTransport;
+
+annotation uint RpcBindXid;
+annotation uint RpcBindVers;
+
+endpoint Server over IntermediateServer provides Rpcbprog consumes Rpcbprog;
+client endpoint Client connected to Server;
+
+endpoint IntermediateServer over SunRPC.Node provides RpcbprogMessage consumes RpcbprogMessage;
+client endpoint IntermediateClient connected to IntermediateServer;
+/*
+ * A mapping of (program, version, network ID) to address
+ *
+ * The network identifier  (r_netid):
+ * This is a string that represents a local identification for a
+ * network. This is defined by a system administrator based on local
+ * conventions, and cannot be depended on to have the same value on
+ * every system.
+ */
+type Rpcb
+{
+    XdrUnsignedInt RProg;    /* program number */
+    XdrUnsignedInt RVers;    /* version number */
+    XDRString RNetid;        /* network id */
+    XDRString RAddr;         /* universal address */
+    XDRString ROwner;        /* owner of this service */
+};
+
+type RpList
+{
+    Rpcb RpcbMap;
+    XDRBool Opted;
+    optional [|Opted == XDRBool.TRUE|] RpList RpcbNext;
+}
+
+/* results of RpcbprocDUMP */
+type RpcblistPtr
+{
+    XDRBool Opted;
+    optional [|Opted == XDRBool.TRUE|] RpList RpList;
+}
+
+/*
+ * Arguments of remote calls
+ */
+type RpcbRmtcallargs
+{
+    XdrUnsignedInt Prog;        /* program number */
+    XdrUnsignedInt Vers;        /* version number */
+    XdrUnsignedInt Proc;        /* procedure number */
+    XdrOpaqueVariable Args;             /* argument */
+}
+
+/*
+ * Results of the remote call
+ */
+type RpcbRmtcallres
+{
+    XDRString Addr;
+    XdrOpaqueVariable Results;         /* result */
+}
+
+// This represents the type of transport, and has the following values:
+pattern TransportSemantics = enum XdrUnsignedInt
+{
+    NcTpiClts       = 1,//      Connectionless
+    NcTpiCots       = 2,//      Connection oriented
+    NcTpiCotsOrd    = 3,//      Connection oriented with graceful close
+    NcTpiRaw        = 4,//      Raw transport
+};
+
+// This identifies the family to which the protocol belongs.  The following values are defined:
+pattern ProtocolFamily = enum string
+{
+    NcNoprotofmly   = "-",
+    NcLoopback      = "loopback",
+    NcInet          = "inet",
+    NcImpLink       = "implink",
+    NcPup           = "pup",
+    NcChaos         = "chaos",
+    NcNs            = "ns",
+    NcNbs           = "nbs",
+    NcEcma          = "ecma",
+    NcDatakit       = "datakit",
+    NcCcitt         = "ccitt",
+    NcSna           = "sna",
+    NcDecnet        = "decnet",
+    NcDli           = "dli",
+    NcLat           = "lat",
+    NcHylink        = "hylink",
+    NcAppletalk     = "appletalk",
+    NcNit           = "nit",
+    NcIeee802       = "ieee802",
+    NcOsi           = "osi",
+    NcX25           = "x25",
+    NcOsinet        = "osinet",
+    NcGosip         = "gosip",
+};
+
+// This identifies a protocol within a family.  The following are currently defined:
+pattern ProtocolName = enum string
+{
+    NcNoproto      = "-",
+    NcTcp          = "tcp",
+    NcUdp          = "udp",
+    NcIcmp         = "icmp",
+};
+
+/*
+ * rpcb_entry contains a merged address of a service on a particular
+ * transport, plus associated netconfig information.  A list of
+ * rpcb_entry items is returned by RpcbprocGETADDRLIST.  The meanings
+ * and values used for the r_nc_* fields are given below.
+ */
+type RpcbEntry
+{
+    XDRString RMaddr;            /* merged address of service */
+    XDRString RNcNetid;         /* netid field */
+    TransportSemantics RNcSemantics;       /* semantics of transport */
+    XDRString RNcProtofmly where ValidationCheck(value.Value is ProtocolFamily, null, "RncProtofmly should be one value of enum ProtocolFamily.");     /* protocol family */
+    XDRString RNcProto where ValidationCheck(value.Value is ProtocolName, null, "RNcProto should be one value of enum ProtocolName.");         /* protocol name */
+};
+
+/*
+ * A list of addresses supported by a service.
+ */
+type RpcbEntryList
+{
+    RpcbEntry RpcbEntryMap;
+    XDRBool Opted;
+    optional [|Opted == XDRBool.TRUE|] RpcbEntryList RpcbEntryNext;
+};
+
+type RpcbEntryListPtr
+{
+    XDRBool Opted;
+    optional [|Opted == XDRBool.TRUE|] RpcbEntryList RpcbEntryList;
+}
+
+/*
+ * rpcbind statistics
+ */
+
+//const rpcb_highproc_2 = RPCBPROC_CALLIT;
+//const rpcb_highproc_3 = RPCBPROC_TADDR2UADDR;
+//const rpcb_highproc_4 = RPCBPROC_GETSTAT;
+
+const uint RpcbStatHighProc = 13; /* # of procs in rpcbind V4 plus one */
+const uint RpcbVersStat     = 3; /* provide only for rpcbind V2, V3 and V4 */
+const uint RpcbVers4Stat   = 2;
+const uint RpcbVers3Stat   = 1;
+const uint RpcbVers2Stat   = 0;
+
+
+/* Link list of all the stats about getport and getaddr */
+type RpcbsAddrList
+{
+    XdrUnsignedInt Prog;
+    XdrUnsignedInt Vers;
+    XDRInt Success;
+    XDRInt Failure;
+    XDRString Netid;
+    RpcbsAddrlistPtr Next;
+}
+
+/* Link list of all the stats about rmtcall */
+type RpcbsRmtcalllist
+{
+    XdrUnsignedInt Prog;
+    XdrUnsignedInt Vers;
+    XdrUnsignedInt Proc;
+    XDRInt Success;
+    XDRInt Failure;
+    XDRInt Indirect;    /* whether callit or indirect */
+    XDRString Netid;
+    RpcbsRmtcalllistPtr Next;
+}
+
+type RpcbsProc
+{
+    array<XDRInt> Value with BinaryEncoding{Length = RpcbStatHighProc};
+}
+
+type RpcbsAddrlistPtr
+{
+    XDRBool Opted;
+    optional [|Opted == XDRBool.TRUE|] RpcbsAddrList OptedValue;
+}
+
+type RpcbsRmtcalllistPtr
+{
+    XDRBool Opted;
+    optional [|Opted == XDRBool.TRUE|] RpcbsRmtcalllist OptedValue;
+}
+
+type RpcbStat
+{
+    RpcbsProc Info;
+    XDRInt Setinfo;
+    XDRInt Unsetinfo;
+    XDRBool AddrListOpted;
+    optional [|AddrListOpted == XDRBool.TRUE|] RpcbsAddrList Addrinfo;
+    // WORDAROUND:Bug#30723 Cannot reference gerneric type defined in another project
+    //XDROptional<RpcbsAddrList> Addrinfo;
+    XDRBool RmtcalllistOpted;
+    optional [|RmtcalllistOpted == XDRBool.TRUE|] RpcbsRmtcalllist Rmtinfo;
+    // WORDAROUND:Bug#30723 Cannot reference gerneric type defined in another project
+    //XDROptional<RpcbsRmtcalllist> Rmtinfo;
+};
+
+/*
+ * One rpcb_stat structure is returned for each version of rpcbind
+ * being monitored.
+ */
+type RpcbStatByvers
+{
+    array<RpcbStat> Items with BinaryEncoding{Length = RpcbVersStat};
+}
+
+/*
+ * netbuf structure, used to store the transport specific form of
+ * a universal transport address.
+ */
+type Netbuf
+{
+    XdrUnsignedInt Maxlen;
+    XdrOpaqueVariable Buf;
+};
+
+/*
+ * rpcbind procedures
+ */
+contract Rpcbprog
+{
+    // Proc = 1;
+    operation RpcbprocSet
+    {
+        in Rpcb Rpcb;
+        out XDRBool Result;
+        
+        override string ToString()
+        {
+            return "V" + (this#RpcBindVers as string) + " RPCBPROC_SET Service Message";
+        }
+    }
+
+    // Proc = 2;
+    operation RpcbprocUnset
+    {
+        in Rpcb Rpcb;
+        out XDRBool Result;
+        
+        override string ToString()
+        {
+            return "V" + (this#RpcBindVers as string) + " RPCBPROC_UNSET Service Message";
+        }
+    }
+
+    // Proc = 3;
+    operation RpcbprocGetaddr
+    {
+        in Rpcb Rpcb;
+        out XDRString Addr;
+        
+        override string ToString()
+        {
+            return "V" + (this#RpcBindVers as string) + " RPCBPROC_GETADDR Service Message";
+        }
+    }
+
+    // Proc = 4;
+    operation RpcbprocDump
+    {
+        out RpcblistPtr Addr;
+        
+        override string ToString()
+        {
+            return "V" + (this#RpcBindVers as string) + " RPCBPROC_DUMP Service Message";
+        }
+    }
+
+    // Proc = 5; Vers = 3
+    operation RpcbprocCallit
+    {
+        // Currently we can't find any sections in TD specified the 'RpcbRmtcallargs' is optional, but some frames of SunRPC doesn't have payload.
+        in optional RpcbRmtcallargs Callargs;
+        out RpcbRmtcallres Callres;
+        
+        override string ToString()
+        {
+            return "V3 RPCBPROC_CALLIT Service Message";
+        }
+    }
+
+    // Proc = 6;
+    operation RpcbprocGettime
+    {
+        out uint Time; // This procedure returns the local time on its own machine in seconds since the midnight of the First day of January, 1970.
+        
+        override string ToString()
+        {
+            return "V" + (this#RpcBindVers as string) + " RPCBPROC_GETTIME Service Message";
+        }
+    }
+
+    // Proc = 7;
+    operation RpcbprocUaddr2taddr
+    {
+        in XDRString UniversalAddresses;
+        out Netbuf TransportSpecificAddresses;
+        
+        override string ToString()
+        {
+            return "V" + (this#RpcBindVers as string) + " RPCBPROC_UADDR2TADDR Service Message";
+        }
+    }
+
+    // Proc = 8;
+    operation RpcbprocTaddr2uaddr
+    {
+        in Netbuf TransportSpecificAddresses;
+        out XDRString UniversalAddresses;
+        
+        override string ToString()
+        {
+            return "V" + (this#RpcBindVers as string) + " RPCBPROC_TADDR2UADDR Service Message";
+        }
+    }
+
+    // Proc = 5;Vers = 4
+    operation RpcbprocBcast// = RpcbprocCallit;
+    {
+        // Currently we can't find any sections in TD specified the 'RpcbRmtcallargs' is optional, but some frames of SunRPC doesn't have payload.
+        in optional RpcbRmtcallargs Callargs;
+        out RpcbRmtcallres Callres;
+        
+        override string ToString()
+        {
+            return "V4 RPCBPROC_BCAST Service Message";
+        }
+    }
+
+    // ________________________________Below operations is only for Vers = 4_______________________________________
+
+    // This procedure is similar to RPCBPROC_GETADDR.  The difference is the
+    // "r_vers" field of the rpcb structure can be used to specify the
+    // version of interest.  If that version is not registered, no address
+    // is returned.
+    // Proc = 9;
+    operation RpcbprocGetversaddr
+    {
+        in Rpcb Rpcb;
+        out XDRString Addr;
+        
+        override string ToString()
+        {
+            return "V4 RPCBPROC_GETVERSADDR Service Message";
+        }
+    }
+
+    // Proc = 10;
+    operation RpcbprocIndirect
+    {
+        // Currently we can't find any sections in TD specified the 'RpcbRmtcallargs' is optional, but some frames of SunRPC doesn't have payload.
+        in optional RpcbRmtcallargs Callargs;
+        out optional RpcbRmtcallres Callres;
+        
+        override string ToString()
+        {
+            return "V4 RPCBPROC_INDIRECT Service Message";
+        }
+    }
+
+    // Proc = 11;
+    operation RpcbprocGetaddrlist
+    {
+        in Rpcb Rpcb;
+        out RpcbEntryListPtr Addr;
+        
+        override string ToString()
+        {
+            return "V4 RPCBPROC_GETADDRLIST Service Message";
+        }
+    }
+
+    // Proc = 12;
+    operation RpcbprocGetstat
+    {
+        out RpcbStatByvers RpcbStatByvers;
+        
+        override string ToString()
+        {
+            return "V4 RPCBPROC_GETSTAT Service Message";
+        }
+    }
+}
+
+contract RpcbprogMessage
+{
+    accepts message CallRpcbprocSet
+    {
+        Rpcb Rpcb;
+    }
+
+    issues message ReturnRpcbprocSet
+    {
+        XDRBool Result;
+    }
+
+    accepts message CallRpcbprocUnset
+    {
+        Rpcb Rpcb;
+    }
+
+    issues message ReturnRpcbprocUnset
+    {
+        XDRBool Result;
+    }
+
+    accepts message CallRpcbprocGetaddr
+    {
+        Rpcb Rpcb;
+    }
+
+    issues message ReturnRpcbprocGetaddr
+    {
+        XDRString Addr;
+    }
+    
+    accepts message CallRpcbprocDump
+    {
+    }
+
+    issues message ReturnRpcbprocDump
+    {
+        RpcblistPtr Addr;
+    }
+
+    // Proc = 5; Vers = 3
+    accepts message CallRpcbprocCallit
+    {
+        // Currently we can't find any sections in TD specified the 'RpcbRmtcallargs' is optional, but some frames of SunRPC doesn't have payload.
+        optional RpcbRmtcallargs Callargs where ValidationCheck(value != nothing, this, "The RPCBPROC_CALLIT request must have parameters for program, version, and procedure number.");
+    }
+
+    issues message ReturnRpcbprocCallit
+    {
+        RpcbRmtcallres Callres;
+    }
+    
+    accepts message CallRpcbprocGettime
+    {
+    }
+
+    issues message ReturnRpcbprocGettime
+    {
+        uint Time; 
+    }
+
+    accepts message CallRpcbprocUaddr2taddr
+    {
+        XDRString UniversalAddresses;
+    }
+
+    issues message ReturnRpcbprocUaddr2taddr
+    {
+        Netbuf TransportSpecificAddresses;
+    }
+
+    accepts message CallRpcbprocTaddr2uaddr
+    {
+        Netbuf TransportSpecificAddresses;
+    }
+
+    issues message ReturnRpcbprocTaddr2uaddr
+    {
+        XDRString UniversalAddresses;
+    }
+
+    // Proc = 5;Vers = 4
+    accepts message CallRpcbprocBcast// = RpcbprocCallit;
+    {
+        // Currently we can't find any sections in TD specified the 'RpcbRmtcallargs' is optional, but some frames of SunRPC doesn't have payload.
+        optional RpcbRmtcallargs Callargs where ValidationCheck(value != nothing, this, "The RPCBPROC_BCAST request must have parameters for program, version, and procedure number.");
+    }
+
+    issues message ReturnRpcbprocBcast
+    {
+        RpcbRmtcallres Callres;
+    }
+
+    accepts message CallRpcbprocGetversaddr
+    {
+        Rpcb Rpcb;
+    }
+
+    issues message ReturnRpcbprocGetversaddr
+    {
+        XDRString Addr;
+    }
+
+    accepts message CallRpcbprocIndirect
+    {
+        // Currently we can't find any sections in TD specified the 'RpcbRmtcallargs' is optional, but some frames of SunRPC doesn't have payload.
+        optional RpcbRmtcallargs Callargs where ValidationCheck(value != nothing, this, "The RPCBPROC_INDIRECT request must have parameters for program, version, and procedure number.");
+    }
+
+    issues message ReturnRpcbprocIndirect
+    {
+        // we use optional and throw ValidationError here to let users know that's an ambiguous case which not fit RFC. RFC need to be clarified with SHOULD or MUST.
+        optional RpcbRmtcallres Callres where ValidationCheck(value != nothing, this, "The RPCBPROC_INDIRECT response must contain the remote program's universal address, and the results of the remote procedure.");
+    }
+
+    accepts message CallRpcbprocGetaddrlist
+    {
+        Rpcb Rpcb;
+    }
+
+    issues message ReturnRpcbprocGetaddrlist
+    {
+        RpcbEntryListPtr Addr;
+    }
+    
+    accepts message CallRpcbprocGetstat
+    {
+    }
+
+    issues message ReturnRpcbprocGetstat
+    {
+        RpcbStatByvers RpcbStatByvers;
+    }
+}
+
+// SunRPC Over TCP actor, Port.SunRPC is 111, and it's little than 1024, which isn't in the scope of Client selected port. so we could ignore the missingThreeWayHandshake issue.
+autostart actor SunRPCOverTCP(VirtualTransport.Server server)
+{
+    process server accepts s:VirtualTransport.VirtualDataSegment where (s.DestinationPort == Port.SunRPC)
+    { 
+        dispatch (endpoint SunRPC.RecordMarking over server) accepts s;
+    }
+    
+    process server issues s:VirtualTransport.VirtualDataSegment where (s.SourcePort == Port.SunRPC)
+    {
+        dispatch (endpoint SunRPC.RecordMarking over server) issues s;
+    }
+}
+
+// SunRPC Over UDP actor
+autostart actor SunRPCOverUDP(UDP.Host host)
+{
+    process host accepts d:UDP.Datagram where (d.Payload.Count > 0 && (d.DestinationPort == Port.SunRPC || d.SourcePort == Port.SunRPC))
+    {
+        dispatch (endpoint SunRPC.RecordMarking over host) accepts d;
+    }
+}
+
+const set<uint> RpcBindVersSet = {3, 4};
+
+// RpcBind Over SunRPC
+autostart actor RpcBindOverSunRPC(SunRPC.Node sunRpcNode)
+{
+    map<uint, array<uint>> ServerTransactionMap = {};
+    // accepts Call from UDP/TCP
+    process sunRpcNode accepts r:RpcMsg where (r.MType == MsgType.Call && (r.Body as CallBody).Prog == 100000 && RpcBindVersSet[(r.Body as CallBody).Vers])
+    {
+        if (!(r.Xid in ServerTransactionMap))
+        {
+            ServerTransactionMap[r.Xid] = [(r.Body as CallBody).Proc, (r.Body as CallBody).Vers];
+        }
+        MessageProcessing(r, ServerTransactionMap[r.Xid][0], ServerTransactionMap[r.Xid][1], true, AcceptsDispatcher);
+    }
+    // accepts Reply from UDP, reverse accept/issues direction for operation set up.
+    process sunRpcNode accepts r:RpcMsg where ((r.MType == MsgType.Reply) && (r.Xid in ServerTransactionMap) && (r.Body as ReplyBody).Stat == ReplyStat.MsgAccepted)
+    {
+        MessageProcessing(r, ServerTransactionMap[r.Xid][0], ServerTransactionMap[r.Xid][1], false, IssuesDispatcher);
+    }
+    // issues Reply from TCP
+    process sunRpcNode issues r:RpcMsg where ((r.MType == MsgType.Reply) && (r.Xid in ServerTransactionMap) && (r.Body as ReplyBody).Stat == ReplyStat.MsgAccepted)
+    {
+        MessageProcessing(r, ServerTransactionMap[r.Xid][0], ServerTransactionMap[r.Xid][1], false, IssuesDispatcher);
+    }
+    
+    void AcceptsDispatcher(any message m)
+    {
+        dispatch (endpoint IntermediateServer over sunRpcNode) accepts m;
+    }
+    
+    void IssuesDispatcher(any message m)
+    {
+        dispatch (endpoint IntermediateServer over sunRpcNode) issues m;
+    }
+}
+
+void MessageProcessing(RpcMsg msg, uint proc, uint vers, bool isCall, void(any message) dispatcher)
+{
+    binary callData = $[];
+    if (isCall && ((msg.Body as CallBody).CallData is BinaryCallDataType))
+    {
+        callData = ((msg.Body as CallBody).CallData as BinaryCallDataType).Data;
+    }
+    binary replyData = $[];
+    if (!isCall && ((msg.Body as ReplyBody).Reply as AcceptedReply).ReplyData is binary)
+    {
+        replyData = ((msg.Body as ReplyBody).Reply as AcceptedReply).ReplyData as binary;
+    }
+    switch (proc)
+    {
+        case 1 =>
+            if (isCall)
+            {
+                optional RpcbprogMessage.CallRpcbprocSet setOpCallOptional = BinaryDecoder<RpcbprogMessage.CallRpcbprocSet>(callData);
+                if (setOpCallOptional != nothing)
+                {
+                    RpcbprogMessage.CallRpcbprocSet setOpCall = setOpCallOptional as RpcbprogMessage.CallRpcbprocSet;
+                    //indirectOpReply.origins = msg;
+                    setOpCall#RpcBindXid = msg.Xid;
+                    setOpCall#RpcBindVers = vers;
+                    dispatcher(setOpCall);
+                }
+                else
+                {
+                    ThrowDecodingException("RPCBIND", "RpcbprogMessage.CallRpcbprocSet");
+                }
+            }
+            else
+            {
+                optional RpcbprogMessage.ReturnRpcbprocSet setOpReplyOptional = BinaryDecoder<RpcbprogMessage.ReturnRpcbprocSet>(replyData);
+                if (setOpReplyOptional != nothing)
+                {
+                    RpcbprogMessage.ReturnRpcbprocSet setOpReply = setOpReplyOptional as RpcbprogMessage.ReturnRpcbprocSet;
+                    //indirectOpReply.origins = msg;
+                    setOpReply#RpcBindXid = msg.Xid;
+                    dispatcher(setOpReply);
+                }
+                else
+                {
+                    ThrowDecodingException("RPCBIND", "RpcbprogMessage.ReturnRpcbprocSet");
+                }
+            }
+
+        case 2 =>
+            if (isCall)
+            {
+                optional RpcbprogMessage.CallRpcbprocUnset unsetOpCallOptional = BinaryDecoder<RpcbprogMessage.CallRpcbprocUnset>(callData);
+                if (unsetOpCallOptional != nothing)
+                {
+                    RpcbprogMessage.CallRpcbprocUnset unsetOpCall = unsetOpCallOptional as RpcbprogMessage.CallRpcbprocUnset;
+                    //indirectOpReply.origins = msg;
+                    unsetOpCall#RpcBindXid = msg.Xid;
+                    unsetOpCall#RpcBindVers = vers;
+                    dispatcher(unsetOpCall);
+                }
+                else
+                {
+                    ThrowDecodingException("RPCBIND", "RpcbprogMessage.CallRpcbprocUnset");
+                }
+            }
+            else
+            {
+                optional RpcbprogMessage.ReturnRpcbprocUnset unsetOpReplyOptional = BinaryDecoder<RpcbprogMessage.ReturnRpcbprocUnset>(replyData);
+                if (unsetOpReplyOptional != nothing)
+                {
+                    RpcbprogMessage.ReturnRpcbprocUnset unsetOpReply = unsetOpReplyOptional as RpcbprogMessage.ReturnRpcbprocUnset;
+                    //indirectOpReply.origins = msg;
+                    unsetOpReply#RpcBindXid = msg.Xid;
+                    dispatcher(unsetOpReply);
+                }
+                else
+                {
+                    ThrowDecodingException("RPCBIND", "RpcbprogMessage.ReturnRpcbprocUnset");
+                }
+            }
+        case 3 =>
+            if (isCall)
+            {
+                optional RpcbprogMessage.CallRpcbprocGetaddr getaddrOpCallOptional = BinaryDecoder<RpcbprogMessage.CallRpcbprocGetaddr>(callData);
+                if (getaddrOpCallOptional != nothing)
+                {
+                    RpcbprogMessage.CallRpcbprocGetaddr getaddrOpCall = getaddrOpCallOptional as RpcbprogMessage.CallRpcbprocGetaddr;
+                    //indirectOpReply.origins = msg;
+                    getaddrOpCall#RpcBindXid = msg.Xid;
+                    getaddrOpCall#RpcBindVers = vers;
+                    dispatcher(getaddrOpCall);
+                }
+                else
+                {
+                    ThrowDecodingException("RPCBIND", "RpcbprogMessage.CallRpcbprocGetaddr");
+                }
+            }
+            else
+            {
+                optional RpcbprogMessage.ReturnRpcbprocGetaddr getaddrOpReplyOptional = BinaryDecoder<RpcbprogMessage.ReturnRpcbprocGetaddr>(replyData);
+                if (getaddrOpReplyOptional != nothing)
+                {
+                    RpcbprogMessage.ReturnRpcbprocGetaddr getaddrOpReply = getaddrOpReplyOptional as RpcbprogMessage.ReturnRpcbprocGetaddr;
+                    //indirectOpReply.origins = msg;
+                    getaddrOpReply#RpcBindXid = msg.Xid;
+                    dispatcher(getaddrOpReply);
+                }
+                else
+                {
+                    ThrowDecodingException("RPCBIND", "RpcbprogMessage.ReturnRpcbprocGetaddr");
+                }
+            }
+        case 4 =>
+            if (isCall)
+            {
+                optional RpcbprogMessage.CallRpcbprocDump dumpOpCallOptional = BinaryDecoder<RpcbprogMessage.CallRpcbprocDump>(callData);
+                if (dumpOpCallOptional != nothing)
+                {
+                    RpcbprogMessage.CallRpcbprocDump dumpOpCall = dumpOpCallOptional as RpcbprogMessage.CallRpcbprocDump;
+                    //indirectOpReply.origins = msg;
+                    dumpOpCall#RpcBindXid = msg.Xid;
+                    dumpOpCall#RpcBindVers = vers;
+                    dispatcher(dumpOpCall);
+                }
+                else
+                {
+                    ThrowDecodingException("RPCBIND", "RpcbprogMessage.CallRpcbprocDump");
+                }
+            }
+            else
+            {
+                optional RpcbprogMessage.ReturnRpcbprocDump dumpOpReplyOptional = BinaryDecoder<RpcbprogMessage.ReturnRpcbprocDump>(replyData);
+                if (dumpOpReplyOptional != nothing)
+                {
+                    RpcbprogMessage.ReturnRpcbprocDump dumpOpReply = dumpOpReplyOptional as RpcbprogMessage.ReturnRpcbprocDump;
+                    //indirectOpReply.origins = msg;
+                    dumpOpReply#RpcBindXid = msg.Xid;
+                    dispatcher(dumpOpReply);
+                }
+                else
+                {
+                    ThrowDecodingException("RPCBIND", "RpcbprogMessage.ReturnRpcbprocDump");
+                }
+            }
+        case 5 =>
+            switch (vers)
+            {
+                case 3 =>
+                    if (isCall)
+                    {
+                        optional RpcbprogMessage.CallRpcbprocCallit callitOpCallOptional = BinaryDecoder<RpcbprogMessage.CallRpcbprocCallit>(callData);
+                        if (callitOpCallOptional != nothing)
+                        {
+                            RpcbprogMessage.CallRpcbprocCallit callitOpCall = callitOpCallOptional as RpcbprogMessage.CallRpcbprocCallit;
+                            //indirectOpReply.origins = msg;
+                            callitOpCall#RpcBindXid = msg.Xid;
+                            callitOpCall#RpcBindVers = vers;
+                            dispatcher(callitOpCall);
+                        }
+                        else
+                        {
+                            ThrowDecodingException("RPCBIND", "RpcbprogMessage.CallRpcbprocCallit");
+                        }
+                    }
+                    else
+                    {
+                        optional RpcbprogMessage.ReturnRpcbprocCallit callitOpReplyOptional = BinaryDecoder<RpcbprogMessage.ReturnRpcbprocCallit>(replyData);
+                        if (callitOpReplyOptional != nothing)
+                        {
+                            RpcbprogMessage.ReturnRpcbprocCallit callitOpReply = callitOpReplyOptional as RpcbprogMessage.ReturnRpcbprocCallit;
+                            //indirectOpReply.origins = msg;
+                            callitOpReply#RpcBindXid = msg.Xid;
+                            dispatcher(callitOpReply);
+                        }
+                        else
+                        {
+                            ThrowDecodingException("RPCBIND", "RpcbprogMessage.ReturnRpcbprocCallit");
+                        }
+                    }
+                case 4 =>
+                    if (isCall)
+                    {
+                        optional RpcbprogMessage.CallRpcbprocBcast bcastCallOptional = BinaryDecoder<RpcbprogMessage.CallRpcbprocBcast>(callData);
+                        if (bcastCallOptional != nothing)
+                        {
+                            RpcbprogMessage.CallRpcbprocBcast bcastOpCall = bcastCallOptional as RpcbprogMessage.CallRpcbprocBcast;
+                            //indirectOpReply.origins = msg;
+                            bcastOpCall#RpcBindXid = msg.Xid;
+                            bcastOpCall#RpcBindVers = vers;
+                            dispatcher(bcastOpCall);
+                        }
+                        else
+                        {
+                            ThrowDecodingException("RPCBIND", "RpcbprogMessage.CallRpcbprocBcast");
+                        }
+
+                    }
+                    else
+                    {
+                        optional RpcbprogMessage.ReturnRpcbprocBcast bcastOpReplyOptional = BinaryDecoder<RpcbprogMessage.ReturnRpcbprocBcast>(replyData);
+                        if (bcastOpReplyOptional != nothing)
+                        {
+                            RpcbprogMessage.ReturnRpcbprocBcast bcastOpReply = bcastOpReplyOptional as RpcbprogMessage.ReturnRpcbprocBcast;
+                            //indirectOpReply.origins = msg;
+                            bcastOpReply#RpcBindXid = msg.Xid;
+                            dispatcher(bcastOpReply);
+                        }
+                        else
+                        {
+                            ThrowDecodingException("RPCBIND", "RpcbprogMessage.ReturnRpcbprocBcast");
+                        }
+                    }
+            }
+        case 6 =>
+            if (isCall)
+            {
+                optional RpcbprogMessage.CallRpcbprocGettime gettimeOpCallOptional = BinaryDecoder<RpcbprogMessage.CallRpcbprocGettime>(callData);
+                if (gettimeOpCallOptional != nothing)
+                {
+                    RpcbprogMessage.CallRpcbprocGettime gettimeOpCall = gettimeOpCallOptional as RpcbprogMessage.CallRpcbprocGettime;
+                    //indirectOpReply.origins = msg;
+                    gettimeOpCall#RpcBindXid = msg.Xid;
+                    gettimeOpCall#RpcBindVers = vers;
+                    dispatcher(gettimeOpCall);
+                }
+                else
+                {
+                    ThrowDecodingException("RPCBIND", "RpcbprogMessage.CallRpcbprocGettime");
+                }
+
+            }
+            else
+            {
+                optional RpcbprogMessage.ReturnRpcbprocGettime gettimeOpReplyOptional = BinaryDecoder<RpcbprogMessage.ReturnRpcbprocGettime>(replyData);
+                if (gettimeOpReplyOptional != nothing)
+                {
+                    RpcbprogMessage.ReturnRpcbprocGettime gettimeOpReply = gettimeOpReplyOptional as RpcbprogMessage.ReturnRpcbprocGettime;
+                    //indirectOpReply.origins = msg;
+                    gettimeOpReply#RpcBindXid = msg.Xid;
+                    dispatcher(gettimeOpReply);
+                }
+                else
+                {
+                    ThrowDecodingException("RPCBIND", "RpcbprogMessage.ReturnRpcbprocGettime");
+                }
+            }
+
+        case 7 =>
+            if (isCall)
+            {
+                optional RpcbprogMessage.CallRpcbprocUaddr2taddr uaddr2taddrOpCallOptional = BinaryDecoder<RpcbprogMessage.CallRpcbprocUaddr2taddr>(callData);
+                if (uaddr2taddrOpCallOptional != nothing)
+                {
+                    RpcbprogMessage.CallRpcbprocUaddr2taddr uaddr2taddrOpCall = uaddr2taddrOpCallOptional as RpcbprogMessage.CallRpcbprocUaddr2taddr;
+                    //indirectOpReply.origins = msg;
+                    uaddr2taddrOpCall#RpcBindXid = msg.Xid;
+                    uaddr2taddrOpCall#RpcBindVers = vers;
+                    dispatcher(uaddr2taddrOpCall);
+                }
+                else
+                {
+                    ThrowDecodingException("RPCBIND", "RpcbprogMessage.CallRpcbprocUaddr2taddr");
+                }
+            }
+            else
+            {
+                optional RpcbprogMessage.ReturnRpcbprocUaddr2taddr uaddr2taddrOpReplyOptional = BinaryDecoder<RpcbprogMessage.ReturnRpcbprocUaddr2taddr>(replyData);
+                if (uaddr2taddrOpReplyOptional != nothing)
+                {
+                    RpcbprogMessage.ReturnRpcbprocUaddr2taddr uaddr2taddrOpReply = uaddr2taddrOpReplyOptional as RpcbprogMessage.ReturnRpcbprocUaddr2taddr;
+                    //indirectOpReply.origins = msg;
+                    uaddr2taddrOpReply#RpcBindXid = msg.Xid;
+                    dispatcher(uaddr2taddrOpReply);
+                }
+                else
+                {
+                    ThrowDecodingException("RPCBIND", "RpcbprogMessage.ReturnRpcbprocUaddr2taddr");
+                }
+            }
+        case 8 =>
+            if (isCall)
+            {
+                optional RpcbprogMessage.CallRpcbprocTaddr2uaddr taddr2uaddrOpCallOptional = BinaryDecoder<RpcbprogMessage.CallRpcbprocTaddr2uaddr>(callData);
+                if (taddr2uaddrOpCallOptional != nothing)
+                {
+                    RpcbprogMessage.CallRpcbprocTaddr2uaddr taddr2uaddrOpCall = taddr2uaddrOpCallOptional as RpcbprogMessage.CallRpcbprocTaddr2uaddr;
+                    //indirectOpReply.origins = msg;
+                    taddr2uaddrOpCall#RpcBindXid = msg.Xid;
+                    taddr2uaddrOpCall#RpcBindVers = vers;
+                    dispatcher(taddr2uaddrOpCall);
+                }
+                else
+                {
+                    ThrowDecodingException("RPCBIND", "RpcbprogMessage.CallRpcbprocTaddr2uaddr");
+                }
+            }
+            else
+            {
+                optional RpcbprogMessage.ReturnRpcbprocTaddr2uaddr taddr2uaddrOpReplyOptional = BinaryDecoder<RpcbprogMessage.ReturnRpcbprocTaddr2uaddr>(replyData);
+                if (taddr2uaddrOpReplyOptional != nothing)
+                {
+                    RpcbprogMessage.ReturnRpcbprocTaddr2uaddr taddr2uaddrOpReply = taddr2uaddrOpReplyOptional as RpcbprogMessage.ReturnRpcbprocTaddr2uaddr;
+                    //indirectOpReply.origins = msg;
+                    taddr2uaddrOpReply#RpcBindXid = msg.Xid;
+                    dispatcher(taddr2uaddrOpReply);
+                }
+                else
+                {
+                    ThrowDecodingException("RPCBIND", "RpcbprogMessage.ReturnRpcbprocTaddr2uaddr");
+                }
+            }
+        case 9 =>
+            if (isCall)
+            {
+                optional RpcbprogMessage.CallRpcbprocGetversaddr getversaddrOpCallOptional = BinaryDecoder<RpcbprogMessage.CallRpcbprocGetversaddr>(callData);
+                if (getversaddrOpCallOptional != nothing)
+                {
+                    RpcbprogMessage.CallRpcbprocGetversaddr getversaddrOpCall = getversaddrOpCallOptional as RpcbprogMessage.CallRpcbprocGetversaddr;
+                    getversaddrOpCall#RpcBindXid = msg.Xid;
+                    getversaddrOpCall#RpcBindVers = vers;
+                    dispatcher(getversaddrOpCall);
+                }
+                else
+                {
+                    ThrowDecodingException("RPCBIND", "RpcbprogMessage.CallRpcbprocGetversaddr");
+                }
+            }
+            else
+            {
+                optional RpcbprogMessage.ReturnRpcbprocGetversaddr getversaddrOpReplyOptional = BinaryDecoder<RpcbprogMessage.ReturnRpcbprocGetversaddr>(replyData);
+                if (getversaddrOpReplyOptional != nothing)
+                {
+                    RpcbprogMessage.ReturnRpcbprocGetversaddr getversaddrOpReply = getversaddrOpReplyOptional as RpcbprogMessage.ReturnRpcbprocGetversaddr;
+                    getversaddrOpReply#RpcBindXid = msg.Xid;
+                    dispatcher(getversaddrOpReply);
+                }
+                else
+                {
+                    ThrowDecodingException("RPCBIND", "RpcbprogMessage.ReturnRpcbprocGetversaddr");
+                }
+            }
+        case 10 =>
+            if (isCall)
+            {
+                optional RpcbprogMessage.CallRpcbprocIndirect indirectOpCallOptional = BinaryDecoder<RpcbprogMessage.CallRpcbprocIndirect>(callData);
+                if (indirectOpCallOptional != nothing)
+                {
+                    RpcbprogMessage.CallRpcbprocIndirect indirectOpCall = indirectOpCallOptional as RpcbprogMessage.CallRpcbprocIndirect;
+                    indirectOpCall#RpcBindXid = msg.Xid;
+                    indirectOpCall#RpcBindVers = vers;
+                    dispatcher(indirectOpCall);
+                }
+                else
+                {
+                    ThrowDecodingException("RPCBIND", "RpcbprogMessage.CallRpcbprocIndirect");
+                }
+            }
+            else
+            {
+                optional RpcbprogMessage.ReturnRpcbprocIndirect indirectOpReplyOptional = BinaryDecoder<RpcbprogMessage.ReturnRpcbprocIndirect>(replyData);
+                if (indirectOpReplyOptional != nothing)
+                {
+                    RpcbprogMessage.ReturnRpcbprocIndirect indirectOpReply = indirectOpReplyOptional as RpcbprogMessage.ReturnRpcbprocIndirect;
+                    //indirectOpReply.origins = msg;
+                    indirectOpReply#RpcBindXid = msg.Xid;
+                    dispatcher(indirectOpReply);
+                }
+                else
+                {
+                    ThrowDecodingException("RPCBIND", "RpcbprogMessage.ReturnRpcbprocIndirect");
+                }
+            }
+        case 11 =>
+            if (isCall)
+            {
+                optional RpcbprogMessage.CallRpcbprocGetaddrlist getaddrlistOpCallOptional = BinaryDecoder<RpcbprogMessage.CallRpcbprocGetaddrlist>(callData);
+                if (getaddrlistOpCallOptional != nothing)
+                {
+                    RpcbprogMessage.CallRpcbprocGetaddrlist getaddrlistOpCall = getaddrlistOpCallOptional as RpcbprogMessage.CallRpcbprocGetaddrlist;
+                    getaddrlistOpCall#RpcBindXid = msg.Xid;
+                    getaddrlistOpCall#RpcBindVers = vers;
+                    dispatcher(getaddrlistOpCall);
+                }
+                else
+                {
+                    ThrowDecodingException("RPCBIND", "RpcbprogMessage.CallRpcbprocGetaddrlist");
+                }
+            }
+            else
+            {
+                optional RpcbprogMessage.ReturnRpcbprocGetaddrlist getaddrlistOpReplyOptional = BinaryDecoder<RpcbprogMessage.ReturnRpcbprocGetaddrlist>(replyData);
+                if (getaddrlistOpReplyOptional != nothing)
+                {
+                    RpcbprogMessage.ReturnRpcbprocGetaddrlist getaddrlistOpReply = getaddrlistOpReplyOptional as RpcbprogMessage.ReturnRpcbprocGetaddrlist;
+                    getaddrlistOpReply#RpcBindXid = msg.Xid;
+                    dispatcher(getaddrlistOpReply);
+                }
+                else
+                {
+                    ThrowDecodingException("RPCBIND", "RpcbprogMessage.ReturnRpcbprocGetaddrlist");
+                }
+            }
+        case 12 =>
+            if (isCall)
+            {
+                optional RpcbprogMessage.CallRpcbprocGetstat getstatOpCallOptional = BinaryDecoder<RpcbprogMessage.CallRpcbprocGetstat>(callData);
+                if (getstatOpCallOptional != nothing)
+                {
+                    RpcbprogMessage.CallRpcbprocGetstat getstatOpCall = getstatOpCallOptional as RpcbprogMessage.CallRpcbprocGetstat;
+                    getstatOpCall#RpcBindXid = msg.Xid;
+                    getstatOpCall#RpcBindVers = vers;
+                    dispatcher(getstatOpCall);
+                }
+                else
+                {
+                    ThrowDecodingException("RPCBIND", "RpcbprogMessage.CallRpcbprocGetstat");
+                }
+            }
+            else
+            {
+                optional RpcbprogMessage.ReturnRpcbprocGetstat getstatOpReplyOptional = BinaryDecoder<RpcbprogMessage.ReturnRpcbprocGetstat>(replyData);
+                if (getstatOpReplyOptional != nothing)
+                {
+                    RpcbprogMessage.ReturnRpcbprocGetstat getstatOpReply = getstatOpReplyOptional as RpcbprogMessage.ReturnRpcbprocGetstat;
+                    getstatOpReply#RpcBindXid = msg.Xid;
+                    dispatcher(getstatOpReply);
+                }
+                else
+                {
+                    ThrowDecodingException("RPCBIND", "RpcbprogMessage.ReturnRpcbprocGetstat");
+                }
+            }
+        default =>
+            ThrowDecodingException("RPCBIND");
+    }
+}
+
+autostart actor RpcBindOverMessageEndpoint(IntermediateServer ep)
+{
+    map<uint, any> ServerTransactionMap = {};
+    
+    ~endpoint(IntermediateServer ep)
+    {
+        foreach (var msg in ServerTransactionMap.Values)
+        {
+            DisplayTopLevelMessage((msg as any message));
+        }
+    }
+    
+    process ep accepts m:RpcbprogMessage.CallRpcbprocSet
+    {
+        if (!((m#RpcBindXid as uint) in ServerTransactionMap))
+        {
+            ServerTransactionMap[m#RpcBindXid as uint] = m;
+        }
+    }
+    process ep issues m:RpcbprogMessage.ReturnRpcbprocSet
+    {
+        uint rpcBindXid = m#RpcBindXid as uint;
+        if (rpcBindXid in ServerTransactionMap)
+        {
+            Rpcbprog.RpcbprocSet setOp = new Rpcbprog.RpcbprocSet{Rpcb = (ServerTransactionMap[rpcBindXid] as RpcbprogMessage.CallRpcbprocSet).Rpcb, Result = m.Result};
+            setOp.Origins = [ServerTransactionMap[rpcBindXid] as RpcbprogMessage.CallRpcbprocSet];
+            setOp.Origins += [m];
+            setOp#RpcBindVers = (ServerTransactionMap[rpcBindXid] as RpcbprogMessage.CallRpcbprocSet)#RpcBindVers;
+            ServerTransactionMap = ServerTransactionMap.Remove(rpcBindXid);
+            dispatch (endpoint Server over ep) accepts setOp;
+        }
+    }
+    // Server request/response
+    // Unset
+    process ep accepts m:RpcbprogMessage.CallRpcbprocUnset
+    {
+        if (!((m#RpcBindXid as uint) in ServerTransactionMap))
+        {
+            ServerTransactionMap[m#RpcBindXid as uint] = m;
+        }
+    }
+    process ep issues m:RpcbprogMessage.ReturnRpcbprocUnset
+    {
+        uint rpcBindXid = m#RpcBindXid as uint;
+        if (rpcBindXid in ServerTransactionMap)
+        {
+            Rpcbprog.RpcbprocUnset unSetOp = new Rpcbprog.RpcbprocUnset{Rpcb = (ServerTransactionMap[rpcBindXid] as RpcbprogMessage.CallRpcbprocUnset).Rpcb, Result = m.Result};
+            unSetOp.Origins = [ServerTransactionMap[rpcBindXid] as RpcbprogMessage.CallRpcbprocUnset];
+            unSetOp.Origins += [m];
+            unSetOp#RpcBindVers = (ServerTransactionMap[rpcBindXid] as RpcbprogMessage.CallRpcbprocUnset)#RpcBindVers;
+            ServerTransactionMap = ServerTransactionMap.Remove(rpcBindXid);
+            dispatch (endpoint Server over ep) accepts unSetOp;
+        }
+    }
+    // Server request/response
+    // Getaddr
+    process ep accepts m:RpcbprogMessage.CallRpcbprocGetaddr
+    {
+        if (!((m#RpcBindXid as uint) in ServerTransactionMap))
+        {
+            ServerTransactionMap[m#RpcBindXid as uint] = m;
+        }
+    }
+    process ep issues m:RpcbprogMessage.ReturnRpcbprocGetaddr
+    {
+        uint rpcBindXid = m#RpcBindXid as uint;
+        if (rpcBindXid in ServerTransactionMap)
+        {
+            Rpcbprog.RpcbprocGetaddr getaddrOp = new Rpcbprog.RpcbprocGetaddr{Rpcb = (ServerTransactionMap[rpcBindXid] as RpcbprogMessage.CallRpcbprocGetaddr).Rpcb, Addr = m.Addr};
+            getaddrOp.Origins = [ServerTransactionMap[rpcBindXid] as RpcbprogMessage.CallRpcbprocGetaddr];
+            getaddrOp.Origins += [m];
+            getaddrOp#RpcBindVers = (ServerTransactionMap[rpcBindXid] as RpcbprogMessage.CallRpcbprocGetaddr)#RpcBindVers;
+            ServerTransactionMap = ServerTransactionMap.Remove(rpcBindXid);
+            dispatch (endpoint Server over ep) accepts getaddrOp;
+        }
+    }
+    // Server request/response
+    // Dump
+    process ep accepts m:RpcbprogMessage.CallRpcbprocDump
+    {
+        if (!((m#RpcBindXid as uint) in ServerTransactionMap))
+        {
+            ServerTransactionMap[m#RpcBindXid as uint] = m;
+        }
+    }
+    process ep issues m:RpcbprogMessage.ReturnRpcbprocDump
+    {
+        uint rpcBindXid = m#RpcBindXid as uint;
+        if (rpcBindXid in ServerTransactionMap)
+        {
+            Rpcbprog.RpcbprocDump dumpOp = new Rpcbprog.RpcbprocDump{Addr = m.Addr};
+            dumpOp.Origins = [ServerTransactionMap[rpcBindXid] as RpcbprogMessage.CallRpcbprocDump];
+            dumpOp.Origins += [m];
+            dumpOp#RpcBindVers = (ServerTransactionMap[rpcBindXid] as RpcbprogMessage.CallRpcbprocDump)#RpcBindVers;
+            ServerTransactionMap = ServerTransactionMap.Remove(rpcBindXid);
+            dispatch (endpoint Server over ep) accepts dumpOp;
+        }
+    }
+    // Server request/response
+    // Callit
+    process ep accepts m:RpcbprogMessage.CallRpcbprocCallit
+    {
+        if (!((m#RpcBindXid as uint) in ServerTransactionMap))
+        {
+            ServerTransactionMap[m#RpcBindXid as uint] = m;
+        }
+    }
+    process ep issues m:RpcbprogMessage.ReturnRpcbprocCallit
+    {
+        uint rpcBindXid = m#RpcBindXid as uint;
+        if (rpcBindXid in ServerTransactionMap)
+        {
+            Rpcbprog.RpcbprocCallit callitOp = new Rpcbprog.RpcbprocCallit{Callargs = (ServerTransactionMap[rpcBindXid] as RpcbprogMessage.CallRpcbprocCallit).Callargs};
+            callitOp.Origins = [ServerTransactionMap[rpcBindXid] as RpcbprogMessage.CallRpcbprocCallit];
+            callitOp.Origins += [m];
+            callitOp#RpcBindVers = (ServerTransactionMap[rpcBindXid] as RpcbprogMessage.CallRpcbprocCallit)#RpcBindVers;
+            ServerTransactionMap = ServerTransactionMap.Remove(rpcBindXid);
+            dispatch (endpoint Server over ep) accepts callitOp;
+        }
+    }
+    // Server request/response
+    // Gettime
+    process ep accepts m:RpcbprogMessage.CallRpcbprocGettime
+    {
+        if (!((m#RpcBindXid as uint) in ServerTransactionMap))
+        {
+            ServerTransactionMap[m#RpcBindXid as uint] = m;
+        }
+    }
+    process ep issues m:RpcbprogMessage.ReturnRpcbprocGettime
+    {
+        uint rpcBindXid = m#RpcBindXid as uint;
+        if (rpcBindXid in ServerTransactionMap)
+        {
+            Rpcbprog.RpcbprocGettime gettimeOp = new Rpcbprog.RpcbprocGettime{Time = m.Time};
+            gettimeOp.Origins = [ServerTransactionMap[rpcBindXid] as RpcbprogMessage.CallRpcbprocGettime];
+            gettimeOp.Origins += [m];
+            gettimeOp#RpcBindVers = (ServerTransactionMap[rpcBindXid] as RpcbprogMessage.CallRpcbprocGettime)#RpcBindVers;
+            ServerTransactionMap = ServerTransactionMap.Remove(rpcBindXid);
+            dispatch (endpoint Server over ep) accepts gettimeOp;
+        }
+    }
+    // Server request/response
+    // Uaddr2taddr
+    process ep accepts m:RpcbprogMessage.CallRpcbprocUaddr2taddr
+    {
+        if (!((m#RpcBindXid as uint) in ServerTransactionMap))
+        {
+            ServerTransactionMap[m#RpcBindXid as uint] = m;
+        }
+    }
+    process ep issues m:RpcbprogMessage.ReturnRpcbprocUaddr2taddr
+    {
+        uint rpcBindXid = m#RpcBindXid as uint;
+        if (rpcBindXid in ServerTransactionMap)
+        {
+            Rpcbprog.RpcbprocUaddr2taddr uaddr2taddrOp = new Rpcbprog.RpcbprocUaddr2taddr{UniversalAddresses = (ServerTransactionMap[rpcBindXid] as RpcbprogMessage.CallRpcbprocUaddr2taddr).UniversalAddresses, TransportSpecificAddresses = m.TransportSpecificAddresses};
+            uaddr2taddrOp.Origins = [ServerTransactionMap[rpcBindXid] as RpcbprogMessage.CallRpcbprocUaddr2taddr];
+            uaddr2taddrOp.Origins += [m];
+            uaddr2taddrOp#RpcBindVers = (ServerTransactionMap[rpcBindXid] as RpcbprogMessage.CallRpcbprocUaddr2taddr)#RpcBindVers;
+            ServerTransactionMap = ServerTransactionMap.Remove(rpcBindXid);
+            dispatch (endpoint Server over ep) accepts uaddr2taddrOp;
+        }
+    }
+    // Server request/response
+    // Taddr2uaddr
+    process ep accepts m:RpcbprogMessage.CallRpcbprocTaddr2uaddr
+    {
+        if (!((m#RpcBindXid as uint) in ServerTransactionMap))
+        {
+            ServerTransactionMap[m#RpcBindXid as uint] = m;
+        }
+    }
+    process ep issues m:RpcbprogMessage.ReturnRpcbprocTaddr2uaddr
+    {
+        uint rpcBindXid = m#RpcBindXid as uint;
+        if (rpcBindXid in ServerTransactionMap)
+        {
+            Rpcbprog.RpcbprocTaddr2uaddr taddr2uaddrOp = new Rpcbprog.RpcbprocTaddr2uaddr{TransportSpecificAddresses = (ServerTransactionMap[rpcBindXid] as RpcbprogMessage.CallRpcbprocTaddr2uaddr).TransportSpecificAddresses, UniversalAddresses = m.UniversalAddresses};
+            taddr2uaddrOp.Origins = [ServerTransactionMap[rpcBindXid] as RpcbprogMessage.CallRpcbprocTaddr2uaddr];
+            taddr2uaddrOp.Origins += [m];
+            taddr2uaddrOp#RpcBindVers = (ServerTransactionMap[rpcBindXid] as RpcbprogMessage.CallRpcbprocTaddr2uaddr)#RpcBindVers;
+            ServerTransactionMap = ServerTransactionMap.Remove(rpcBindXid);
+            dispatch (endpoint Server over ep) accepts taddr2uaddrOp;
+        }
+    }
+    // Server request/response
+    // Bcast
+    process ep accepts m:RpcbprogMessage.CallRpcbprocBcast
+    {
+        if (!((m#RpcBindXid as uint) in ServerTransactionMap))
+        {
+            ServerTransactionMap[m#RpcBindXid as uint] = m;
+        }
+    }
+    process ep issues m:RpcbprogMessage.ReturnRpcbprocBcast
+    {
+        uint rpcBindXid = m#RpcBindXid as uint;
+        if (rpcBindXid in ServerTransactionMap)
+        {
+            Rpcbprog.RpcbprocBcast bcastOp = new Rpcbprog.RpcbprocBcast{Callargs = (ServerTransactionMap[rpcBindXid] as RpcbprogMessage.CallRpcbprocCallit).Callargs};
+            bcastOp.Origins = [ServerTransactionMap[rpcBindXid] as RpcbprogMessage.CallRpcbprocBcast];
+            bcastOp.Origins += [m];
+            bcastOp#RpcBindVers = (ServerTransactionMap[rpcBindXid] as RpcbprogMessage.CallRpcbprocBcast)#RpcBindVers;
+            ServerTransactionMap = ServerTransactionMap.Remove(rpcBindXid);
+            dispatch (endpoint Server over ep) accepts bcastOp;
+        }
+    }
+    // Server request/response
+    // Getversaddr
+    process ep accepts m:RpcbprogMessage.CallRpcbprocGetversaddr
+    {
+        if (!((m#RpcBindXid as uint) in ServerTransactionMap))
+        {
+            ServerTransactionMap[m#RpcBindXid as uint] = m;
+        }
+    }
+    process ep issues m:RpcbprogMessage.ReturnRpcbprocGetversaddr
+    {
+        uint rpcBindXid = m#RpcBindXid as uint;
+        if (rpcBindXid in ServerTransactionMap)
+        {
+            Rpcbprog.RpcbprocGetversaddr getversaddrOp = new Rpcbprog.RpcbprocGetversaddr{Rpcb = (ServerTransactionMap[rpcBindXid] as RpcbprogMessage.CallRpcbprocGetversaddr).Rpcb, Addr = m.Addr};
+            getversaddrOp.Origins = [ServerTransactionMap[rpcBindXid] as RpcbprogMessage.CallRpcbprocGetversaddr];
+            getversaddrOp.Origins += [m];
+            getversaddrOp#RpcBindVers = (ServerTransactionMap[rpcBindXid] as RpcbprogMessage.CallRpcbprocGetversaddr)#RpcBindVers;
+            ServerTransactionMap = ServerTransactionMap.Remove(rpcBindXid);
+            dispatch (endpoint Server over ep) accepts getversaddrOp;
+        }
+    }
+    // Server request/response
+    // Indirect
+    process ep accepts m:RpcbprogMessage.CallRpcbprocIndirect
+    {
+        if (!((m#RpcBindXid as uint) in ServerTransactionMap))
+        {
+            ServerTransactionMap[m#RpcBindXid as uint] = m;
+        }
+    }
+    process ep issues m:RpcbprogMessage.ReturnRpcbprocIndirect
+    {
+        uint rpcBindXid = m#RpcBindXid as uint;
+        if (rpcBindXid in ServerTransactionMap)
+        {
+            Rpcbprog.RpcbprocIndirect indirectOp = new Rpcbprog.RpcbprocIndirect{Callargs = (ServerTransactionMap[rpcBindXid] as RpcbprogMessage.CallRpcbprocIndirect).Callargs, Callres = m.Callres};
+            indirectOp.Origins = [ServerTransactionMap[rpcBindXid] as RpcbprogMessage.CallRpcbprocIndirect];
+            indirectOp.Origins += [m];
+            indirectOp#RpcBindVers = (ServerTransactionMap[rpcBindXid] as RpcbprogMessage.CallRpcbprocIndirect)#RpcBindVers;
+            ServerTransactionMap = ServerTransactionMap.Remove(rpcBindXid);
+            dispatch (endpoint Server over ep) accepts indirectOp;
+        }
+    }
+    // Server request/response
+    // Getaddrlist
+    process ep accepts m:RpcbprogMessage.CallRpcbprocGetaddrlist
+    {
+        if (!((m#RpcBindXid as uint) in ServerTransactionMap))
+        {
+            ServerTransactionMap[m#RpcBindXid as uint] = m;
+        }
+    }
+    process ep issues m:RpcbprogMessage.ReturnRpcbprocGetaddrlist
+    {
+        uint rpcBindXid = m#RpcBindXid as uint;
+        if (rpcBindXid in ServerTransactionMap)
+        {
+            Rpcbprog.RpcbprocGetaddrlist getaddrlistOp = new Rpcbprog.RpcbprocGetaddrlist{Rpcb = (ServerTransactionMap[rpcBindXid] as RpcbprogMessage.CallRpcbprocGetaddrlist).Rpcb, Addr = m.Addr};
+            getaddrlistOp.Origins = [ServerTransactionMap[rpcBindXid] as RpcbprogMessage.CallRpcbprocGetaddrlist];
+            getaddrlistOp.Origins += [m];
+            getaddrlistOp#RpcBindVers = (ServerTransactionMap[rpcBindXid] as RpcbprogMessage.CallRpcbprocGetaddrlist)#RpcBindVers;
+            ServerTransactionMap = ServerTransactionMap.Remove(rpcBindXid);
+            dispatch (endpoint Server over ep) accepts getaddrlistOp;
+        }
+    }
+    // Server request/response
+    // Getstat
+    process ep accepts m:RpcbprogMessage.CallRpcbprocGetstat
+    {
+        if (!((m#RpcBindXid as uint) in ServerTransactionMap))
+        {
+            ServerTransactionMap[m#RpcBindXid as uint] = m;
+        }
+    }
+    process ep issues m:RpcbprogMessage.ReturnRpcbprocGetstat
+    {
+        uint rpcBindXid = m#RpcBindXid as uint;
+        if (rpcBindXid in ServerTransactionMap)
+        {
+            Rpcbprog.RpcbprocGetstat getstatOp = new Rpcbprog.RpcbprocGetstat{RpcbStatByvers = m.RpcbStatByvers};
+            getstatOp.Origins = [ServerTransactionMap[rpcBindXid] as RpcbprogMessage.CallRpcbprocGetstat];
+            getstatOp.Origins += [m];
+            getstatOp#RpcBindVers = (ServerTransactionMap[rpcBindXid] as RpcbprogMessage.CallRpcbprocGetstat)#RpcBindVers;
+            ServerTransactionMap = ServerTransactionMap.Remove(rpcBindXid);
+            dispatch (endpoint Server over ep) accepts getstatOp;
+        }
+    }
+}

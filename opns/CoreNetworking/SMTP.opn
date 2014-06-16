@@ -1,0 +1,355 @@
+﻿protocol SMTP with 
+StreamEncodingDefaults{Encoding = TextEncoding.ASCII}, // WORKAROUND: BUG23734: Stream Encoding does not support UTF8 as Text Encoding.
+Documentation
+{
+    ProtocolName = "Simple Mail Transfer Protocol",
+    ShortName = "SMTP",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+            new Reference{Name = "RFC 821"},
+            new Reference{Name = "RFC 1985"},
+            new Reference{Name = "RFC 2554"},
+            new Reference{Name = "RFC 2645"},
+            new Reference{Name = "RFC 3030"},
+            new Reference{Name = "RFC 3207"},
+            new Reference{Name = "RFC 5321"},
+        ],
+    RevisionSummary =
+        [
+            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "10/31/2011"}
+        ]
+};
+
+using Standard;
+using IANA;
+using Utility;
+using TCP;
+using VirtualTransport;
+
+endpoint Server over VirtualTransport.Server accepts MailPacket issues MailPacket;
+client endpoint Client connected to Server;
+
+autostart actor SMTPOverTCP(VirtualTransport.Server server)
+{
+    MailPacket packet;
+    bool dataBegin = false;
+
+    process server accepts p:VirtualTransport.VirtualDataSegment{DestinationPort is Port.SMTP}
+    {
+        switch (p.Payload)
+        {
+            case d:MailPacket from PacketDecoder =>
+                d.SourceData = p.Payload;
+                if (d.Request != nothing)
+                {
+                    if ((d.Request as RequestType).Command.ToUpper() == "DATA")
+                    {
+                        packet = new MailPacket{};
+                        packet.Payload = $[];
+                        packet#byteLength = 0;
+                        dataBegin = true;
+                        dispatch endpoint SMTP.Server over server accepts d;
+                    }
+                    else
+                    {
+                        dataBegin = false;
+                    }
+                }
+
+                if (!dataBegin)
+                {
+                    dispatch endpoint SMTP.Server over server accepts d;
+                }
+
+                if (dataBegin && d.Payload != nothing)
+                {
+                    packet.Payload = (packet.Payload as binary) + (d.Payload as binary);
+                    packet#byteLength = (packet#byteLength as int) + (d#byteLength as int);
+                    binary end = (packet.Payload as binary).Segment((packet.Payload as binary).Count-5);
+                    if (end[0] == 0x0D && end[1] == 0x0A && end[2] == 0x2E && end[3] == 0x0D && end[4] == 0x0A)
+                    {
+                        packet.SourceData = packet.Payload;
+                        dispatch (endpoint SMTP.Server over server) accepts packet;
+                        dataBegin = false;
+                    }
+                }
+            default =>
+                ThrowDecodingException("SMTP", "MailPacket");
+        }
+    }
+
+    process server issues p:VirtualTransport.VirtualDataSegment{SourcePort is Port.SMTP}
+    {
+        switch (p.Payload)
+        {
+            case d:MailPacket from PacketDecoder =>
+                d.SourceData = p.Payload;
+                dispatch endpoint SMTP.Server over server issues d;
+            default =>
+                ThrowDecodingException("SMTP", "MailPacket");
+        }
+    }
+}
+
+message MailPacket
+{
+    optional RequestType Request;
+    optional ResponseType Response;
+    optional binary Payload;
+
+    override string ToString()
+    {
+        if (Request != nothing)
+        {
+            RequestType dq = Request as RequestType;
+            if ((dq.CommandParameter == nothing))
+            {
+                return "Request, Command: " + dq.Command;
+            }
+            else
+            {
+                return "Request, Command: " + dq.Command + " " + (dq.CommandParameter as string) + ", Length: " +
+                (this#byteLength as string) + " bytes";
+            }
+        }
+        else if (Response != nothing)
+        {
+            ResponseType dp = Response as ResponseType;
+            if ((dp.ReplyMessage != nothing) && ((dp.ReplyMessage as array<string>).Count > 0))
+            {
+                return "Response, ReplyCode: " + dp.ReplyCode + ", ReplyMessage: " + (dp.ReplyMessage as array<string>)[0] + ", Length: " + (this#byteLength as string) + " bytes";
+            }
+            return "Response, ReplyCode: " + dp.ReplyCode;
+        }
+        else
+        {
+            return "MailPacket, Data Payload: " + (this#byteLength as string) + " bytes";
+        }
+
+        return "";
+    }
+}
+
+annotation int MailPacket#byteLength;
+
+// [RFC 5321    Page 32    4.1.  SMTP Commands]
+syntax CommandWithParameter = s:(a:(
+    regex {(?i)DSN}                |
+    regex {(?i)ATRN}               |
+    regex {(?i)AUTH}               |
+    regex {(?i)BDAT}               |
+    regex {(?i)EHLO}               |
+    regex {(?i)ETRN}               |
+    regex {(?i)EXPN}               |
+    regex {(?i)HELO}               |
+    regex {(?i)HELP}               |
+    regex {(?i)LHLO}               |
+    regex {(?i)MAIL}               |
+    regex {(?i)MTRK}               |
+    regex {(?i)NOOP}               |
+    regex {(?i)ONEX}               |
+    regex {(?i)RCPT}               |
+    regex {(?i) RCPT}              |
+    regex {(?i)SAML}               |
+    regex {(?i)SEND}               |
+    regex {(?i)SOML}               |
+    regex {(?i)SIZE}               |
+    regex {(?i)TURN}               |
+    regex {(?i)VERB}               |
+    regex {(?i)VRFY}               |
+    regex {(?i)8BITMIME}           |
+    regex {(?i)CHUNKING}           |
+    regex {(?i)SUBMITTER}          |
+    regex {(?i)BINARYMIME}         |
+    regex {(?i)CHECKPOINT}         |
+    regex {(?i)PIPELINING}         |
+    regex {(?i)QUIT}               |
+    regex {(?i)RSET}               |
+    regex {(?i)NO-SOLICITING}      |
+    regex {(?i)ENHANCEDSTATUSCODES}
+    ) " " => a                     |
+    b:(regex {(?i)AG5L}) ("C" | "c")
+    => b                           |
+    c:(regex {(?i)ENH6}) ("O" | "o")
+    => c
+    ) => new RequestType{Command = s};
+
+syntax CRLF = "\r\n";
+syntax CommandWithoutParameter = s:(
+    regex {(?i)DATA}     |
+    regex {(?i)QUIT}     |
+    regex {(?i)EHLO}     |
+    regex {(?i)HELO}     |
+    regex {(?i)HELP}     |
+    regex {(?i)RSET}     |
+    regex {(?i)STARTTLS} |
+    regex {(?i)TURN}     |
+    regex {(?i)VRFY}     |
+    ""
+    ) CRLF
+    => new RequestType{Command = s};
+
+type RequestType
+{
+    string Command;
+    optional string CommandParameter;
+    optional array<string> Data;
+}
+
+// [RFC 5321    Page 46    4.2.  SMTP Replies]
+syntax Code = c1:(regex {[2-5]{1}}) c2:(regex {[0-5]{1}}) c3:(regex {[0-9]{1}}) w:(" " | "-")
+    => new ResponseType{ReplyCode = c1+c2+c3, WhiteSpace = w};
+
+type ResponseType
+{
+    string ReplyCode;
+    string WhiteSpace;
+    optional array<string> ReplyMessage;
+}
+
+// NLMP Authentication data.
+syntax NlmpData    = s:"TlRMTVNTUA" => s;
+syntax Text        = s:regex{[^\r\n]+} ("\n" | CRLF) => s;
+pattern SP         = " ";
+syntax Spaces      = SP*;
+
+MailPacket PacketDecoder(stream payload)
+{
+    MailPacket packet = new MailPacket{};
+    if (packet == nothing)
+    {
+        ThrowDecodingException("SMTP", "MailPacket"); 
+    }
+    packet#byteLength = payload.ByteLength;
+
+    // Transport Layer Security (TLS) Payload Data.
+    if ((payload.ByteLength > 4) && (((payload.PeekByte(8) == 0x03)
+        && ((payload.PeekByte(2*8) == 0x00) || (payload.PeekByte(2*8) == 0x01) || (payload.PeekByte(2*8) == 0x02) || (payload.PeekByte(2*8) == 0x03)))
+        || ((payload.PeekByte(3*8) == 0x03) && ((payload.PeekByte(4*8) == 0x00) || (payload.PeekByte(4*8) == 0x01)))))
+    {
+        packet.Payload = payload.PeekBytes(0);
+
+        return packet;
+    }
+
+    if ((payload.ByteLength == 5) && (payload.PeekByte(0) == 0x0D) && (payload.PeekByte(8) == 0x0A) && (payload.PeekByte(2*8) == 0x2E)
+        && (payload.PeekByte(3*8) == 0x0D) && (payload.PeekByte(4*8) == 0x0A))
+    {
+        packet.Payload = payload.PeekBytes(0);
+
+        return packet;
+    }
+
+    packet.Request = CommandWithParameter(payload);
+    if (packet.Request != nothing)
+    {
+        var packetRequest = packet.Request as RequestType;
+        packetRequest.CommandParameter = Text(payload);
+
+        if (payload.BytePosition < payload.ByteLength)
+        {
+            packetRequest.Data = AddArray(ref payload);
+        }
+    }
+    else
+    {
+        packet.Request = CommandWithoutParameter(payload);
+        if (packet.Request == nothing)
+        {
+            packet.Response = Code(payload);
+            if (packet.Response != nothing)
+            {
+                Spaces(payload);
+
+                if (NlmpData(payload) != nothing)
+                {
+                    packet.Payload = payload.PeekBytes(payload.BytePosition * 8);
+                }
+                else if (payload.BytePosition < payload.ByteLength)
+                {
+                    var packetResponse = packet.Response as ResponseType;
+                    packetResponse.ReplyMessage = AddArray(ref payload);
+                }
+            }
+            else
+            {
+                packet.Payload = payload.PeekBytes(payload.BytePosition * 8);
+            }
+        }
+        else if ((payload.ByteLength != 2) && ((packet.Request as RequestType).Command == ""))
+        {
+            packet.Request = nothing;
+            packet.Payload = payload.PeekBytes(0);
+        }
+    }
+
+    return packet;
+}
+
+array<string> AddArray(ref stream payload)
+{
+    array<string> strArray = [];
+
+    while (payload.BytePosition < payload.ByteLength)
+    {
+        optional string msg = Text(payload);
+        if (msg != nothing)
+        {
+            strArray += [msg as string];
+        }
+        else
+        {
+            break;
+        }
+    }
+
+    return strArray;
+}
+
+string CommandTable(string command)
+{
+    switch (command)
+    {
+        case "DSN"                => return "DSN, Delivery Status Notification";
+        case "ATRN"               => return "ATRN, Authenticated TURN";
+        case "AUTH"               => return "AUTH, Authentication mechanism to the server";
+        case "BDAT"               => return "BDAT, Binary data";
+        case "EHLO"               => return "EHLO, Extended Hello";
+        case "ETRN"               => return "ETRN, Extended Turn";
+        case "DATA"               => return "DATA, Begins message composition";
+        case "EXPN"               => return "EXPN, Returns names on the specified mail list";
+        case "HELO"               => return "HELO, Returns identity of mail server";
+        case "HELP"               => return "HELP, Returns information on the specified command";
+        case "LHLO"               => return "LHLO, Local Mail";
+        case "MAIL"               => return "MAIL, Initiates a mail session from host";
+        case "MTRK"               => return "MTRK, Message Tracking";
+        case "NOOP"               => return "NOOP, Causes no action, except acknowledgement from server";
+        case "ONEX"               => return "ONEX, One message transaction only";
+        case "QUIT"               => return "QUIT, Terminates the mail session";
+        case "RCPT"               => return "RCPT, Designates who receives mail";
+        case "RSET"               => return "RSET, Resets mail connection";
+        case "SAML"               => return "SAML, Sends mail to user terminal and mailbox";
+        case "SEND"               => return "SEND, Sends mail to user terminal";
+        case "SOML"               => return "SOML, Sends mail to user terminal or mailbox";
+        case "SIZE"               => return "SIZE, Message size declaration";
+        case "TURN"               => return "TURN, Switches role of receiver and sender";
+        case "VERB"               => return "VERB, Verbose";
+        case "VRFY"               => return "VRFY, Confirm the argument identifies a user or mailbox";
+        case "8BITMIME"           => return "8BITMIME, Use 8-bit data";
+        case "CHUNKING"           => return "CHUNKING, Chunking";
+        case "STARTTLS"           => return "STARTTLS, Server is currently able to negotiate the use of TLS";
+        case "SUBMITTER"          => return "SUBMITTER, SMTP Responsible Submitter";
+        case "BINARYMIME"         => return "BINARYMIME, Binary MIME";
+        case "CHECKPOINT"         => return "CHECKPOINT, Checkpoint/Restart";
+        case "PIPELINING"         => return "PIPELINING, Command Pipelining";
+        case "NO-SOLICITING"      => return "NO-SOLICITING, Notification of no soliciting";
+        case "ENHANCEDSTATUSCODES"=> return "ENHANCEDSTATUSCODES, Enhanced Status Codes";
+        case ""                   => return "Completed";
+        default                   => return command;
+    }
+}

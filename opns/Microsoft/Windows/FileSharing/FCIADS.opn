@@ -1,0 +1,190 @@
+module FCIADS with 
+BinaryEncodingDefaults{Endian = Endian.Little},
+Documentation
+{
+    ProtocolName = "File Classification Infrastructure Alternate Data Stream (ADS) File Format",
+    ShortName = "FCIADS",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+            new Reference{Name = "MS-FCIADS", Version = "1.0", ProgramName = ProgramName.MCPP},
+            new Reference{Name = "MS-FSRM", Version = "26.0", ProgramName = ProgramName.MCPP},
+        ],
+    RevisionSummary =
+        [
+            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "25/06/2012"}
+        ]
+};
+
+using Standard;
+using DTYP;
+using SMB2;
+using Utility;
+
+autostart actor FCIADSOverSMB2(SMB2.Server server)
+{
+    observe server issues msg:Messages.ReadResponse where msg#SMBFileName !=nothing && (msg#SMBFileName as string).Contains(".") && (msg#SMBFileName as string).Contains(":FSRM{ef88c031-5950-4164-ab92-eec5f16005a5}")
+    {
+        switch(msg.Response.Buffer)
+        {
+            case adsStreamHeader:ADSStreamHeader from FCIADSDecoder =>
+                msg#Embedded = {"FCIADS"-> adsStreamHeader};
+            default =>
+                ThrowDecodingException("FCIADS");
+        }
+    }
+}
+
+optional ADSStreamHeader FCIADSDecoder(binary buffer)
+{
+    stream str = buffer;
+    var adsStreamHeader = BinaryDecoder<ADSStreamHeader>(str);
+    optional ADSExtensionHeader eh = nothing;
+    if (str.RemainingLength > 0 && adsStreamHeader != nothing && (adsStreamHeader as ADSStreamHeader).FirstFieldExtensionOffset != 0)
+    {
+        // Look ahead 16 bytes data to check if the ExtensionId is {35c8acd4-a0db-426d-85fc-7911cb780e4e}. If yes, decode to ADSSecurePropertiesExtensionHeader type.
+        if (str.PeekBytes(str.BitPosition, 16) == $[D4ACC835DBA06D4285FC7911CB780E4E])
+        {
+            eh =  ExtensionHeaderDecoder<ADSSecurePropertiesExtensionHeader>(str);
+        }
+        else
+        {
+            eh = ExtensionHeaderDecoder<ADSFieldExtensionHeader>(str);
+        }
+        var streamHeader = adsStreamHeader as ADSStreamHeader;
+        streamHeader.FieldExtensionHeaders = eh;
+        
+        return streamHeader;
+    }
+    return nothing;
+
+}
+
+array<T> ExtensionHeaderDecoder<T>(stream str)
+{
+    array<T> adsArray = [];
+    
+    while (str.BytePosition < str.ByteLength)
+    {
+        var adsSP = BinaryDecoder<T>(str);
+        if (adsSP != nothing)
+        {
+            adsArray += [(adsSP as T)];
+        }
+        else
+        {
+            break;
+        }
+    }
+    
+    return adsArray;
+}
+
+// 2.1   ADSStreamHeader
+type ADSStreamHeader
+{
+    GUID VersionId where ValidationCheck(value == {43ee0c5f-e038-421c-8a3e-ab4eb1166124}, null, "VersionId must be set to 43ee0c5f-e038-421c-8a3e-ab4eb1166124.");
+    ulong Crc;
+    FILETIME TimeStamp;
+    uint StreamLength;
+    uint FirstFieldExtensionOffset;
+    AdsCacheFlags Flags;
+    uint NonSecurePropertyCount;
+    ulong FileHash;
+    array<ADSNonSecurePropertyHeader> NonSecureProperties with BinaryEncoding{Length = NonSecurePropertyCount};
+    optional ADSExtensionHeader FieldExtensionHeaders with Encoding{Ignore = true};
+}
+
+pattern ADSExtensionHeader =  array<ADSFieldExtensionHeader> | array<ADSSecurePropertiesExtensionHeader>;
+
+// 2.2   ADSFieldExtensionHeader
+type ADSFieldExtensionHeader
+{
+    GUID ExtensionId;
+    uint BlockLength;
+    binary Data with BinaryEncoding{Length = BlockLength - 20};
+}
+
+// 2.3   ADSSecurePropertiesExtensionHeader
+type ADSSecurePropertiesExtensionHeader
+{
+    GUID ExtensionId where ValidationCheck(value == {35c8acd4-a0db-426d-85fc-7911cb780e4e}, null, "ExtensionId must be set to 35c8acd4-a0db-426d-85fc-7911cb780e4e.");
+    uint BlockLength;
+    uint PropertyCount;
+    array<ADSSecurePropertyHeader> Properties with BinaryEncoding{Length = PropertyCount};
+}
+
+// 2.4   ADSSecurePropertyHeader
+type ADSSecurePropertyHeader
+{
+    FciAdsSecurePropertyType SecureType;
+    AdsCachePropertyFlags Flags;
+    uint Length;
+    uint ValueOffset;
+    string Name;
+    string Value;
+}
+
+// 2.5   ADSNonSecurePropertyHeader
+type ADSNonSecurePropertyHeader
+{
+    FciAdsSecurePropertyType Type;
+    FsrmPropertyFlags Flags;
+    uint Length;
+    uint ValueOffset;
+    string Name;
+    string Value;
+}
+
+// MS-FRSM section 2.2.1.2.18   AdsCacheFlags
+pattern AdsCacheFlags = enum uint
+{
+    None = 0x00000000,
+    Dirty = 0x00000001,
+    PropertyFlagsValid = 0x00000002
+};
+
+// MS-FRSM section 2.2.1.2.20   FCI_ADS_SECURE_PROPERTY_TYPE
+pattern FciAdsSecurePropertyType = enum uint
+{
+    INT64 = 1,
+    STRING = 2
+};
+
+// MS-FRSM section 2.2.1.2.19   AdsCachePropertyFlags
+pattern AdsCachePropertyFlags = enum uint
+{
+    None = 0x00000000,
+    Manual = 0x00000001,
+    Deleted = 0x00000002,
+    PolicyDerived = 0x00000004,
+    Inherited = 0x00000008
+};
+
+// MS-FRSM section 2.2.2.6.1.1   FsrmPropertyFlags
+pattern FsrmPropertyFlags = enum uint
+{
+    Orphaned = 0x001,
+    RetrievedFromCache = 0x002,
+    RetrievedFromStorage = 0x004,
+    SetByClassifier = 0x008,
+    Deleted = 0x010,
+    Reclassified = 0x020,
+    AggregationFailed = 0x040,
+    Existing = 0x080,
+    FailedLoadingProperties = 0x100,
+    FailedClassifyingProperties = 0x200,
+    FailedSavingProperties = 0x00000400,
+    Secure = 0x00000800,
+    PolicyDerived = 0x00001000,
+    Inherited = 0x00002000,
+    Manual = 0x00004000,
+    PropertySourceMask = 0x0E
+};
+
+// WORKAROUND: for minimum set of DTYP, remove all types only used for parsing from DTYP. TASK ID: 47115
+pattern GUID = guid;

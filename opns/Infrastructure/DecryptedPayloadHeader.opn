@@ -1,0 +1,109 @@
+﻿protocol DecryptedPayloadHeader with 
+BinaryEncodingDefaults{Endian = Endian.Big},
+Documentation
+{
+    ProtocolName = "Decrypted Payload Header for Network Monitor 3",
+    ShortName = "DecryptedPayloadHeader",
+    Description = "Decrypted Payload Header"
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    RevisionSummary = 
+        [
+            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "11/25/2011"}
+        ]
+};
+
+using Standard;
+using Utility;
+
+endpoint Node
+    accepts DecryptedFrame;
+    
+(IPv4Address | IPv6Address) get Source(this DecryptedFrame frame)
+{
+    if (frame.IPLayer is IPv4Layer)
+    {
+        IPv4Layer f = frame.IPLayer as IPv4Layer;
+        return f.SourceAddress;
+    }
+    else
+    {
+        IPv6Layer f = frame.IPLayer as IPv6Layer;
+        return f.SourceAddress;
+    }
+}
+
+(IPv4Address | IPv6Address) get Destination(this DecryptedFrame frame)
+{
+    if (frame.IPLayer is IPv4Layer)
+    {
+        IPv4Layer f = frame.IPLayer as IPv4Layer;
+        return f.DestinationAddress;
+    }
+    else
+    {
+        IPv6Layer f = frame.IPLayer as IPv6Layer;
+        return f.DestinationAddress;
+    }
+}
+
+string get Network(this DecryptedFrame frame)
+{
+    if (frame.IPLayer is IPv4Layer)
+    {
+        IPv4Layer f = frame.IPLayer as IPv4Layer;
+        return "DecryptedPayloadHeader: " + (f.SourceAddress.Octets > f.DestinationAddress.Octets
+            ? f.DestinationAddress.ToString() + " - " + f.SourceAddress.ToString()
+            : f.SourceAddress.ToString() + " - " + f.DestinationAddress.ToString()); 
+    }
+    else 
+    {
+        IPv6Layer f = frame.IPLayer as IPv6Layer;
+        return "DecryptedPayloadHeader: " + (f.SourceAddress.Octets > f.DestinationAddress.Octets
+            ? f.DestinationAddress.ToString() + " - " + f.SourceAddress.ToString()
+            : f.SourceAddress.ToString() + " - " + f.DestinationAddress.ToString());   
+    }
+}
+    
+message DecryptedFrame
+{
+    ushort Version;
+    ushort HeaderLength;
+    ushort EncryptionErrorStatus;
+    ushort FrameCount;
+    array<ushort> FrameSource with BinaryEncoding{Length = FrameCount};
+    (IPv4Layer | IPv6Layer) IPLayer; 
+    byte ESPPresent;
+    TCPLayer TcpLayer;
+    binary TLSSSLData;
+    
+    override string ToString()
+    {
+        return "FrameCount: " + (FrameCount as string) + ", ErrorStatus: " + (EncryptionErrorStatus == 1 ? "ERROR" : "SUCCESS");
+    }
+}
+
+type IPv4Layer
+{
+    (byte where value == 4) IPVersion;
+    IPv4Address SourceAddress;
+    IPv4Address DestinationAddress;
+}
+
+type IPv6Layer
+{
+    (byte where value == 6) IPVersion;
+    IPv6Address SourceAddress;
+    IPv6Address DestinationAddress;
+}
+
+type TCPLayer
+{
+    ulong SrcPort;
+    ulong DstPort;
+    ulong SequenceNumber;
+    ulong NextSequenceNumber;
+}
+

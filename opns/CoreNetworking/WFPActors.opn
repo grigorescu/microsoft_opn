@@ -1,0 +1,144 @@
+﻿module WFPActors with 
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+        ],
+    RevisionSummary = 
+        [
+            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "09/02/2011"}
+        ]
+};
+
+using IANA;
+using WFPCapture;
+using IPv4;
+using IPv6;
+using TCP;
+using UDP;
+using ICMPv6;
+using Utility;
+using ICMP;
+
+autostart actor TCPOverWFP(WFPCapture.WFPFrame wfp)
+{
+    set<binary> clientList = {};
+    
+    process wfp accepts fm:MessageV4{Protocol is ProtocolType.TCP}
+    {
+        TCP.DecodeAndDispatchSegment(ref clientList, fm.SourceAddress.FlatAddress, fm.DestinationAddress.FlatAddress, fm.Payload);
+    }
+    
+    process wfp accepts fm:Message2V4{Protocol is ProtocolType.TCP}
+    {
+        TCP.DecodeAndDispatchSegment(ref clientList, fm.SourceAddress.FlatAddress, fm.DestinationAddress.FlatAddress, fm.Payload);
+    }
+    
+    process wfp accepts fm:MessageV6{Protocol is ProtocolType.TCP}
+    {
+        TCP.DecodeAndDispatchSegment(ref clientList, fm.SourceAddress.FlatAddress, fm.DestinationAddress.FlatAddress, fm.Payload);
+    }
+    
+    process wfp accepts fm:Message2V6{Protocol is ProtocolType.TCP}
+    {
+        TCP.DecodeAndDispatchSegment(ref clientList, fm.SourceAddress.FlatAddress, fm.DestinationAddress.FlatAddress, fm.Payload);
+    }
+
+}
+
+autostart actor UDPOverWFP(WFPCapture.WFPFrame wfp)
+{
+    process wfp accepts fm:MessageV4{Protocol is ProtocolType.UDP}
+    {
+        UDP.DecodeDatagram(fm.SourceAddress.FlatAddress, fm.DestinationAddress.FlatAddress, fm.Payload);
+    }
+    
+    process wfp accepts fm:Message2V4{Protocol is ProtocolType.UDP}
+    {
+        UDP.DecodeDatagram(fm.SourceAddress.FlatAddress, fm.DestinationAddress.FlatAddress, fm.Payload);
+    }
+    
+    process wfp accepts fm:MessageV6{Protocol is ProtocolType.UDP}
+    {
+        UDP.DecodeDatagram(fm.SourceAddress.FlatAddress, fm.DestinationAddress.FlatAddress, fm.Payload);
+    }
+
+    process wfp accepts fm:Message2V6{Protocol is ProtocolType.UDP}
+    {
+        UDP.DecodeDatagram(fm.SourceAddress.FlatAddress, fm.DestinationAddress.FlatAddress, fm.Payload);
+    }
+}
+
+autostart actor IPv6OverWFPCapture(WFPCapture.WFPFrame wfp)
+{
+    process wfp accepts fm:MessageV4{Protocol is ProtocolType.IPv6}
+    {
+        switch (fm.Payload)
+        {
+            case d:IPv6.Datagram from IPv6Decoder =>
+                dispatch endpoint IPv6.ReassemblyNode[d.DestinationAddress.FlatAddress < d.SourceAddress.FlatAddress ? d.DestinationAddress.FlatAddress : d.SourceAddress.FlatAddress] over wfp accepts d;
+            default =>
+                ThrowDecodingException("IPv6", "Datagram");
+        }
+    }
+    
+    process wfp accepts fm:Message2V4{Protocol is ProtocolType.IPv6}
+    {
+        switch (fm.Payload)
+        {
+            case d:IPv6.Datagram from IPv6Decoder =>
+                dispatch endpoint IPv6.ReassemblyNode[d.DestinationAddress.FlatAddress < d.SourceAddress.FlatAddress ? d.DestinationAddress.FlatAddress : d.SourceAddress.FlatAddress] over wfp accepts d;
+            default =>
+                ThrowDecodingException("IPv6", "Datagram");
+        }
+    }
+    
+    process wfp accepts fm:MessageV6{Protocol is ProtocolType.IPv6}
+    {
+        switch (fm.Payload)
+        {
+            case d:IPv6.Datagram from IPv6Decoder =>
+                dispatch endpoint IPv6.ReassemblyNode[d.DestinationAddress.FlatAddress < d.SourceAddress.FlatAddress ? d.DestinationAddress.FlatAddress : d.SourceAddress.FlatAddress] over wfp accepts d;
+            default =>
+                ThrowDecodingException("IPv6", "Datagram");
+        }
+    }
+    
+    process wfp accepts fm:Message2V6{Protocol is ProtocolType.IPv6}
+    {
+        switch (fm.Payload)
+        {
+            case d:IPv6.Datagram from IPv6Decoder =>
+                dispatch endpoint IPv6.ReassemblyNode[d.DestinationAddress.FlatAddress < d.SourceAddress.FlatAddress ? d.DestinationAddress.FlatAddress : d.SourceAddress.FlatAddress] over wfp accepts d;
+            default =>
+                ThrowDecodingException("IPv6", "Datagram");
+        }
+    }
+}
+
+autostart actor ICMPOverWFP(WFPCapture.WFPFrame wfp)
+{
+    process wfp accepts fm:MessageV4{Protocol is ProtocolType.ICMP}
+    {
+        ICMP.DecodeDatagram(fm.SourceAddress.FlatAddress, fm.DestinationAddress.FlatAddress, fm.Payload, true);
+    }
+    
+    process wfp accepts fm:Message2V4{Protocol is ProtocolType.ICMP}
+    {
+        ICMP.DecodeDatagram(fm.SourceAddress.FlatAddress, fm.DestinationAddress.FlatAddress, fm.Payload, true);
+    }
+}
+
+autostart actor ICMPv6OverWFP(WFPCapture.WFPFrame wfp)
+{
+    process wfp accepts d:MessageV6{Protocol is ProtocolType.IPv6ICMP}
+    {
+        ICMPv6.ICMPv6DecodeAndDispatch(d.SourceAddress.FlatAddress, d.DestinationAddress.FlatAddress, d.Payload);
+    }
+    
+    process wfp accepts d:Message2V6{Protocol is ProtocolType.IPv6ICMP}
+    {
+        ICMPv6.ICMPv6DecodeAndDispatch(d.SourceAddress.FlatAddress, d.DestinationAddress.FlatAddress, d.Payload);
+    }
+}

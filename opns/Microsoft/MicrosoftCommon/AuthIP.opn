@@ -1,0 +1,537 @@
+// This file is integrated from <root>\private\PEF\Product\Src\OPNProduction\Common\AIPS.opn
+protocol AuthIP with 
+BinaryEncodingDefaults{Endian = Endian.Big},
+Documentation
+{
+    ProtocolName = "Authenticated Internet Protocol Specification",
+    ShortName = "AIPS",
+    Description = ""
+},
+OPNAuthoring
+{
+    Copyright = "(c) Microsoft Corporation",
+    References = 
+        [
+            new Reference{Name = "MS-AIPS", Version = "23.0", ProgramName = ProgramName.MCPP},
+            new Reference{Name = "RFC 2408"},
+            new Reference{Name = "RFC 3947"},
+        ],
+    RevisionSummary = 
+        [
+            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "03/20/2012"}
+        ]
+};
+
+using GSSAPI;
+using IKE;
+using UDP;
+using Standard;
+using Utility;
+using IANA;
+
+endpoint Node 
+    over UDP.Host
+    accepts IsakmpMessage;
+
+const set<ushort> AuthIPPort = {IANA.Port.IKE, IANA.Port.GDOI};
+
+autostart actor AuthIPOverUdp(UDP.Host host)
+{
+    process host accepts d:UDP.Datagram where (AuthIPPort[d.SourcePort] || AuthIPPort[d.DestinationPort]) &&  IsAuthIP(d.Payload)
+    {
+        switch(d.Payload)
+        {
+            case isakmpMessage:IsakmpMessage from AuthIPDecoder =>
+                dispatch endpoint Node over host accepts isakmpMessage;
+            default =>
+                ThrowDecodingException("AuthIP");
+        }
+    }
+}
+
+// MS-AIPS 2.2.1
+message IsakmpMessage
+{
+    IsakmpHeader IsakmpHeader;
+    array<PayloadChoice> Payloads with Encoding{Ignore = true};
+    override string ToString()
+    {
+        string summary = this#IsTruncated != nothing && (this#IsTruncated as bool) ? "Truncated, " : "";
+        summary += "ISAKMP, Version: "+ (IsakmpHeader.MajorVersion as string) + "." + (IsakmpHeader.MinorVersion as string) + ", Exchange Type: " 
+            + ExchangeTypeEnum(IsakmpHeader.ExchangeType);
+        string flagsSummary = ", Flags: ";
+        string payloadsSummary = ", Payloads: ";
+        if(Payloads.Count > 1)
+        {
+            payloadsSummary += "[";
+        }
+        if (IsakmpHeader.Flags is Flagsv1)
+        {
+            Flagsv1 f = IsakmpHeader.Flags as Flagsv1;
+            flagsSummary += (f.AuthenticationOnly == 1 ? "AuthOnly|" : "")
+                + (f.Commit == 1 ? "Commit|" : "")
+                + (f.Encryption == 1 ? "Encryption" : "");
+        }
+      
+        if (IsakmpHeader.Flags is Flagsv2)
+        {
+            Flagsv2 f = IsakmpHeader.Flags as Flagsv2;
+            flagsSummary += (f.Initiator == 1 ? "Initiator|" : "")
+                + (f.Version == 1 ? "Version|" : "")
+                + (f.Response == 1 ? "Response" : "");
+        }
+      
+        int i=0;
+        array<string> summaryCollection = [];
+        foreach (any p in Payloads)
+        {
+            
+            if (!("SA" in summaryCollection) && p is (SecurityAssociationPayloadv1 | SecurityAssociationPayloadv2))
+            {
+                if(0!=i)
+                {
+                    payloadsSummary += ", ";
+                }
+                payloadsSummary += "SA";                
+                summaryCollection += ["SA"];
+            }
+            else if (!("P" in summaryCollection) && p is ProposalPayloadv1)
+            {
+                if(0!=i)
+                {
+                    payloadsSummary += ", ";
+                }
+                payloadsSummary += "P";
+                summaryCollection += ["P"];
+            }
+            else if (!("T" in summaryCollection) && p is TransformPayloadv1)
+            {
+                if(0!=i)
+                {
+                    payloadsSummary += ", ";
+                }
+                payloadsSummary += "T";
+                summaryCollection += ["T"];
+            }
+            else if (!("KE" in summaryCollection) && p is (KeyExchangePayloadv1 | KeyExchangePayloadv2))
+            {
+                if(0!=i)
+                {
+                    payloadsSummary += ", ";
+                }
+                payloadsSummary += "KE";
+                summaryCollection += ["KE"];
+            }
+            else if (!("ID" in summaryCollection) && p is (IdentificationPayloadv1 | IdentificationPayloadsv2))
+            {
+                if(0!=i)
+                {
+                    payloadsSummary += ", ";
+                }
+                payloadsSummary += "ID";
+                summaryCollection += ["ID"];
+            }
+            else if (!("CERT" in summaryCollection) && p is (CertificatePayloadv1 | CertificatePayloadv2))
+            {
+                if(0!=i)
+                {
+                    payloadsSummary += ", ";
+                }    
+                payloadsSummary += "CERT";
+                summaryCollection += ["CERT"];
+            }
+            else if (!("CERTREQ" in summaryCollection) && p is (CertificateRequestPayloadv1 | CertificateRequestPayloadv2))
+            {
+                if(0!=i)
+                {
+                    payloadsSummary += ", ";
+                }
+                payloadsSummary += "CERTREQ";
+                summaryCollection += ["CERTREQ"];
+            }
+            else if (!("HASH" in summaryCollection) && p is HashPayloadv1)
+            {
+                if(0!=i)
+                {
+                    payloadsSummary += ", ";
+                }
+                payloadsSummary += "HASH";
+                summaryCollection += ["HASH"];
+            }
+            else if (!("SIG" in summaryCollection) && p is SignaturePayloadv1)
+            {
+                if(0!=i)
+                {
+                    payloadsSummary += ", ";
+                }
+                payloadsSummary += "SIG";
+                summaryCollection += ["SIG"];
+            }
+            else if (!("NC" in summaryCollection) && p is (NoncePayloadv1 | NoncePayloadv2))
+            {
+                if(0!=i)
+                {
+                    payloadsSummary += ", ";
+                }
+                payloadsSummary += "NC";
+                summaryCollection += ["NC"];
+            }
+            else if (!("N" in summaryCollection) && p is (NotificationPayloadv1 | NotifyPayloadv2))
+            {
+                if(0!=i)
+                {
+                    payloadsSummary += ", ";
+                }
+                payloadsSummary += "N";
+                summaryCollection += ["N"];
+            }
+            else if (!("D" in summaryCollection) && p is (DeletePayloadv1 | DeletePayloadv2))
+            {
+                if(0!=i)
+                {
+                    payloadsSummary += ", ";
+                }
+                payloadsSummary += "D";
+                summaryCollection += ["D"];
+            }
+            else if (!("VID" in summaryCollection) && p is (VendorIDPayloadv1 | VendorIDPayloadv2))
+            {
+                if(0!=i)
+                {
+                    payloadsSummary += ", ";
+                }
+                payloadsSummary += "VID";
+                summaryCollection += ["VID"];
+            }
+            else if (!("NAT-D" in summaryCollection) && p is NATDiscoveryPayload)
+            {
+                if(0!=i)
+                {
+                    payloadsSummary += ", ";
+                }
+                payloadsSummary += "NAT-D";
+                summaryCollection += ["NAT-D"];
+            }
+            else if (!("NAT-OA" in summaryCollection) && p is NATOriginalAddressPayload)
+            {
+                if(0!=i)
+                {
+                    payloadsSummary += ", ";
+                }
+                payloadsSummary += "NAT-OA";
+                summaryCollection += ["NAT-OA"];
+            }
+            else if (!("AUTH" in summaryCollection) && p is AuthenticationPayloadv2)
+            {
+                if(0!=i)
+                {
+                    payloadsSummary += ", ";
+                }
+                payloadsSummary += "AUTH";
+                summaryCollection += ["AUTH"];
+            }
+            else if (!("TS" in summaryCollection) && p is TrafficSelectorPayloadv2)
+            {
+                if(0!=i)
+                {
+                    payloadsSummary += ", ";
+                }
+                payloadsSummary += "TS";
+                summaryCollection += ["TS"];
+            }
+            else if (!("CP" in summaryCollection) && p is ConfigurationPayloadv2)
+            {
+                if(0!=i)
+                {
+                    payloadsSummary += ", ";
+                }
+                payloadsSummary += "CP";
+                summaryCollection += ["CP"];
+            }
+            else if (!("EAP" in summaryCollection) && p is EAPPayloadv2)
+            {
+                if(0!=i)
+                {
+                    payloadsSummary += ", ";
+                }
+                payloadsSummary += "EAP";
+                summaryCollection += ["EAP"];
+            }
+            else if (!("CRYPTO" in summaryCollection) && p is CryptoPayloadPacket)
+            {
+                if(0!=i)
+                {
+                    payloadsSummary += ", ";
+                }
+                payloadsSummary += "CRYPTO";
+                summaryCollection += ["CRYPTO"];
+            }
+            else if (!("SA" in summaryCollection) && p is SecurityAssociationPayload)
+            {
+                if(0!=i)
+                {
+                    payloadsSummary += ", ";
+                }
+                payloadsSummary += "SA";
+                summaryCollection += ["SA"];
+            }
+            else if (!("AUTH" in summaryCollection) && p is AuthPayloadPacket)
+            {
+                if(IsakmpHeader.ResponderCookie == [0,0,0,0,0,0,0,0])
+                {
+                    if((p as AuthPayloadPacket).Data.Count > 0)
+                    {
+                        AuthMethod method = ((p as AuthPayloadPacket).Data)[0].AuthMethod;
+                        summary += ", Inititor provide proposal " + EnumToString(method, "AuthIP.AuthMethod") + " for negotiation";
+                    }
+                }
+                if(0!=i)
+                {
+                    payloadsSummary += ", ";
+                }
+                payloadsSummary += "AUTH";
+                summaryCollection += ["AUTH"];
+            }
+            else if (!("GSSID" in summaryCollection) && p is GssIDPayloadPacket)
+            {
+                if(IsakmpHeader.ResponderCookie == [0,0,0,0,0,0,0,0])
+                {
+                    summary += ", First Exchange with known peer SPN, SPN: " + (p as GssIDPayloadPacket).Spn;
+                }
+                else
+                {
+                    summary += ", The responder send the SPN, SPN: " + (p as GssIDPayloadPacket).Spn;
+                }
+                if(0!=i)
+                {
+                    payloadsSummary += ", ";
+                }
+                payloadsSummary += "GSSID";
+                summaryCollection += ["GSSID"];
+            }
+            i++;
+        }
+        if(Payloads.Count > 1)
+        {
+            payloadsSummary += "]";
+        }
+        summary += payloadsSummary + flagsSummary + ", Length: " + (IsakmpHeader.Length as string);
+        return summary;
+    }
+}
+
+// MS-AIPS 2.2.1
+pattern Cookie = array<byte> with BinaryEncoding{Length = 8};
+
+// MS-AIPS 2.2.1
+pattern ExchangeType = enum byte
+{
+    MM      = 0xF3,
+    QM      = 0xF4,
+    EM      = 0xF5,
+    Notify  = 0xF6
+};
+
+// MS-AIPS 2.2.1
+type IsakmpHeader
+{
+    Cookie InitiatorCookie;
+    Cookie ResponderCookie;
+    byte NextPayload;
+    byte MajorVersion with BinaryEncoding{Width = 4};
+    byte MinorVersion with BinaryEncoding{Width = 4};
+    ExchangeType ExchangeType;
+    ([|MajorVersion == 1|] Flagsv1 | [|MajorVersion == 2|] Flagsv2) Flags;
+    uint MessageId;
+    uint Length;
+}
+
+type Payloads[byte Type]
+{ 
+    ([|Type == 1|] SecurityAssociationPayload                           // 1
+        | [|Type == 2|] ProposalPayloadv1                               // 2
+        | [|Type == 3|] TransformPayloadv1                              // 3
+        | [|Type == 4|] KeyExchangePayloadv1                            // 4
+        | [|Type == 5|] IdentificationPayloadv1                         // 5
+        | [|Type == 6|] CertificatePayloadv1                            // 6
+        | [|Type == 7|] CertificateRequestPayloadv1                     // 7
+        | [|Type == 8|] HashPayloadv1                                   // 8
+        | [|Type == 9|] SignaturePayloadv1                              // 9
+        | [|Type == 10|] NoncePayloadv1                                 // 10
+        | [|Type == 11|] NotificationPayloadv1                          // 11
+        | [|Type == 12|] DeletePayloadv1                                // 12
+        | [|Type == 13|] VendorIDPayloadv1                              // 13
+        | [|Type == 20|] NATDiscoveryPayload                            // 20
+        | [|Type == 21|] NATOriginalAddressPayload                      // 21
+        | [|Type == 33|] SecurityAssociationPayloadv2                   // 33
+        | [|Type == 34|] KeyExchangePayloadv2                           // 34
+        | [|Type == 35 || Type == 36|] IdentificationPayloadsv2         // 35/36
+        | [|Type == 37|] CertificatePayloadv2                           // 37
+        | [|Type == 38|] CertificateRequestPayloadv2                    // 38
+        | [|Type == 39|] AuthenticationPayloadv2                        // 39
+        | [|Type == 40|] NoncePayloadv2                                 // 40
+        | [|Type == 41|] NotifyPayloadv2                                // 41
+        | [|Type == 42|] DeletePayloadv2                                // 42
+        | [|Type == 43|] VendorIDPayloadv2                              // 43
+        | [|Type == 44 || Type == 45|] TrafficSelectorPayloadv2         // 44/45
+        | [|Type == 46|] EncryptedPayloadv2                             // 46
+        | [|Type == 47|] ConfigurationPayloadv2                         // 47
+        | [|Type == 48|] EAPPayloadv2                                   // 48
+        | [|Type >= 49 && Type <=127|] ReservedPayloadv2                // 49~127
+        | [|Type == 129|] IkeGssapiTokenPayload                         // 129
+        | [|Type == 133|] CryptoPayloadPacket                           // 133
+        | [|Type == 134|] GssIDPayloadPacket                            // 134
+        | [|Type == 135|] AuthPayloadPacket                             // 135
+        | [|Type >=128 && Type <= 255|] PrivateUsePayloadv2) Payload;   // 128~255
+}
+
+pattern PayloadChoice = SecurityAssociationPayload | ProposalPayloadv1| TransformPayloadv1 | KeyExchangePayloadv1| IdentificationPayloadv1 | 
+            CertificatePayloadv1 | CertificateRequestPayloadv1 | HashPayloadv1 | SignaturePayloadv1 | NoncePayloadv1 | NotificationPayloadv1 |
+            DeletePayloadv1 | VendorIDPayloadv1 | NATDiscoveryPayload | NATOriginalAddressPayload | SecurityAssociationPayloadv2 |
+            KeyExchangePayloadv2 | IdentificationPayloadsv2 | CertificatePayloadv2 | CertificateRequestPayloadv2 | AuthenticationPayloadv2 |
+            NoncePayloadv2 | NotifyPayloadv2 | DeletePayloadv2 | VendorIDPayloadv2 | TrafficSelectorPayloadv2 | EncryptedPayloadv2 |
+            ConfigurationPayloadv2 | EAPPayloadv2 | ReservedPayloadv2 | IkeGssapiTokenPayload | CryptoPayloadPacket |
+            GssIDPayloadPacket | AuthPayloadPacket | PrivateUsePayloadv2;
+
+// MS-AIPS 2.2.3.2
+type CryptoPayloadPacket //0x85
+{
+    byte NextPayload;
+    (byte where value == 0) Reserved;
+    ushort PayloadLength;
+    uint SeqNum;
+    binary InitializationVector with BinaryEncoding{Length = (PayloadLength - 8) as uint};
+}
+
+pattern String16 = string with BinaryEncoding{TextEncoding = TextEncoding.UTF16};
+
+// MS-AIPS 2.2.3.3
+type GssIDPayloadPacket //0x86
+{
+    byte NextPayload;
+    (byte where value == 0) Reserved;
+    ushort PayloadLength;
+    String16 Spn with BinaryEncoding{Length = ((PayloadLength - 4) / 2) as uint};
+}
+
+// MS-AIPS 2.2.3.4
+type AuthPayloadPacket //0x87
+{
+    byte NextPayload;
+    (byte where value == 0) Reserved;
+    ushort PayloadLength;
+    array<AuthPayloadItem> Data with BinaryEncoding{Length = ((PayloadLength - 4) / 4) as uint};
+}
+// MS-AIPS 2.2.3.4
+pattern AuthMethod = enum ushort
+{
+    Kerberos    = 0x0002,
+    Anonymous   = 0x0003,
+    Tls         = 0x0004,
+    Ntlm        = 0x0005,
+};
+
+type AuthPayloadItem
+{
+    AuthMethod AuthMethod;
+    (ushort where value == 0) Flags;
+}
+
+type SecurityAssociationPayload
+{
+    byte NextPayload;
+    byte Reserved where ValidationCheck(value == 0, null, () => "AuthIP: The Reserved field in type SecurityAssociationPayload must be set to zero, not " + DecToHexFormat(value) + ".");
+    ushort PayloadLength;
+    uint DomainOfInterpretation;
+    Situation Situation;
+    TransformPayload TransformPayload;
+}
+
+type TransformPayload
+{
+    byte NextPayload;
+    (byte where value == 0) Reserved1;
+    ushort PayloadLength;
+    byte Transform;
+    byte TransformId;
+    ushort Reserved2;
+    array<Attribute> Attributes with BinaryEncoding{Length = ((PayloadLength - 8) / 4) as uint};
+}
+
+type Attribute
+{
+    AttributeType AttributeType;
+    ushort Data;
+}
+
+type AttributeType
+{
+    ushort AF with BinaryEncoding{Width = 1};
+    ushort Type with BinaryEncoding{Width = 15};
+}
+
+optional IsakmpMessage AuthIPDecoder(binary binaryValue)
+{
+    if (binaryValue.Count < 4)
+    {
+        return nothing;
+    }
+    if (binaryValue.Segment(0,4) == $[00000000])
+    {
+        binaryValue = binaryValue.Segment(4);
+    }
+    stream s = binaryValue as stream;
+    
+    // head processing
+    var datagram = BinaryDecoder<IsakmpMessage>(s);
+    if (datagram == nothing)
+    {
+        return nothing;
+    }
+    IsakmpMessage d = datagram as IsakmpMessage;
+    if (d.IsakmpHeader.Flags is Flagsv1)
+    {
+        if ((d.IsakmpHeader.Flags as Flagsv1).Encryption == 1)
+        {
+            d.Payloads = ["Encrypted Payloads"];
+            return d;
+        }
+    }
+    
+    //payload processing
+    int prePos = s.BitPosition;
+    byte nextType = d.IsakmpHeader.NextPayload;
+    array<any> arrPayloads = [];
+    array<DataChunks> chunks = [];
+    DataChunks payloadChunk = new DataChunks{
+                DataSource = s, 
+                Chunks = [new BinaryChunk{BitPosition = prePos, BitLength = s.BitLength - prePos }],
+                };
+    while (s.BytePosition < s.ByteLength)
+    {
+        byte currentPayload = nextType;
+        nextType = s.CurrentByte;
+        var p = BinaryDecoder<AuthIP.Payloads[currentPayload]>(s);
+        if (p != nothing)
+        {
+            arrPayloads += [(p as Payloads).Payload];
+            chunks += [new DataChunks{DataSource = s, Chunks = [new BinaryChunk{BitPosition = prePos, BitLength = s.BitPosition - prePos }]}];
+            prePos = s.BitPosition;
+        }
+        else
+        {
+            // WORKAROUND for truncation parsing: disable the validation since it's very easy to trigger under truncation situation.
+            // ValidationCheck(false, d, "Parsing payload failed due to invalid data.");
+            break;
+        }
+            
+        if (nextType == 0)
+        {
+            break;
+        }
+    }
+    d.Payloads = arrPayloads;
+    d.AssociateArrayField("Payloads", chunks);
+    d.AssociateField("Payloads", payloadChunk);
+    return d;
+}
