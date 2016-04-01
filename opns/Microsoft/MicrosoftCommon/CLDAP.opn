@@ -14,12 +14,11 @@ OPNAuthoring
     ],
     RevisionSummary =
     [
-    new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "3/30/2012"},
+    new Revision{Class = RevisionClass.Major, Version = "376094", Date = "03/30/2015"},
     ]
 };
 
 using Standard;
-using ASN1;
 using UDP;
 using IANA;
 using Utility;
@@ -37,7 +36,7 @@ client endpoint Client connected to Server;
  */
 autostart actor CldapOverUdp(UDP.Host host)
 {
-    process host accepts d:UDP.Datagram where (d.DestinationPort == Port.LDAP || d.SourcePort == Port.LDAP)
+    process host accepts d:UDP.Datagram where (d.Payload.Count > 0 && (d.DestinationPort == Port.LDAP || d.SourcePort == Port.LDAP))
     {
         stream s = d.Payload;
         while (s.BytePosition < s.ByteLength)
@@ -81,7 +80,7 @@ message CldapMessage
                 backUpText = "Abandon Request";
             }
         }        
-        return ((backUpText == "" ? ProtocolOp.ToString() : backUpText) + ", MessageID:" + (MessageID as string));
+        return ((backUpText.Count == 0 ? ProtocolOp.ToString() : backUpText) + ", MessageID:" + (MessageID as string));
     }
 }
 

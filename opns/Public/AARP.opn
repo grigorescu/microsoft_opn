@@ -17,7 +17,7 @@ OPNAuthoring
         ],
     RevisionSummary = 
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "11/09/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "379377", Date = "06/25/2015"}
         ]
 };
 
@@ -73,8 +73,8 @@ message Packet
 {
     ushort HardwareType;
     ushort ProtocolType;
-    byte HardwareAddressLen where ValidationCheck(value == 6, null, "Length in bytes of the hardware address field is 6.");
-    byte ProtocolAddressLen where ValidationCheck(value == 4, null, "Length in bytes of the protocol address field is 4.");
+    byte HardwareAddressLen where ValidationCheck(value == 6, this, "Length in bytes of the hardware address field is 6.");
+    byte ProtocolAddressLen where ValidationCheck(value == 4, this, "Length in bytes of the protocol address field is 4.");
     ushort Function;
     HardwareAddress SourceHardwareAddress;
     AppleTalkAddress SourceAppleTalkAddress;

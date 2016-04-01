@@ -1,4 +1,4 @@
-﻿protocol SCTP with 
+protocol SCTP with 
 BinaryEncodingDefaults{Endian = Endian.Big},
 Documentation
 {
@@ -15,7 +15,7 @@ OPNAuthoring
         ],
     RevisionSummary =
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "4/24/2012"}
+            new Revision{Class = RevisionClass.Major, Version = "364075", Date = "05/14/2014"}
         ]
 };
 
@@ -23,7 +23,6 @@ using Standard;
 using IPv4;
 using Utility;
 using IANA;
-using IPv6;
 
 // Keep binary format of source and destination address for Packet since upper layer protocols may need these for index of endpoint.
 annotation binary Packet#SctpSourceAddrBin;
@@ -215,7 +214,8 @@ void ProcessPacketFromReassemblyServer(Packet p, ref map<ushort, map<uint, Packe
             if (isSelectiveAcknowledgement)
             {
                 bool isCompleteAck = false;
-                foreach (ushort ssn in (remoteCompletedPayloadDataPackets.Keys))
+                var keys = remoteCompletedPayloadDataPackets.Keys;
+                foreach (ushort ssn in keys)
                 {
                     if (cumulativeTsnAck == remoteCompletedPayloadDataPackets[ssn]#SctpPacketTsn)
                     {
@@ -497,7 +497,8 @@ void DispatchCompletedPackedBySsn(ref ushort nextSsn, ref map<ushort, Packet> co
 bool IsSsnInCompletedPayloadDataPackets(ushort ssn, map<ushort, Packet> completedPayloadDataPackets)
 {
     bool result = false;
-    foreach (ushort ssnTemp in completedPayloadDataPackets.Keys)
+    var keys = completedPayloadDataPackets.Keys;
+    foreach (ushort ssnTemp in keys)
     {
         for (int i = 0; i < completedPayloadDataPackets[ssnTemp].Chunks.Count; i++)
         {
@@ -573,7 +574,8 @@ void BufferClean(ref map<ushort, map<uint, Packet>> localFragments,
     foreach (uint localAckKeyForFragment in localSelectiveAcknowledgements.Keys)
     {
         SelectiveAcknowledgement ack = localSelectiveAcknowledgements[localAckKeyForFragment].Chunks[0] as SelectiveAcknowledgement;
-        foreach (ushort ssnTemp in remoteFragments.Keys)
+        var keys = remoteFragments.Keys;
+        foreach (ushort ssnTemp in keys)
         {
             if (ack.CumulativeTsnAck in remoteFragments[ssnTemp])
             {
@@ -587,7 +589,8 @@ void BufferClean(ref map<ushort, map<uint, Packet>> localFragments,
     foreach (uint remoteAckKeyForCompletedPacket in remoteSelectiveAcknowledgements.Keys)
     {
         SelectiveAcknowledgement ack = remoteSelectiveAcknowledgements[remoteAckKeyForCompletedPacket].Chunks[0] as SelectiveAcknowledgement;
-        foreach (ushort ssnTemp in localCompletedPayloadDataPackets.Keys)
+        var keys2 = localCompletedPayloadDataPackets.Keys;
+        foreach (ushort ssnTemp in keys2)
         {
             if (localCompletedPayloadDataPackets[ssnTemp]#SctpPacketTsn == ack.CumulativeTsnAck)
             {
@@ -605,7 +608,8 @@ void BufferClean(ref map<ushort, map<uint, Packet>> localFragments,
     foreach (uint remoteAckKeyForFragment in remoteSelectiveAcknowledgements.Keys)
     {
         SelectiveAcknowledgement ack = remoteSelectiveAcknowledgements[remoteAckKeyForFragment].Chunks[0] as SelectiveAcknowledgement;
-        foreach (ushort ssnTemp in localFragments.Keys)
+        var keys3 = localFragments.Keys;
+        foreach (ushort ssnTemp in keys3)
         {
             if (ack.CumulativeTsnAck in localFragments[ssnTemp])
             {
@@ -718,8 +722,8 @@ void DecodeAndDispatchSegment(ref set<binary> clientSet, binary sourceAddress, b
 /********************************************** Message & Types **********************************************/
 message Packet
 {
-    ushort SourcePort with Visualization{AliasName = "Port"};
-    ushort DestinationPort with Visualization{AliasName = "Port"};
+    IANA.Port SourcePort with Visualization{AliasName = "Port"}, DisplayInfo{ToText = (any port) => IANA.PortToServiceNameForAlias(port as ushort)};
+    IANA.Port DestinationPort with Visualization{AliasName = "Port"}, DisplayInfo{ToText = (any port) => IANA.PortToServiceNameForAlias(port as ushort)};
     uint VerificationTag;
     uint Checksum;
     array<ChunkValue> Chunks;
@@ -729,26 +733,35 @@ message Packet
         string displayStr = "";
         if (Chunks.Count == 0)
         {
-            displayStr = "SCTP Packet, No Chunks";
+            displayStr = "SCTP Packet, No Chunks.";
         }
         else
         {
             if (!(this#SctpIsReassembed is nothing) && this#SctpIsReassembed as bool)
             {
-                displayStr = "[Reassembled, Count = " + (this#SctpFragmentedNumber as string) + "] ";
+                displayStr = "[Reassembled, Count: " + (this#SctpFragmentedNumber as string) + "] " ;
             }
             else if (!(this#SctpIsFragment is nothing) && this#SctpIsFragment as bool)
             {
                 displayStr = "[Fragment, No." + (this#SctpFragmentedNumber as string) + "] ";
             }
             displayStr += "Chunks: ";
-            for (int i = 0; i < Chunks.Count; i++)
+            if (Chunks.Count == 1)
             {
-                if (i != 0)
+                displayStr += GetChunkName(Chunks[0]);
+            }
+            else 
+            {
+                displayStr += "[";
+                for (int i = 0; i < Chunks.Count; i++)
                 {
-                    displayStr += ", ";
+                    if (i != 0)
+                    {
+                        displayStr += ", ";
+                    }
+                    displayStr += GetChunkName(Chunks[i]);
                 }
-                displayStr += GetChunkName(Chunks[i]);
+                displayStr += "]";
             }
         }
         return displayStr;
@@ -784,7 +797,7 @@ type PayloadData // 0
     ushort StreamIdentifier;
     ushort StreamSequenceNumber;
     uint PayloadProtocolIdentifier;
-    binary UserData with BinaryEncoding{Length = Length - 16 as uint};
+    binary UserData with BinaryEncoding{Length = Length - 16};
 }
 
 type Initiation // 1
@@ -832,14 +845,14 @@ type HostNameAddress
 {
     ushort Type where value == 11;
     ushort Length;
-    string HostName with BinaryEncoding{Length = Length - 4 as uint,TextEncoding = TextEncoding.ASCII};
+    string HostName with BinaryEncoding{Length = Length - 4,TextEncoding = TextEncoding.ASCII};
 }
 
 type SupportedAddressTypes
 {
     ushort Type where value == 12;
     ushort Length;
-    array<ushort> AddressTypes with BinaryEncoding{Length = ((Length - 4) / 2) as uint};
+    array<ushort> AddressTypes with BinaryEncoding{Length = ((Length - 4) / 2)};
 }
 
 type InitiationAcknowledgement // 2
@@ -866,14 +879,14 @@ type StateCookie
 {
     ushort Type where value == 7;
     ushort Length;
-    binary Value with BinaryEncoding{Length = Length - 4  as uint};
+    binary Value with BinaryEncoding{Length = Length - 4};
 }
 
 type UnrecognizedParameter
 {
     ushort Type where value == 8;
     ushort Length;
-    binary Value with BinaryEncoding{Length = Length - 4  as uint};
+    binary Value with BinaryEncoding{Length = Length - 4};
 }
 
 type EcnParameter
@@ -913,7 +926,7 @@ type HeartbeatInformation
 {
     ushort HeartbeatInfoType where value == 1;
     ushort HBInfoLength;
-    binary SenderSpecificHeartbeatInfo with BinaryEncoding{Length = HBInfoLength - 4  as uint};
+    binary SenderSpecificHeartbeatInfo with BinaryEncoding{Length = HBInfoLength - 4};
 }
 
 type HeartbeatAcknowledgement // 5
@@ -1014,7 +1027,7 @@ type UnrecognizedChunkType
 {
     ushort CauseCode where value == 6;
     ushort CauseLength;
-    binary UnrecognizedChunk with BinaryEncoding{Length = CauseLength - 4  as uint};
+    binary UnrecognizedChunk with BinaryEncoding{Length = CauseLength - 4};
 }
 
 type InvalidMandatoryParameter
@@ -1056,14 +1069,14 @@ type UserInitiatedAbort
 {
     ushort CauseCode where value == 12;
     ushort CauseLength;
-    binary UpperLayerAbortReason with BinaryEncoding{Length = CauseLength - 4  as uint};
+    binary UpperLayerAbortReason with BinaryEncoding{Length = CauseLength - 4};
 }
 
 type ProtocolViolation
 {
     ushort CauseCode where value == 13;
     ushort CauseLength;
-    binary AdditionalInformation with BinaryEncoding{Length = CauseLength - 4  as uint};
+    binary AdditionalInformation with BinaryEncoding{Length = CauseLength - 4};
 }
 
 type CookieEcho // 10
@@ -1071,7 +1084,7 @@ type CookieEcho // 10
     byte Type where value == 10;
     byte ChunkFlags;
     ushort Length;
-    binary Cookie with BinaryEncoding{Length = Length - 4  as uint};
+    binary Cookie with BinaryEncoding{Length = Length - 4};
 }
 
 type CookieAcknowledgement // 11
@@ -1108,7 +1121,7 @@ type Cwr // 13
 /********************************************** functions **********************************************/
 binary MakeBinary(binary sourceAddress, binary destinationAddress, ushort sourcePort, ushort destinationPort)
 {
-    return sourceAddress + destinationAddress + ConvertLongToBinary(sourcePort as long, 16) + ConvertLongToBinary(destinationPort as long, 16);
+    return sourceAddress + destinationAddress + sourcePort.ToBinary() + destinationPort.ToBinary();
 }
 
 // For summary

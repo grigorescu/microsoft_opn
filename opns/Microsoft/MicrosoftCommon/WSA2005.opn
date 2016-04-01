@@ -31,8 +31,8 @@ type EndpointReferenceType
     XSAnyURI Address with XmlEncoding{Name = "Address"};
     optional ReferenceParameters ReferenceParameters;
     optional Metadata Metadata;
-    optional array<xml> AnyElement with XmlEncoding{Kind = XmlKind.Element, Namespace = XmlNamespaceIndicator.Other};
-    optional array<xml> AnyAttribute with XmlEncoding{Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+    optional array<xml> AnyElements with XmlEncoding{Kind = XmlKind.Element, Namespace = XmlNamespaceIndicator.Other};
+    optional array<xml> AnyAttributes with XmlEncoding{Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
 }
 
 pattern ReferenceParameters = xml

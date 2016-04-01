@@ -7,7 +7,7 @@ OPNAuthoring
         ],
     RevisionSummary =    
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "09/02/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "376443", Date = "04/03/2015"}
         ]
 };
 
@@ -21,114 +21,59 @@ const guid EtwProviderIdWebProxy = {6EF4653A-71F9-4AD3-B093-61C38C9C299F};
 endpoint Server[uint KeySessionId]
     accepts Message issues Message
 {
-    // Indicate if response to HEAD method.
-    bool isHeadMethod = false;
-    
-    string host = "";
-    
-    process this accepts fm:Message
-    {
-        binary buffer = fm.Payload;
-        stream s = buffer;
-        
-        var requestHeader = RequestHeader(s);
-        if (requestHeader == nothing)
-        {
-            ThrowDecodingException("WebProxy", "HTTP Request Header");
-        }
-        var header = requestHeader as RequestHeaderType;
-        header.Uri = ParseUri(header.Uri.Host as string);
-        header.Headers = ParseHeaderFields(header.Headers); 
-        
-        if (header.Method.ToUpper() == "HEAD")
-        {
-            isHeadMethod = true;
-        }
-        
-        bool parseSuccess = false;
-        optional MessageBodyType body = BodyDecoder(s, header.Headers, true, out parseSuccess);
-        
-        if (!parseSuccess)
-        {
-            ThrowDecodingException("WebProxy", "HTTP Request Body");
-            return;
-        }
-        HttpContract.Request request = new HttpContract.Request
-        {
-            Method = header.Method, 
-            Uri = header.Uri, 
-            Version = header.Version, 
-            Headers = header.Headers, 
-            ChunkedMessageBody = IsChunkedBody(header.Headers) ? body : nothing, 
-            Payload = body.Reassemble(),
-        };
-        request.SourceData = fm.Payload;
-        
-        request#IsRequestOverWebProxy = true;
-        host = request.HTTPHost;
-        request#DestinationStr = host;
-        
-        dispatch (endpoint HTTP.SetOriginsServer[this]) accepts request;
-    }
+    // Shared variables for whole connection.
+    ConnectionContext context = new ConnectionContext();
 
-    process this issues fm:Message
+    HttpDecodingCache<HttpContract.Request> inboundCache = 
+        new HttpDecodingCache<HttpContract.Request>().
+            InitializeHttpCache(context, MessageDirection.Accepts, endpoint HTTP.Server over this, false, TryDecodeRequestHeader, TryDecodeRequestBodyAndDispatch, SetAnnotationForRequest);
+    HttpDecodingCache<HttpContract.Response> outboundCache = 
+        new HttpDecodingCache<HttpContract.Response>().
+            InitializeHttpCache(context, MessageDirection.Issues, endpoint HTTP.Server over this, false, TryDecodeResponseHeader, TryDecodeResponseBodyAndDispatch, SetAnnotationForResponse);
+    
+    process this accepts m:Message
     {
-        binary buffer = fm.Payload;
-        stream s = buffer;
-        
-        var responseHeader = ResponseHeader(s);
-        if (responseHeader == nothing)
+        stream s = m.Payload;
+        inboundCache.Buffer = m.Payload; // 'Buffer' will be used to assign SourceData of decoded message.
+        if (TryDecodeRequestHeader(inboundCache, s) && TryDecodeRequestBodyAndDispatch(inboundCache, s))
         {
-            ThrowDecodingException("WebProxy", "HTTP Response Header");
-            return;
-        }
-        var header = responseHeader as ResponseHeaderType;
-        header.Headers = ParseHeaderFields(header.Headers); 
-        
-        optional MessageBodyType body = nothing;
-        bool parseSuccess = false;
-        if (!isHeadMethod)
-        {
-            parseSuccess = false;
-            body = BodyDecoder(s, header.Headers, true, out parseSuccess);
-            if (!parseSuccess)
-            {
-                ThrowDecodingException("WebProxy", "HTTP Response Body");
-                return;
-            }
+            inboundCache.ResetAfterSucceed(s, false);
         }
         else
         {
-            parseSuccess = true;
-            body = nothing;
-            isHeadMethod = false;
+            ThrowDecodingException("WebProxy", "HTTP Request");
         }
+    }
 
-        HttpContract.Response response = new HttpContract.Response
+    process this issues m:Message
+    {
+        stream s = m.Payload;
+        outboundCache.Buffer = m.Payload; // 'Buffer' will be used to assign SourceData of decoded message.
+        if (TryDecodeResponseHeader(outboundCache, s) && TryDecodeResponseBodyAndDispatch(outboundCache, s))
         {
-            Version = header.Version, 
-            StatusCode = header.StatusCode, 
-            ReasonPhrase = header.ReasonPhrase, 
-            Headers = header.Headers, 
-            ChunkedMessageBody = IsChunkedBody(header.Headers) ? body : nothing,
-            Payload = body.Reassemble(),
-        };
-        response.SourceData = fm.Payload;
-        
-        response#IsResponseOverWebProxy = true;
-        response#SourceStr = host;
-        // Reset host after asingn it to Source;
-        host = "";
-
-        if (response.StatusCode == 100)
-        {
-            // Future Reference: Check 100 continue could be handled smoothly in HTTP.
-            // response#IsResponseWith100Continue = true;
-            // If 100(continue) response, recover buffer for final response.
-            host = response#SourceStr as string;
+            outboundCache.ResetAfterSucceed(s, false);
         }
-               
-        dispatch (endpoint HTTP.SetOriginsServer[this]) issues response;
+        else
+        {
+            ThrowDecodingException("WebProxy", "HTTP Response");
+        }
+    }
+
+    // destructor
+    ~endpoint(Server server)
+    {
+        inboundCache.ClearInDestructor();
+        outboundCache.ClearInDestructor();
+    }
+
+    void SetAnnotationForRequest(HttpContract.Request req)
+    {   
+        req#SourceAddress = "Local";
+    }
+
+    void SetAnnotationForResponse(HttpContract.Response res)
+    {   
+        res#DestinationAddress = "Local";
     }
 }
 
@@ -147,10 +92,8 @@ autostart actor WebProxyOverEtwEvent(EtwEvent.Node etw)
                 stream s = fm.Payload;
                 if (fm.IsRequest == 1)
                 {
-                    var requestHeaderOptional = RequestHeader(s);
-                    if (requestHeaderOptional != nothing)
+                    if (RequestHeader(s) is requestHeader:HttpContract.Request)
                     {
-                        var requestHeader = requestHeaderOptional as RequestHeaderType;
                         if ("Host" in requestHeader.Headers)
                         {
                             host[fm.SessionId] = requestHeader.Headers["Host"] as string;
@@ -158,7 +101,6 @@ autostart actor WebProxyOverEtwEvent(EtwEvent.Node etw)
                             fm.SourceAddress = "Local";
                         }
                     }
-
                     dispatch (endpoint Server[fm.SessionId]) accepts fm;
                 }
                 else
@@ -169,9 +111,10 @@ autostart actor WebProxyOverEtwEvent(EtwEvent.Node etw)
                         fm.DestinationAddress = "Local";
                         host = host.Remove(fm.SessionId);
                     }
-
                     dispatch (endpoint Server[fm.SessionId]) issues fm;
                 }
+            default =>
+                ThrowDecodingException("WebProxy");
         }
     }
 }
@@ -185,6 +128,12 @@ message Message
     string DestinationAddress with Encoding{Ignore = true} with Visualization{AliasName = "Address"};
     uint PayloadLength;
     binary Payload with MimeDescription{Format = "text/plain"};
+
+    override string ToString()
+    {
+        return "SessionId: " + SessionId.ToString() + 
+            ", PayloadLength: " + PayloadLength.ToString();
+    }
 }
 
 string get Source(this WebProxy.Message msg)
@@ -199,7 +148,7 @@ string get Destination(this WebProxy.Message msg)
 
 string get Network(this WebProxy.Message msg)
 {
-    return "WebProxy: " + (msg.SourceAddress == "Local"
+    return (msg.SourceAddress == "Local"
         ? msg.SourceAddress + " - " + msg.DestinationAddress
         : msg.DestinationAddress + " - " + msg.SourceAddress);
 }

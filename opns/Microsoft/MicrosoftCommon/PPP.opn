@@ -16,7 +16,7 @@ OPNAuthoring
         ],
     RevisionSummary = 
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "10/18/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "370439", Date = "11/03/2014"}
         ]
 };
 
@@ -25,6 +25,8 @@ using Utility;
 using IANA;
 using Ethernet;
 using IPv4;
+using IPv6;
+using GRE;
 
 annotation string PPP.Frame#PPPDestinationAddress;
 annotation string PPP.Frame#PPPSourceAddress;
@@ -49,16 +51,46 @@ autostart actor PPPOverEthernet(Ethernet.Node node)
    }
 } 
 
+autostart actor PPPOverGRE(GRE.Node gre)
+{
+    process gre accepts p:GRE.Packet where (p.ProtocolType == GREProtocolType.PPP && p.Payload.Count > 0)
+    {
+        switch (p.Payload)
+        {
+            case f:Frame from BinaryDecoder<Frame> =>
+                f#PPPSourceAddress = BinaryToIP(p#SourceAddress as binary);
+                f#PPPDestinationAddress = BinaryToIP(p#DestinationAddress as binary);
+                dispatch (endpoint Node over gre) accepts f;
+            default =>
+                ThrowDecodingException("PPP", "Frame");
+        }
+    }
+}
+
 autostart actor IPv4OverPPP(PPP.Node node)
 {
-    process node accepts f:PPP.Frame where ((f.PacketType is UshortPacketType) && (f.PacketType as ushort) == 0x0021) // 0000-3FFF identifies the network layer protocol of specific packets, IPv4: 0x0021
+    process node accepts f:PPP.Frame where GetPacketTypeValue(f.PacketType) == 0x0021 // 0000-3FFF identifies the network layer protocol of specific packets, IPv4: 0x0021
     {
         switch (f.Payload)
         {
-            case d:Datagram from BinaryDecoder =>
-               dispatch (endpoint ReassemblyNode[d.DestinationAddress.FlatAddress < d.SourceAddress.FlatAddress ? d.DestinationAddress.FlatAddress : d.SourceAddress.FlatAddress]) accepts d;
+            case d:IPv4.Datagram from BinaryDecoder<IPv4.Datagram> =>
+                DispatchIPv4DatagramToReassemblyNode(d);
             default =>
                 ThrowDecodingException("PPP", "IPv4.Datagram");
+        }
+   }
+}
+
+autostart actor IPv6OverPPP(PPP.Node node)
+{
+    process node accepts f:PPP.Frame where GetPacketTypeValue(f.PacketType) == 0x0057 // 0000-3FFF identifies the network layer protocol of specific packets, IPv6: 0x57
+    {
+        switch (f.Payload)
+        {
+            case d:IPv6.Datagram from IPv6Decoder =>
+                DispatchIPv6DatagramToReassemblyNode(d);
+            default =>
+                ThrowDecodingException("PPP", "IPv6.Datagram");
         }
    }
 }
@@ -102,7 +134,7 @@ type Address
 
 binary get FlatAddress(this PPP.Address address)
 {
-    return ConvertStringToBinary(address.Value);
+    return (address.Value.ToBinary() is bin:binary) ? bin : $[];
 }
 
 /* Reference: http://technet.microsoft.com/en-us/library/cc957997.aspx

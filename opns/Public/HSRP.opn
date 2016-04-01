@@ -16,7 +16,7 @@ OPNAuthoring
         ],
     RevisionSummary =
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "11/16/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "360482", Date = "03/21/2014"}
         ]
 };
 
@@ -40,7 +40,7 @@ const set<byte> HSRPState = {0, 1, 2, 4, 8, 16};
 
 autostart actor HSRPOverUDP(UDP.Host host)
 {
-    process host accepts d:UDP.Datagram where (d.DestinationPort == Port.HSRP || d.SourcePort == Port.HSRP) && d.Payload[0] == 0 && HSRPState[d.Payload[2]]
+    process host accepts d:UDP.Datagram where d.Payload.Count > 2 && (d.DestinationPort == Port.HSRP || d.SourcePort == Port.HSRP) && d.Payload[0] == 0 && HSRPState[d.Payload[2]]
     {
         switch (d.Payload)
         {
@@ -55,8 +55,8 @@ autostart actor HSRPOverUDP(UDP.Host host)
 message Packet
 {
     byte Version where ValidationCheck(value == 0, null, "HSRP: The Version in message Packet must be zero.");
-    byte Opcode;
-    byte State;
+    Opcode Opcode;
+    State State;
     byte HelloTime;
     byte HoldTime;
     byte Priority;
@@ -67,26 +67,25 @@ message Packet
     
     override string ToString()
     {
-        string displayStr = "HSRP: ";
-        switch (Opcode)
-        {
-            case 0x00 => displayStr += "Hello (";
-            case 0x01 => displayStr += "Coup (";
-            case 0x02 => displayStr += "Resign (";
-            default   => displayStr += "Unknown Code (";
-        }
-        displayStr += (Opcode as string) + ") " + "State: ";
-        switch (State)
-        {
-            case 0 => displayStr += "Initial (";
-            case 1 => displayStr += "Learn (";
-            case 2 => displayStr += "Listen (";
-            case 4 => displayStr += "Speak (";
-            case 8 => displayStr += "Standby (";
-            case 16 => displayStr += "Active (";
-            default => displayStr += "Unknown State (";
-        }
-        displayStr += (State as string) + ")";
-        return displayStr;
+        return "OpCode: " + EnumToString<HSRP.Opcode>(Opcode, false) + ", State: " + EnumToString<HSRP.State>(State, true);
     }
 }
+
+pattern Opcode = enum byte
+{
+    Hello  = 0x00,
+    Coup   = 0x01,
+    Resign = 0x02,
+    ...
+};
+
+pattern State = enum byte
+{
+    Initial = 0,
+    Learn = 1,
+    Listen = 2,
+    Speak = 4,
+    Standby = 8,
+    Active = 16,
+    ...
+};

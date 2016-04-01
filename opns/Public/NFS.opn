@@ -18,18 +18,16 @@ OPNAuthoring
         ],
     RevisionSummary = 
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "1/12/2012"}
+            new Revision{Class = RevisionClass.Major, Version = "361425", Date = "03/26/2014"}
         ]
 };
 
 using Utility;
-using TCP;
 using UDP;
 using XDR;
 using IANA;
 using SunRPC;
-using TSAP;
-using VirtualTransport;
+using TCP;
 
 annotation uint NFSXid;
 annotation ulong NFSProg;
@@ -41,39 +39,86 @@ endpoint IntermediateServer over SunRPC.Node provides MessageContract consumes M
 client endpoint IntermediateClient connected to IntermediateServer;
 
 // SunRPC Over TCP actor
-autostart actor SunRPCOverTCP(VirtualTransport.Server server)
+autostart actor SunRPCOverTCP(TCP.Server server)
 {
-    // The value of MType field of SunRpc is 0x00000001 or 0x00000000, add constraint to make sure the message is a SunRpc message
-    process server accepts s:VirtualTransport.VirtualDataSegment where (s.Payload.Count > 0 && (s.DestinationPort == Port.NFS) && ((s.Payload.Segment(8, 4) == $[00000000]) || (s.Payload.Segment(8, 4) == $[00000001]) ))
-    {
-        dispatch (endpoint SunRPC.RecordMarking over server) accepts s;
-    }
+    bool IsSunRPCFlag = false;
+    bool IsSunRPCAssist= false; // Set and used only when port is NFS
 
-    process server issues s:VirtualTransport.VirtualDataSegment where (s.Payload.Count > 0 && (s.SourcePort == Port.NFS) && ((s.Payload.Segment(8, 4) == $[00000000]) || (s.Payload.Segment(8, 4) == $[00000001]) ))
+    process server accepts s:TCP.Segment where (Port.NFS == s.DestinationPort && IsSunRPC(s.Payload, ref IsSunRPCAssist)) || 
+        IsSunRPCRequest(s.Payload, NFSVers, NFS_PROGRAM, ref IsSunRPCFlag)
+    {
+        var ept = endpoint SunRPC.RecordMarking over server;
+        ept.ExpectedProgram = NFS_PROGRAM;
+        ept.VerSet = NFSVers;
+        dispatch ept accepts s;
+    }
+    
+    process server issues s:TCP.Segment where IsSunRPCFlag || 
+        (Port.NFS == s.SourcePort && IsSunRPC(s.Payload, ref IsSunRPCAssist))
     {
         dispatch (endpoint SunRPC.RecordMarking over server) issues s;
     }
     
     // Below rules are added in case that TCP mistakes the Client for Server by port number for the trace without TCP 3-way handshake.
-    process server accepts s:VirtualTransport.VirtualDataSegment where server.isMissingThreeWayHandshake && (s.Payload.Count > 0 && (s.SourcePort == Port.NFS) && ((s.Payload.Segment(8, 4) == $[00000000]) || (s.Payload.Segment(8, 4) == $[00000001]) ))
+    process server issues s:TCP.Segment where server.isMissingThreeWayHandshake && 
+        ((Port.NFS == s.DestinationPort && IsSunRPC(s.Payload, ref IsSunRPCAssist)) || 
+        IsSunRPCRequest(s.Payload, NFSVers, NFS_PROGRAM, ref IsSunRPCFlag))
+    {
+        var ept = endpoint SunRPC.RecordMarking over server;
+        ept.ExpectedProgram = NFS_PROGRAM;
+        ept.VerSet = NFSVers;
+        dispatch ept accepts s;
+    }
+    
+    process server accepts s:TCP.Segment where server.isMissingThreeWayHandshake && 
+        (IsSunRPCFlag || (Port.NFS == s.SourcePort && IsSunRPC(s.Payload, ref IsSunRPCAssist)))
     {
         dispatch (endpoint SunRPC.RecordMarking over server) issues s;
-    }
-
-    process server issues s:VirtualTransport.VirtualDataSegment where server.isMissingThreeWayHandshake && (s.Payload.Count > 0 && (s.DestinationPort == Port.NFS) && ((s.Payload.Segment(8, 4) == $[00000000]) || (s.Payload.Segment(8, 4) == $[00000001]) ))
-    {
-        dispatch (endpoint SunRPC.RecordMarking over server) accepts s;
     }
 }
 
 // SunRPC Over UDP actor
-autostart actor SunRPCOverUDP(UDP.Host host) follows TSAPOverUDP
+autostart actor SunRPCOverUDP(UDP.Host host)
 {
-    process host accepts d:UDP.Datagram where(d.Payload.Count > 0 && (d.SourcePort == Port.NFS || d.DestinationPort == Port.NFS) && ((d.Payload.Segment(4, 4) == $[00000000]) || (d.Payload.Segment(4, 4) == $[00000001]) ))
+    set<uint> XidSet = {};
+
+    process host accepts d:UDP.Datagram where ((d.DestinationPort == Port.NFS || d.SourcePort == Port.NFS) && IsSunRPC(d.Payload)) || 
+        (IsSunRPCRequest(d.Payload, NFSVers, NFS_PROGRAM) is isSunRPCRequest:bool && isSunRPCRequest) || 
+        (IsSunRPCResponse(d.Payload, ref XidSet) is isSunRPCResponse:bool && isSunRPCResponse)
     {
+        if (d.DestinationPort != Port.NFS && d.SourcePort != Port.NFS && isSunRPCRequest)
+        {
+            AddXidSet(d.Payload, ref XidSet, false);
+        }
+        if (d.DestinationPort != Port.NFS && d.SourcePort != Port.NFS && isSunRPCResponse)
+        {
+            RemoveXidSet(d.Payload, ref XidSet, false);
+        }
         dispatch (endpoint SunRPC.RecordMarking over host) accepts d;
     }
+    
+    // destructor
+    ~endpoint(UDP.Host host)
+    {
+        XidSet = {};
+    }
 }
+
+/* RFC 1813:
+2.2 Constants
+
+These are the RPC constants needed to call the NFS Version 3
+service.  They are given in decimal.
+    PROGRAM  100003
+    VERSION  3
+ program NFS_PROGRAM {
+         version NFS_V3 {
+            ...
+         } = 3;
+      } = 100003;
+*/
+const uint NFS_PROGRAM = 100003;
+const set<uint> NFSVers = {1, 2, 3, 4}; // NFS RFC1094, NFS RFC1813, NFS RFC3530
 
 autostart actor NFSOverIntermediateServer(IntermediateServer s)
 {
@@ -593,7 +638,7 @@ contract MessageContract
     }
 }
 
-//Const
+// Const
 /* RpcSecGss has a value of '6' - See RFC 2203 */
 const XdrUnsignedInt RpcSecGss = 6;
 
@@ -915,7 +960,7 @@ pattern NFSCbOpNum4 = enum XdrUnsignedInt
 // RFC 5661 18.1.  Operation 3: Access - Check Access Rights
 type Access4Args
 {
-    array<byte> Reserved1 where ValidationCheck(value == [0,0,0], null, "Reserved should be zero.") with BinaryEncoding{Length = 3};
+    array<byte> Reserved1 where ValidationCheck(value == [0, 0, 0], null, "Reserved should be zero.") with BinaryEncoding{Length = 3};
     byte Reserved2 where ValidationCheck(value == 0, null, "Reserved should be zero.") with BinaryEncoding{Width = 2};
     byte Access4Execute with BinaryEncoding{Width = 1};
     byte Access4Delete with BinaryEncoding{Width = 1};
@@ -1063,7 +1108,6 @@ type GetAttr4ResOK
 // RFC 5661 18.7 18.8.  Operation 10: GetFH - Get Current Filehandle
 type GetFH4Args
 {
-
 }
 type GetFH4Res
 {
@@ -1189,7 +1233,6 @@ type LookUp4Res
 // RFC 5661 18.14.  Operation 16: LookUpP - Lookup Parent Directory
 type LookUpP4Args
 {
-
 }
 type LookUpP4Res
 {
@@ -1435,7 +1478,6 @@ type PutFH4Res
 // RFC 5661 18.20.  Operation 23: PutPubFH - Set Public Filehandle
 type PutPubFH4Args
 {
-
 }
 
 type PutPubFH4Res
@@ -1446,7 +1488,6 @@ type PutPubFH4Res
 // RFC 5661 18.21.  Operation 24: PutRootFH - Set Root Filehandle
 type PutRootFH4Args
 {
-
 }
 
 type PutRootFH4Res
@@ -1515,7 +1556,6 @@ type Entry4
 // RFC 5661 18.24.  Operation 27: ReadLink - Read Symbolic Link
 type ReadLink4Args
 {
-
 }
 
 type ReadLink4Res
@@ -1568,7 +1608,6 @@ type Rename4ResOK
 // RFC 5661 18.27.  Operation 31: RestoreFH - Restore Saved Filehandle
 type RestoreFH4Args
 {
-
 }
 
 type RestoreFH4Res
@@ -1579,7 +1618,6 @@ type RestoreFH4Res
 // RFC 5661 18.28.  Operation 32: SaveFH - Save Current Filehandle
 type SaveFH4Args
 {
-
 }
 
 type SaveFH4Res
@@ -1652,10 +1690,10 @@ type Verify4Res
 // RFC 5661 18.32.  Operation 38: Write - Write to File
 type Write4Args
 {
-   StateID4 StateID;
-   Offset4 Offset;
-   StableHow4 Stable;
-   XdrOpaqueVariable Data;
+    StateID4 StateID;
+    Offset4 Offset;
+    StableHow4 Stable;
+    XdrOpaqueVariable Data;
 }
 
 pattern StableHow4 = enum XdrUnsignedInt
@@ -2594,7 +2632,6 @@ type AceMask4
     byte Reserved2                              with BinaryEncoding{Width = 8};
 }
 
-
 // RFC 5661 3.2.  Basic Data Types
 type NFSFH4
 {
@@ -2653,7 +2690,7 @@ type FSID4
     XDRUnsignedHyper Minor;
 }
 
-//3.3.13.  layouttype4
+// 3.3.13.  layouttype4
 
 pattern LayoutType4 = enum XdrUnsignedInt
 {
@@ -2668,21 +2705,21 @@ type DeviceID4
     XdrOpaqueVariable Value where ValidationCheck(value.Length <= Nfs4DeviceID4Size, null, "NFS: The Length in type XdrOpaqueVariable should be less than or equal to " + (Nfs4DeviceID4Size as string));
 }
 
-//3.3.15.  device_addr4
+// 3.3.15.  device_addr4
 type DeviceAddr4
 {
     LayoutType4 DaLayoutType;
     XdrOpaqueVariable DaAddrBody;
 }
 
-//3.3.16.  layout_content4
+// 3.3.16.  layout_content4
 type LayoutContent4
 {
     LayoutType4 LocType;
     XdrOpaqueVariable LocBody;
 }
 
-//3.3.17.  layout4
+// 3.3.17.  layout4
 type Layout4
 {
     Offset4 LoOffset;
@@ -2691,14 +2728,14 @@ type Layout4
     LayoutContent4 LoContent;
 }
 
-//3.3.18  layoutupdate4
+// 3.3.18  layoutupdate4
 type LayoutUpdate4
 {
     LayoutType4 LouType;
     XdrOpaqueVariable LouBody;
 }
 
-//3.3.20.  layoutiomode4
+// 3.3.20.  layoutiomode4
 pattern LayoutIOMode4 = enum XdrUnsignedInt
 {
     LayoutIOMode4Read      = 1,
@@ -2706,7 +2743,7 @@ pattern LayoutIOMode4 = enum XdrUnsignedInt
     LayoutIOMode4Any       = 3
 };
 
-//3.3.21
+// 3.3.21
 type NFSImplID4
 {
     XDRString NiiDomain;
@@ -2732,107 +2769,107 @@ pattern NFSFType4 = enum XdrUnsignedInt
 pattern NFSStat4 = enum XDRInt
 {
     Nfs4OK                          = 0,
-    Nfs4ErrAccess                   = 13,// Section 15.1.6.1
-    Nfs4ErrAttrNotSupp              = 10032,// Section 15.1.15.1
-    Nfs4ErrAdminRevoked             = 10047,// Section 15.1.5.1
-    Nfs4ErrBackChanBusy             = 10057,// Section 15.1.12.1
-    Nfs4ErBadChar                   = 10040,// Section 15.1.7.1
-    Nfs4ErrBadHandle                = 10001,// Section 15.1.2.1
-    Nfs4ErrBadIOMode                = 10049,// Section 15.1.10.1
-    Nfs4ErrBadLayout                = 10050,// Section 15.1.10.2
-    Nfs4ErrBadName                  = 10041,// Section 15.1.7.2
-    Nfs4ErrBadOwner                 = 10039,// Section 15.1.15.2
-    Nfs4ErrBadSession               = 10052,// Section 15.1.11.1
-    Nfs4ErrBadSlot                  = 10053,// Section 15.1.11.2
-    Nfs4ErrBadType                  = 10007,// Section 15.1.4.1
-    Nfs4ErrBadXDR                   = 10036,// Section 15.1.1.1
-    Nfs4ErrBadCookie                = 10003,// Section 15.1.1.2
-    Nfs4ErrBadHighSlot              = 10077,// Section 15.1.11.3
-    Nfs4ErrBadRange                 = 10042,// Section 15.1.8.1
-    Nfs4ErrBadSeqID                 = 10026,// Section 15.1.16.1
-    Nfs4ErrBadSessionDigest         = 10051,// Section 15.1.12.2
-    Nfs4ErrBadStateID               = 10025,// Section 15.1.5.2
-    Nfs4ErrCBPathDown               = 10048,// Section 15.1.11.4
-    Nfs4ErrClidNuse                 = 10017,// Section 15.1.13.2
-    Nfs4ErrClientIDBusy             = 10074,// Section 15.1.13.1
-    Nfs4ErrCompleteAlready          = 10054,// Section 15.1.9.1
-    Nfs4ErrConnNotBoundToSession    = 10055,// Section 15.1.11.6
-    Nfs4ErrDeadLock                 = 10045,// Section 15.1.8.2
-    Nfs4ErrDeadSession              = 10078,// Section 15.1.11.5
-    Nfs4ErrDelay                    = 10008,// Section 15.1.1.3
-    Nfs4ErrDelegalReadyWanted       = 10056,// Section 15.1.14.1
-    Nfs4ErrDelegRevoked             = 10087,// Section 15.1.5.3
-    Nfs4ErrDenied                   = 10010,// Section 15.1.8.3
-    Nfs4ErrDirDelegUnavail          = 10084,// Section 15.1.14.2
-    Nfs4ErrDQuot                    = 69,// Section 15.1.4.2
-    Nfs4ErrEncrAlgUnsupp            = 10079,// Section 15.1.13.3
-    Nfs4ErrExist                    = 17,// Section 15.1.4.3
-    Nfs4ErrExpired                  = 10011,// Section 15.1.5.4
-    Nfs4ErrFBig                     = 27,// Section 15.1.4.4
-    Nfs4ErrFHExpired                = 10014,// Section 15.1.2.2
-    Nfs4ErrFileOpen                 = 10046,// Section 15.1.4.5
-    Nfs4ErrGrace                    = 10013,// Section 15.1.9.2
-    Nfs4ErrHashAlgUnsupp            = 10072,// Section 15.1.13.4
-    Nfs4ErrINVAL                    = 22,// Section 15.1.1.4
-    Nfs4ErrIO                       = 5,// Section 15.1.4.6
-    Nfs4ErrISDir                    = 21,// Section 15.1.2.3
-    Nfs4ErrLayoutTryLater           = 10058,// Section 15.1.10.3
-    Nfs4ErrLayoutUnavailable        = 10059,// Section 15.1.10.4
-    Nfs4ErrLeaseMoved               = 10031,// Section 15.1.16.2
-    Nfs4ErrLocked                   = 10012,// Section 15.1.8.4
-    Nfs4ErrLockSheld                = 10037,// Section 15.1.8.5
-    Nfs4ErrLockNotSupp              = 10043,// Section 15.1.8.6
-    Nfs4ErrLockRange                = 10028,// Section 15.1.8.7
-    Nfs4ErrMinorVersMisMatch        = 10021,// Section 15.1.3.2
-    Nfs4ErrMLink                    = 31,// Section 15.1.4.7
-    Nfs4ErrMoved                    = 10019,// Section 15.1.2.4
-    Nfs4ErrNameTooLong              = 63,// Section 15.1.7.3
-    Nfs4ErrNoEnt                    = 2,// Section 15.1.4.8
-    Nfs4ErrNoFileHandle             = 10020,// Section 15.1.2.5
-    Nfs4ErrNoMatchingLayout         = 10060,// Section 15.1.10.5
-    Nfs4ErrNoSpc                    = 28,// Section 15.1.4.9
-    Nfs4ErrNotDir                   = 20,// Section 15.1.2.6
-    Nfs4ErrNotEmpty                 = 66,// Section 15.1.4.10
-    Nfs4ErrNotSupp                  = 10004,// Section 15.1.1.5
-    Nfs4ErrNotOnlyOp                = 10081,// Section 15.1.3.3
-    Nfs4ErrNotSame                  = 10027,// Section 15.1.15.3
-    Nfs4ErrNoGrace                  = 10033,// Section 15.1.9.3
-    Nfs4ErrNXIO                     = 6,// Section 15.1.16.3
-    Nfs4ErrOldStateID               = 10024,// Section 15.1.5.5
-    Nfs4ErrOpenMode                 = 10038,// Section 15.1.8.8
-    Nfs4ErrOPIllegal                = 10044,// Section 15.1.3.4
-    Nfs4ErrOPNotInSession           = 10071,// Section 15.1.3.5
-    Nfs4ErrPerm                     = 1,// Section 15.1.6.2
-    Nfs4ErrPNFSIOHole               = 10075,// Section 15.1.10.6
-    Nfs4ErrPNFSNoLayout             = 10080,// Section 15.1.10.7
-    Nfs4ErrRecallConflict           = 10061,// Section 15.1.14.3
-    Nfs4ErrReclaimBad               = 10034,// Section 15.1.9.4
-    Nfs4ErrReclaimConflict          = 10035,// Section 15.1.9.5
-    Nfs4ErrRejectDeleg              = 10085,// Section 15.1.14.4
-    Nfs4ErrRepTooBig                = 10066,// Section 15.1.3.6
-    Nfs4ErrRepTooBigToCache         = 10067,// Section 15.1.3.7
-    Nfs4ErrReqTooBig                = 10065,// Section 15.1.3.8
-    Nfs4ErrRestoreFH                = 10030,// Section 15.1.16.4
-    Nfs4ErrRetryUnchahedRep         = 10068,// Section 15.1.3.9
-    Nfs4ErrReturnConflict           = 10086,// Section 15.1.10.8
-    Nfs4ErrROFS                     = 30,// Section 15.1.4.11
-    Nfs4ErrSame                     = 10009,// Section 15.1.15.4
-    Nfs4ErrShareDenied              = 10015,// Section 15.1.8.9
-    Nfs4ErrSequencePos              = 10064,// Section 15.1.3.10
-    Nfs4ErrSeqFalseRetry            = 10076,// Section 15.1.11.7
-    Nfs4ErrSeqMisordered            = 10063,// Section 15.1.11.8
-    Nfs4ErrServerFault              = 10006,// Section 15.1.1.6
-    Nfs4ErrStale                    = 70,// Section 15.1.2.7
-    Nfs4ErrStaleClientID            = 10022,// Section 15.1.13.5
-    Nfs4ErrStaleStateID             = 10023,// Section 15.1.16.5
-    Nfs4ErrSymLink                  = 10029,// Section 15.1.2.8
-    Nfs4ErrTooSmall                 = 10005,// Section 15.1.1.7
-    Nfs4ErrTooManyOps               = 10070,// Section 15.1.3.11
-    Nfs4ErrUnknownLayoutType        = 10062,// Section 15.1.10.9
-    Nfs4ErrUnsafeCompound           = 10069,// Section 15.1.3.12
-    Nfs4ErrWrongSec                  = 10016,// Section 15.1.6.3
-    Nfs4ErrWrongCred                = 10082,// Section 15.1.6.4
-    Nfs4ErrWrongType                = 10083,// Section 15.1.2.9
+    Nfs4ErrAccess                   = 13, // Section 15.1.6.1
+    Nfs4ErrAttrNotSupp              = 10032, // Section 15.1.15.1
+    Nfs4ErrAdminRevoked             = 10047, // Section 15.1.5.1
+    Nfs4ErrBackChanBusy             = 10057, // Section 15.1.12.1
+    Nfs4ErBadChar                   = 10040, // Section 15.1.7.1
+    Nfs4ErrBadHandle                = 10001, // Section 15.1.2.1
+    Nfs4ErrBadIOMode                = 10049, // Section 15.1.10.1
+    Nfs4ErrBadLayout                = 10050, // Section 15.1.10.2
+    Nfs4ErrBadName                  = 10041, // Section 15.1.7.2
+    Nfs4ErrBadOwner                 = 10039, // Section 15.1.15.2
+    Nfs4ErrBadSession               = 10052, // Section 15.1.11.1
+    Nfs4ErrBadSlot                  = 10053, // Section 15.1.11.2
+    Nfs4ErrBadType                  = 10007, // Section 15.1.4.1
+    Nfs4ErrBadXDR                   = 10036, // Section 15.1.1.1
+    Nfs4ErrBadCookie                = 10003, // Section 15.1.1.2
+    Nfs4ErrBadHighSlot              = 10077, // Section 15.1.11.3
+    Nfs4ErrBadRange                 = 10042, // Section 15.1.8.1
+    Nfs4ErrBadSeqID                 = 10026, // Section 15.1.16.1
+    Nfs4ErrBadSessionDigest         = 10051, // Section 15.1.12.2
+    Nfs4ErrBadStateID               = 10025, // Section 15.1.5.2
+    Nfs4ErrCBPathDown               = 10048, // Section 15.1.11.4
+    Nfs4ErrClidNuse                 = 10017, // Section 15.1.13.2
+    Nfs4ErrClientIDBusy             = 10074, // Section 15.1.13.1
+    Nfs4ErrCompleteAlready          = 10054, // Section 15.1.9.1
+    Nfs4ErrConnNotBoundToSession    = 10055, // Section 15.1.11.6
+    Nfs4ErrDeadLock                 = 10045, // Section 15.1.8.2
+    Nfs4ErrDeadSession              = 10078, // Section 15.1.11.5
+    Nfs4ErrDelay                    = 10008, // Section 15.1.1.3
+    Nfs4ErrDelegalReadyWanted       = 10056, // Section 15.1.14.1
+    Nfs4ErrDelegRevoked             = 10087, // Section 15.1.5.3
+    Nfs4ErrDenied                   = 10010, // Section 15.1.8.3
+    Nfs4ErrDirDelegUnavail          = 10084, // Section 15.1.14.2
+    Nfs4ErrDQuot                    = 69, // Section 15.1.4.2
+    Nfs4ErrEncrAlgUnsupp            = 10079, // Section 15.1.13.3
+    Nfs4ErrExist                    = 17, // Section 15.1.4.3
+    Nfs4ErrExpired                  = 10011, // Section 15.1.5.4
+    Nfs4ErrFBig                     = 27, // Section 15.1.4.4
+    Nfs4ErrFHExpired                = 10014, // Section 15.1.2.2
+    Nfs4ErrFileOpen                 = 10046, // Section 15.1.4.5
+    Nfs4ErrGrace                    = 10013, // Section 15.1.9.2
+    Nfs4ErrHashAlgUnsupp            = 10072, // Section 15.1.13.4
+    Nfs4ErrINVAL                    = 22, // Section 15.1.1.4
+    Nfs4ErrIO                       = 5, // Section 15.1.4.6
+    Nfs4ErrISDir                    = 21, // Section 15.1.2.3
+    Nfs4ErrLayoutTryLater           = 10058, // Section 15.1.10.3
+    Nfs4ErrLayoutUnavailable        = 10059, // Section 15.1.10.4
+    Nfs4ErrLeaseMoved               = 10031, // Section 15.1.16.2
+    Nfs4ErrLocked                   = 10012, // Section 15.1.8.4
+    Nfs4ErrLockSheld                = 10037, // Section 15.1.8.5
+    Nfs4ErrLockNotSupp              = 10043, // Section 15.1.8.6
+    Nfs4ErrLockRange                = 10028, // Section 15.1.8.7
+    Nfs4ErrMinorVersMisMatch        = 10021, // Section 15.1.3.2
+    Nfs4ErrMLink                    = 31, // Section 15.1.4.7
+    Nfs4ErrMoved                    = 10019, // Section 15.1.2.4
+    Nfs4ErrNameTooLong              = 63, // Section 15.1.7.3
+    Nfs4ErrNoEnt                    = 2, // Section 15.1.4.8
+    Nfs4ErrNoFileHandle             = 10020, // Section 15.1.2.5
+    Nfs4ErrNoMatchingLayout         = 10060, // Section 15.1.10.5
+    Nfs4ErrNoSpc                    = 28, // Section 15.1.4.9
+    Nfs4ErrNotDir                   = 20, // Section 15.1.2.6
+    Nfs4ErrNotEmpty                 = 66, // Section 15.1.4.10
+    Nfs4ErrNotSupp                  = 10004, // Section 15.1.1.5
+    Nfs4ErrNotOnlyOp                = 10081, // Section 15.1.3.3
+    Nfs4ErrNotSame                  = 10027, // Section 15.1.15.3
+    Nfs4ErrNoGrace                  = 10033, // Section 15.1.9.3
+    Nfs4ErrNXIO                     = 6, // Section 15.1.16.3
+    Nfs4ErrOldStateID               = 10024, // Section 15.1.5.5
+    Nfs4ErrOpenMode                 = 10038, // Section 15.1.8.8
+    Nfs4ErrOPIllegal                = 10044, // Section 15.1.3.4
+    Nfs4ErrOPNotInSession           = 10071, // Section 15.1.3.5
+    Nfs4ErrPerm                     = 1, // Section 15.1.6.2
+    Nfs4ErrPNFSIOHole               = 10075, // Section 15.1.10.6
+    Nfs4ErrPNFSNoLayout             = 10080, // Section 15.1.10.7
+    Nfs4ErrRecallConflict           = 10061, // Section 15.1.14.3
+    Nfs4ErrReclaimBad               = 10034, // Section 15.1.9.4
+    Nfs4ErrReclaimConflict          = 10035, // Section 15.1.9.5
+    Nfs4ErrRejectDeleg              = 10085, // Section 15.1.14.4
+    Nfs4ErrRepTooBig                = 10066, // Section 15.1.3.6
+    Nfs4ErrRepTooBigToCache         = 10067, // Section 15.1.3.7
+    Nfs4ErrReqTooBig                = 10065, // Section 15.1.3.8
+    Nfs4ErrRestoreFH                = 10030, // Section 15.1.16.4
+    Nfs4ErrRetryUnchahedRep         = 10068, // Section 15.1.3.9
+    Nfs4ErrReturnConflict           = 10086, // Section 15.1.10.8
+    Nfs4ErrROFS                     = 30, // Section 15.1.4.11
+    Nfs4ErrSame                     = 10009, // Section 15.1.15.4
+    Nfs4ErrShareDenied              = 10015, // Section 15.1.8.9
+    Nfs4ErrSequencePos              = 10064, // Section 15.1.3.10
+    Nfs4ErrSeqFalseRetry            = 10076, // Section 15.1.11.7
+    Nfs4ErrSeqMisordered            = 10063, // Section 15.1.11.8
+    Nfs4ErrServerFault              = 10006, // Section 15.1.1.6
+    Nfs4ErrStale                    = 70, // Section 15.1.2.7
+    Nfs4ErrStaleClientID            = 10022, // Section 15.1.13.5
+    Nfs4ErrStaleStateID             = 10023, // Section 15.1.16.5
+    Nfs4ErrSymLink                  = 10029, // Section 15.1.2.8
+    Nfs4ErrTooSmall                 = 10005, // Section 15.1.1.7
+    Nfs4ErrTooManyOps               = 10070, // Section 15.1.3.11
+    Nfs4ErrUnknownLayoutType        = 10062, // Section 15.1.10.9
+    Nfs4ErrUnsafeCompound           = 10069, // Section 15.1.3.12
+    Nfs4ErrWrongSec                  = 10016, // Section 15.1.6.3
+    Nfs4ErrWrongCred                = 10082, // Section 15.1.6.4
+    Nfs4ErrWrongType                = 10083, // Section 15.1.2.9
     Nfs4ErrXDEV                     = 18
 };
 

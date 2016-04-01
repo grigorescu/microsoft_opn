@@ -1,4 +1,4 @@
-﻿protocol SSDP with 
+protocol SSDP with 
 StreamEncodingDefaults{Encoding = TextEncoding.ASCII},
 Documentation
 {
@@ -16,7 +16,7 @@ OPNAuthoring
         ],
     RevisionSummary =
         [
-            new Revision{Class=RevisionClass.Major, Version="1.0.0", Date="10/17/2011"}
+            new Revision{Class=RevisionClass.Major, Version="361905", Date="04/09/2014"}
         ]
 };
 
@@ -115,7 +115,7 @@ optional SSDPContract.Response SSDPResponseDecoder(binary binaryValue)
 
 autostart actor SSDPServerOverUDP(UDP.Host host)
 {
-    process host accepts datagram:UDP.Datagram where CheckIPandPort(datagram.DestinationPort, datagram#DestinationAddress) // request should include multicast address
+    process host accepts datagram:UDP.Datagram where datagram.Payload.Count > 0 && CheckIPandPort(datagram.DestinationPort, datagram#DestinationAddress) // request should include multicast address
     {
         switch (datagram.Payload)
         {
@@ -126,7 +126,7 @@ autostart actor SSDPServerOverUDP(UDP.Host host)
         };
     }
     
-    process host accepts datagram:UDP.Datagram where (datagram.SourcePort == IANA.Port.SSDP && datagram.Payload.Segment(0, 4) == $[48545450]) // unicast UDP response
+    process host accepts datagram:UDP.Datagram where datagram.Payload.Count >= 4 && (datagram.SourcePort == IANA.Port.SSDP && datagram.Payload.Segment(0, 4) == $[48545450]) // unicast UDP response
     {
         switch (datagram.Payload)
         {
@@ -144,47 +144,47 @@ map<string, any> ParseHeaderFields(map<string, any> headers)
     
     if (keys["NT"]) 
     {
-        headers = ParseFieldInHeader(MODULE_NAME, "NT", headers, NotificationType);
+        ParseHeaderValue<string>(MODULE_NAME, "NT", ref headers, NotificationType, null);
     }
     if (keys["NTS"]) 
     {
-        headers = ParseFieldInHeader(MODULE_NAME, "NTS", headers, NotificationSubType);
+        ParseHeaderValue<string>(MODULE_NAME, "NTS", ref headers, NotificationSubType, null);
     }
     if (keys["USN"]) 
     {
-        headers = ParseFieldInHeader(MODULE_NAME, "USN", headers, UniqueServiceName);
+        ParseHeaderValue<string>(MODULE_NAME, "USN", ref headers, UniqueServiceName, null);
     }
     if (keys["MAN"])
     {
-        headers = ParseFieldInHeader(MODULE_NAME, "MAN", headers, MAN);
+        ParseHeaderValue<string>(MODULE_NAME, "MAN", ref headers, MAN, null);
     }
     if (keys["MX"]) 
     {
-        headers = ParseFieldInHeader(MODULE_NAME, "MX", headers, MaximumWaitTime);
+        ParseHeaderValue<uint>(MODULE_NAME, "MX", ref headers, MaximumWaitTime, null);
     }
     if (keys["ST"]) 
     {
-        headers = ParseFieldInHeader(MODULE_NAME, "ST", headers, SearchTarget);
+        ParseHeaderValue<string>(MODULE_NAME, "ST", ref headers, SearchTarget, null);
     }
     if (keys["CACHE-CONTROL"]) 
     {
-        headers = ParseFieldInHeader(MODULE_NAME, "CACHE-CONTROL", headers, CacheControl);
+        ParseHeaderValue<string>(MODULE_NAME, "CACHE-CONTROL", ref headers, null, CacheControl);
     }
-    if (keys["DATE"]) 
+    if (keys["DATE"])
     {
-        headers = ParseFieldInHeader(MODULE_NAME, "DATE", headers, Date);
+        ParseHeaderValue<string>(MODULE_NAME, "DATE", ref headers, Date, null);
     }
     if (keys["EXT"]) 
     {
-        headers = ParseFieldInHeader(MODULE_NAME, "EXT", headers, Ext);
+        ParseHeaderValue<string>(MODULE_NAME, "EXT", ref headers, Ext, null);
     }
     if (keys["LOCATION"]) 
     {
-        headers = ParseFieldInHeader(MODULE_NAME, "LOCATION", headers, Location);
+        ParseHeaderValue<UriType>(MODULE_NAME, "LOCATION", ref headers, Location, null);
     }
     if (keys["SERVER"]) 
     {
-        headers = ParseFieldInHeader(MODULE_NAME, "SERVER", headers, ServerHeader);
+        ParseHeaderValue<string>(MODULE_NAME, "SERVER", ref headers, ServerHeader, null);
     }
     
     return headers;
@@ -202,7 +202,7 @@ contract SSDPContract
         
         override string ToString()
         {
-            return Method + " " + Uri;
+            return "Request, Method: " + Method + ", URI: " + Uri + ", Version: " + Version.ToString();
         }
     }
 
@@ -215,7 +215,7 @@ contract SSDPContract
         
         override string ToString()
         {
-            return (StatusCode as string) + " " + ReasonPhrase;
+            return "Response, StatusCode: " + (StatusCode.ToString()) + ", ReasonPhrase: " + ReasonPhrase + ", Version: " + Version.ToString();
         }
     }
 }
@@ -264,7 +264,7 @@ type KeyValuePair
 
 map<string, any> MergeHeaders(array<KeyValuePair> headers)
 {
-    map<string, any> result = {};
+    map<string, any> result = {}.ToOrdered();
     foreach (KeyValuePair pair in headers)
     {
         result[pair.Key] = pair.Value;
@@ -354,33 +354,6 @@ syntax QuotedString          = Quote ss:(s:(QDText | QuotedPair) => s)* Quote =>
 syntax QDText                = s:regex{.} => s;
 syntax QuotedPair            = "\\" s:Char => s;
 syntax Char                  = s:regex{.|\n} => s;
-syntax CacheDirective        = 
-                               CacheRequestDirective
-                             | CacheResponseDirective;
-
-syntax CacheRequestDirective =
-                               "no-cache"
-                             | "no-store"
-                             | "max-age" "=" DeltaSeconds
-                             | "max-stale" ( "=" DeltaSeconds )?
-                             | "min-fresh" "=" DeltaSeconds
-                             | "no-transform"
-                             | "only-if-cached"
-                             | CacheExtension;
-
-syntax CacheResponseDirective =
-                               "public"
-                             | "private" ( "=" Quote LWS* FieldName (LWS* "," FieldName)* Quote )?
-                             | "no-cache" ( "=" Quote LWS* FieldName (LWS* "," FieldName)* Quote )?
-                             | "no-store"
-                             | "no-transform"
-                             | "must-revaliDate"
-                             | "proxy-revaliDate"
-                             | "max-age" "=" DeltaSeconds
-                             | "s-maxage" "=" DeltaSeconds
-                             | CacheExtension;
-
-syntax CacheExtension        = Token ( "=" ( Token | QuotedString ) )?;
 syntax Date                  = s:Rfc1123Date => s;
 syntax Date1                 = s1:Digit2 s2:SP s3:Month s4:SP s5:Digit4 => (s1 + s2 + s3 + s4 + s5);
 syntax Digit2                = s:regex{[0-9]{1,2}} => s;

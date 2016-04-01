@@ -1,4 +1,4 @@
-﻿module ERREF with
+module ERREF with
 Documentation
 {
     ProtocolName = "Windows Error Codes",
@@ -10,15 +10,16 @@ OPNAuthoring
     Copyright = "(c) Microsoft Corporation",
     References =
         [
-            new Reference{Name = "MS-ERREF", Version = "13.1", ProgramName = ProgramName.MCPP},
+            new Reference{Name = "MS-ERREF", Version = "13.1", Date = "01/31/2013", ProgramName = ProgramName.MCPP},
         ],
     RevisionSummary =
         [
-            new Revision{Class=RevisionClass.Major, Version="1.0.0", Date="09/02/2011"}
+            new Revision{Class=RevisionClass.Major, Version="368428", Date="09/26/2014"}
         ]
 };
 
 using Standard;
+using Utility;
 
 // win = ErrorCode
 type ErrorCode
@@ -32,49 +33,121 @@ type Win32Error
     uint Win32ErrorValue;
 }
 
-// win =HResult
-// Future Reference: Relative bug#43322. has been resolved and closed, we need define only one HResult with default {little endian}, using CompositeTypeWIdth and DecodeAsUnit
-type HResultBE with BinaryEncoding{Endian = Endian.Big}
+// win = HRESULT
+type HRESULT with BinaryEncoding{WidthForComposedType = 32, DecodeAsUnit = true}
 {
     bool S with BinaryEncoding{Width = 1};
     bool R with BinaryEncoding{Width = 1};
     bool C with BinaryEncoding{Width = 1};
     bool N with BinaryEncoding{Width = 1};
     bool X with BinaryEncoding{Width = 1};
-    uint Facility with BinaryEncoding{Width = 11};
-    uint Result with BinaryEncoding{Width = 16};
+    ushort Facility with BinaryEncoding{Width = 11, Endian = Endian.Big};
+    ushort Result with BinaryEncoding{Width = 16, Endian = Endian.Big};
+
+    override string ToString()
+    {
+        return HResultValuesToText(this.Value);
+    }
 }
-type HResultLE with BinaryEncoding{Endian = Endian.Little}
+
+uint get Value(this HRESULT hres)
 {
-    uint Result with BinaryEncoding{Width = 16};
-    uint Facility with BinaryEncoding{Width = 11};
-    bool X with BinaryEncoding{Width = 1};
-    bool N with BinaryEncoding{Width = 1};
-    bool C with BinaryEncoding{Width = 1};
-    bool R with BinaryEncoding{Width = 1};
-    bool S with BinaryEncoding{Width = 1};
+    uint val = ((hres.Facility as uint) << 16) + hres.Result;
+    if (hres.X)
+    {
+        val += (1 << 27);
+    }
+    if (hres.N)
+    {
+        val += (1 << 28);
+    }
+    if (hres.C)
+    {
+        val += (1 << 29);
+    }
+    if (hres.R)
+    {
+        val += (1 << 30);
+    }
+    if (hres.S)
+    {
+        val += ((1 as uint) << 31);
+    }
+    return val;
 }
 
 // win =NTSTATUS
-// Big Endian
-type NTStatusBE with BinaryEncoding{Endian = Endian.Big}
+type NTSTATUS with BinaryEncoding{WidthForComposedType = 32, DecodeAsUnit = true}
 {
-    uint Sev with BinaryEncoding{Width = 2};
+    Severity Sev with BinaryEncoding{Width = 2};
     bool C with BinaryEncoding{Width = 1};
     bool N with BinaryEncoding{Width = 1};
-    uint Facility with BinaryEncoding{Width = 12};
-    uint Code with BinaryEncoding{Width = 16};
-}
-// Little Endian
-type NTStatusLE with BinaryEncoding{Endian = Endian.Little}
-{
-    uint Code with BinaryEncoding{Width = 16};
-    uint Facility with BinaryEncoding{Width = 12};
-    bool N with BinaryEncoding{Width = 1};
-    bool C with BinaryEncoding{Width = 1};
-    uint Sev with BinaryEncoding{Width = 2};
+    ([|!C|] NTSTATUS_Facility | ushort) Facility with BinaryEncoding{Endian = Endian.Big, Width = 12};
+    ushort Code with BinaryEncoding{Width = 16, Endian = Endian.Big};
+    
+    override string ToString()
+    {
+        return NtStatusValuesToText(this.Value);
+    }
 }
 
+uint get Value(this NTSTATUS status)
+{
+    uint val = (status.Sev as uint) << 30;
+    if (status.C)
+    {
+        val += 1 << 29;
+    }
+    if (status.N)
+    {
+        val += 1 << 28;
+    }
+    val += ((status.C ? status.Facility as ushort : (status.Facility as NTSTATUS_Facility) as ushort) << 16) as uint;
+    val += status.Code;
+    return val;
+}
+
+pattern Severity = enum byte
+{
+    STATUS_SEVERITY_SUCCESS = 0x0,
+    STATUS_SEVERITY_INFORMATIONAL = 0x1,
+    STATUS_SEVERITY_WARNING = 0x2,
+    STATUS_SEVERITY_ERROR = 0x3
+} with BinaryEncoding{Width = 2};
+
+// 5   Appendix A: Product Behavior
+// <5> Section 2.3: Windows defines the following NTSTATUS facility values when the C bit is clear.
+pattern NTSTATUS_Facility = enum short
+{
+    FACILITY_DEBUGGER = 0x001,
+    FACILITY_RPC_RUNTIME = 0x002,
+    FACILITY_RPC_STUBS = 0x003,
+    FACILITY_IO_ERROR_CODE = 0x004,
+    FACILITY_NTWIN32 = 0x007,
+    FACILITY_NTSSPI = 0x009,
+    FACILITY_TERMINAL_SERVER = 0x00A,
+    FACILTIY_MUI_ERROR_CODE = 0x00B,
+    FACILITY_USB_ERROR_CODE = 0x010,
+    FACILITY_HID_ERROR_CODE = 0x011,
+    FACILITY_FIREWIRE_ERROR_CODE = 0x012,
+    FACILITY_CLUSTER_ERROR_CODE = 0x013,
+    FACILITY_ACPI_ERROR_CODE = 0x014,
+    FACILITY_SXS_ERROR_CODE = 0x015,
+    FACILITY_TRANSACTION = 0x019,
+    FACILITY_COMMONLOG = 0x01A,
+    FACILITY_VIDEO = 0x01B,
+    FACILITY_FILTER_MANAGER = 0x01C,
+    FACILITY_MONITOR = 0x01D,
+    FACILITY_GRAPHICS_KERNEL = 0x01E,
+    FACILITY_DRIVER_FRAMEWORK = 0x020,
+    FACILITY_FVE_ERROR_CODE = 0x021,
+    FACILITY_FWP_ERROR_CODE = 0x022,
+    FACILITY_NDIS_ERROR_CODE = 0x023,
+    FACILITY_HYPERVISOR = 0x035,
+    FACILITY_IPSEC = 0x036,
+    FACILITY_MAXIMUM_VALUE = 0x037,
+    ...
+} with BinaryEncoding{Endian = Endian.Big, Width = 12};
 
 string HResultValuesToText(uint hResult)
 {
@@ -82,9 +155,13 @@ string HResultValuesToText(uint hResult)
     {
         return HResultMap[hResult];
     }
+    else if ((hResult & 0xFFFF0000) == 0x80070000)
+    {
+        return Win32ErrorCodesToText(hResult & 0x0000FFFF);
+    }
     else
     {
-        return "Unknown Value (" + (hResult as string) + ")";
+        return "Unknown(" + Utility.DecToHexFormat(8, hResult) + ")";
     }
 }
 
@@ -3033,7 +3110,7 @@ string NtStatusValuesToText(uint code)
     }
     else
     {
-        return "Unknown Value (" + (code as string) + ")";
+        return "Unknown(" + Utility.DecToHexFormat(8, code) + ")";
     }
 }
 
@@ -3089,9 +3166,13 @@ const map<uint, string> NtStatusMap =
     0x00010001 -> "DBG_EXCEPTION_HANDLED",
     0x00010002 -> "DBG_CONTINUE",
     0x001C0001 -> "STATUS_FLT_IO_COMPLETE",
-    0xC0000460 -> "STATUS_NO_RANGES_PROCESSED", //This error code is not included in [MS-ERREF] while it's used in [MS-FSCC]_20120809.doc(section 2.3.70) which may be a TDI.
+    0xC0000460 -> "STATUS_NO_RANGES_PROCESSED", // This error code is not included in [MS-ERREF] while it's used in [MS-FSCC]_20120809.doc(section 2.3.70) which may be a TDI.
     0xC0000467 -> "STATUS_FILE_NOT_AVAILABLE",
     0xC0000721 -> "STATUS_CALLBACK_RETURNED_THREAD_AFFINITY",
+    0xC000A2A1 -> "STATUS_OFFLOAD_READ_FLT_NOT_SUPPORTED",
+    0xC000A2A2 -> "STATUS_OFFLOAD_WRITE_FLT_NOT_SUPPORTED",
+    0xC000A2A3 -> "STATUS_OFFLOAD_READ_FILE_NOT_SUPPORTED",
+    0xC000A2A4 -> "STATUS_OFFLOAD_WRITE_FILE_NOT_SUPPORTED",
     0x40000000 -> "STATUS_OBJECT_NAME_EXISTS",
     0x40000001 -> "STATUS_THREAD_WAS_SUSPENDED",
     0x40000002 -> "STATUS_WORKING_SET_LIMIT_RANGE",
@@ -4789,7 +4870,7 @@ string Win32ErrorCodesToText(uint errorCode)
     }
     else
     {
-        return "Unknown Value (" + (errorCode as string) + ")";
+        return "Unknown(" + Utility.DecToHexFormat(8, errorCode) + ")";
     }
 }
 
@@ -7502,7 +7583,7 @@ string LDAPErrorToWin32ErrorMappingToText(byte errorCode)
     }
     else
     {
-        return "Unknown Value (" + (errorCode as string) + ")";
+        return "Unknown(" + Utility.DecToHexFormat(8, errorCode) + ")";
     }
 }
 

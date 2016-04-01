@@ -1,4 +1,4 @@
-﻿protocol RDPEGT with
+protocol RDPEGT with
     BinaryEncodingDefaults{Endian = Endian.Little},
 Documentation
 {
@@ -13,12 +13,12 @@ OPNAuthoring
     Copyright  = "(c) Microsoft Corporation",
     References = 
         [
-            new Reference{Name = "MS-RDPEGT", Version = "2.0", ProgramName = ProgramName.MCPP},
+            new Reference{Name = "MS-RDPEGT", Version = "2.0", Date = "01/31/2013", ProgramName = ProgramName.MCPP},
             new Reference{Name = "MSDN-WindowsGDI", Link = "http://msdn.microsoft.com/en-us/library/dd145203.aspx"}
         ],
     RevisionSummary =
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "01/18/2013"}
+            new Revision{Class = RevisionClass.Major, Version = "355026", Date = "10/10/2013"}
         ]
 };
 

@@ -12,18 +12,17 @@ OPNAuthoring
     References = 
         [
             new Reference{Name = "RFC 2734"},
-            new Reference{Name = "MS-V4OF", Version = "4.0", ProgramName = ProgramName.MCPP},
+            new Reference{Name = "MS-V4OF", Version = "4.0", Date = "03/14/2008", ProgramName = ProgramName.MCPP},
             new Reference{Name = "IEEE Std 802.1D", Version = "2004 Edition", Link = "http://standards.ieee.org/getieee802/download/802.1D-2004.pdf"},
         ],
     RevisionSummary = 
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "11/02/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "366790", Date = "07/23/2014"}
         ]
 };
 
 using Standard;
 using Utility;
-using Ethernet;
 using IANA;
 
 annotation byte IP1394.Frame#If;
@@ -218,11 +217,21 @@ MacAddress get Destination(this IP1394.Frame frame)
     return frame.DestinationAddress;
 }
 
-string get Network(this IP1394.Frame frame)
+MacAddress get SourceMACAddress(this IP1394.Frame frame)
 {
-    return "IP1394: " + (frame.SourceAddress.Octets > frame.DestinationAddress.Octets
-        ?  frame.DestinationAddress.ToString() + " - " + frame.SourceAddress.ToString()
-        : frame.SourceAddress.ToString() + " - " +  frame.DestinationAddress.ToString());
+    return frame.SourceAddress;
+}
+
+MacAddress get DestinationMACAddress(this IP1394.Frame frame)
+{
+    return frame.DestinationAddress;
+}
+
+string get Network(this IP1394.Frame f)
+{
+    string src = GetAlias("Utility.MacAddress", f.SourceAddress, this) ?? f.SourceAddress.ToString();
+    string dst = GetAlias("Utility.MacAddress", f.DestinationAddress, this) ?? f.DestinationAddress.ToString();
+    return (f.SourceAddress.Octets > f.DestinationAddress.Octets ? (dst + " - " + src) : (src + " - " + dst));
 }
 
 // -------------------------------------------

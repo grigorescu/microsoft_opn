@@ -1,4 +1,4 @@
-﻿protocol KPasswd with 
+protocol KPasswd with 
 BinaryEncodingDefaults{Endian = Endian.Big},
 Documentation
 {
@@ -15,110 +15,36 @@ OPNAuthoring
         ],
     RevisionSummary = 
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "09/27/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "363782", Date = "05/09/2014"}
         ]
 };
 
 using Standard;
 using Utility;
-using IANA;
 using UDP;
-using TCP;
 using KerberosV5;
-using VirtualTransport;
-using Reassembly;
+using TCP;
+using IANA;
 
 endpoint Server
-    over UDP.Host | over VirtualTransport.Server
-    accepts DatagramOverTCP issues DatagramOverTCP
-    accepts DatagramOverUDP issues DatagramOverUDP;
+    over UDP.Host | over TCP.Server
+    accepts Request issues Reply;
 
 client endpoint Client connected to Server;
 
-autostart actor KerberosOverKPasswd(KPasswd.Server server)
-{
-    process server accepts s:KPasswd.DatagramOverTCP
-    {
-        KerberosOverKPasswdDecoder(s.KPasswdMessage, server);
-    }
-    
-    process server issues s:KPasswd.DatagramOverTCP
-    {
-        KerberosOverKPasswdDecoder(s.KPasswdMessage, server);
-    }
-    
-    process server accepts s:KPasswd.DatagramOverUDP
-    {
-        KerberosOverKPasswdDecoder(s.KPasswdMessage, server);
-    }
-    
-    process server issues s:KPasswd.DatagramOverUDP
-    {
-        KerberosOverKPasswdDecoder(s.KPasswdMessage, server);
-    }
-}
-
-void KerberosOverKPasswdDecoder((KPasswd.Reply | KPasswd.Request) kPasswdMessage, KPasswd.Server server)
-{
-    binary apRepData = $[];
-    binary krbMessage = $[];
-    if (kPasswdMessage is KPasswd.Reply)
-    {
-        var reply = kPasswdMessage as KPasswd.Reply;
-        if(reply.ApRepData != nothing)
-        {
-            apRepData = reply.ApRepData as binary;
-        }
-        krbMessage = reply.KrbMessage;
-    }
-    else if (kPasswdMessage is Request)
-    {
-        var request = kPasswdMessage as KPasswd.Request;
-        if (request.ApReqData != nothing)
-        {
-            apRepData = request.ApReqData as binary;
-        }
-        krbMessage = request.KrbMessage;
-    }
-        
-    // Decode ApRepData
-    if (apRepData != $[])
-    {
-        switch(apRepData)
-        {
-            case krbMsg:KrbMessage from Asn1BerDecoder<KrbMessage> =>
-                PADataDecoder(krbMsg);
-                dispatch (endpoint KerberosV5.Server over server) issues krbMsg;
-            default =>
-                ThrowDecodingException("KerberosV5 Message");
-        }
-    }
-        
-    // Decode KrbMessage
-    if (krbMessage != $[])
-    {
-        switch(krbMessage)
-        {
-            case krbMsg:KrbMessage from Asn1BerDecoder<KrbMessage> =>
-                PADataDecoder(krbMsg);
-                dispatch (endpoint KerberosV5.Server over server) issues krbMsg;
-            default =>
-                ThrowDecodingException("KerberosV5 Message");
-        }
-    }
-}
+const string MODULE_NAME = "KPasswd";
 
 autostart actor KPasswdOverUDP(UDP.Host host)
 {
-    process host accepts d:UDP.Datagram {DestinationPort is Port.KPasswd}
+    process host accepts d:UDP.Datagram{DestinationPort is Port.KPasswd}
     {
         switch (d.Payload)
         {
-            case kp:DatagramOverUDP from BinaryDecoder<DatagramOverUDP> =>
+            case kpreq:Request from BinaryDecoder<Request[false]> =>
                 var node = endpoint Server over host;
-                dispatch node accepts kp;
+                dispatch node accepts kpreq;
             default =>
-                ThrowDecodingException("KPasswd", "DatagramOverUDP");
+                ThrowDecodingException("KPasswd", "Request");
         }
     }
      
@@ -126,185 +52,168 @@ autostart actor KPasswdOverUDP(UDP.Host host)
     {
         switch (d.Payload)
         {
-            case kp:DatagramOverUDP from BinaryDecoder<DatagramOverUDP> =>
+            case kprep:Reply from BinaryDecoder<Reply[false]> =>
                 var node = endpoint Server over host;
-                dispatch node issues kp;
+                dispatch node issues kprep;
             default =>
-                ThrowDecodingException("KPasswd", "DatagramOverUDP");
+                ThrowDecodingException("KPasswd", "Reply");
         }
     }
 }
 
-autostart actor PasswdOverTCP(VirtualTransport.Server server)
+autostart actor KPasswdOverTCP(TCP.Server server)
 {
-    bool IsFirstFrame = true;
-    uint Length;
-    DecodingCache cache = new DecodingCache{};
-    process server accepts d:VirtualTransport.VirtualDataSegment{DestinationPort is Port.KPasswd}
+    TCPDecodingHelper helper = null;
+    
+    process server accepts d:TCP.Segment{DestinationPort is Port.KPasswd}
     {
-       if (IsFirstFrame == true)
-       {
-           Length = (d.Payload.Segment(8,2)[0] as uint) * 256 + (d.Payload.Segment(8,2)[1] as uint);
-           cache.Buffer = d.Payload;
-           cache.Origins = [d];
-       }
-       else
-       {
-           cache.Buffer += d.Payload;
-           cache.Origins += [d];
-       }
-       
-       if (Length <= cache.Buffer.Count - 10)
-       {
-           var node = endpoint Server over server;
-           switch (cache.Buffer)
-           {
-               case kp:DatagramOverTCP from BinaryDecoder<DatagramOverTCP> =>
-                   IsFirstFrame = true;
-                   kp.Origins = cache.Origins;
-                   dispatch node accepts kp;
-               default =>
-                   IsFirstFrame = true;
-                   ThrowDecodingException("KPasswd", "DatagramOverTCP");
-           }
-       }
-       else
-       {
-           IsFirstFrame = false;
-       }
+        InitializeKPasswdCache();
+        helper.TryDecode(d, MessageDirection.Accepts);
     }
     
-    process server issues d:VirtualTransport.VirtualDataSegment{SourcePort is Port.KPasswd}
+    process server issues d:TCP.Segment{SourcePort is Port.KPasswd}
     { 
-        if (IsFirstFrame == true)
-        {
-            Length = (d.Payload.Segment(8,2)[0] as uint) * 256 + (d.Payload.Segment(8,2)[1] as uint);
-            cache.Buffer = d.Payload;
-            cache.Origins = [d];
-            
-        }
-        else
-        {
-            cache.Buffer += d.Payload;
-            cache.Origins += [d];
-        }
-        
-        if (Length <= cache.Buffer.Count - 10)
-        {
-            var node = endpoint Server over server;
-            switch (cache.Buffer)
-            {
-                case kp:DatagramOverTCP from BinaryDecoder<DatagramOverTCP> =>
-                    IsFirstFrame = true;
-                    kp.Origins = cache.Origins;
-                    dispatch node issues kp;
-                default =>
-                    IsFirstFrame = true;
-                    ThrowDecodingException("KPasswd", "DatagramOverTCP");
-            }
-        }
-        else
-        {
-            IsFirstFrame = false;
-        } 
+        InitializeKPasswdCache();
+        helper.TryDecode(d, MessageDirection.Issues);
     }
     
-    ~endpoint(VirtualTransport.Server e)
+    void InitializeKPasswdCache()
     {
-        cache.Clear();
+        if (helper == null)
+        {
+            helper = new TCPDecodingHelper{};
+
+            var ept = endpoint Server over server;
+            var decodeIncompleteMessage = (binary bin) => BinaryDecoder<IncompleteKPasswdMessage>(bin) as optional any message;
+
+            var acceptsCache = new TCPDecodingCache();
+            acceptsCache.Initialize(
+                MODULE_NAME,
+                ept,
+                MessageDirection.Accepts,
+                IsKPasswd,
+                IsCompleteKPasswdMessage,
+                (stream s) => BinaryDecoder<Request[true]>(s) as optional any message,
+                decodeIncompleteMessage);
+
+            var issuesCache = new TCPDecodingCache();
+            issuesCache.Initialize(
+                MODULE_NAME,
+                ept,
+                MessageDirection.Issues,
+                IsKPasswd,
+                IsCompleteKPasswdMessage,
+                (stream s) => BinaryDecoder<Reply[true]>(s) as optional any message,
+                decodeIncompleteMessage);
+            
+            helper.AcceptsCache = acceptsCache;
+            helper.IssuesCache = issuesCache;
+        }
+    }
+    
+    ~endpoint(TCP.Server e)
+    {
+        if (helper != null)
+        {
+            helper.ClearInDestructor();
+        }
     }
 }
 
-type DecodingCache : DecodingCacheBase
+bool? IsKPasswd(binary bin)
 {
+    if (bin.Count < 8)
+    {
+        return null;
+    }
+
+    uint len1 = MakeDWord(bin[0], bin[1], bin[2], bin[3]);
+    uint len2 = MakeWord(bin[4], bin[5]);
+    uint pvn = MakeWord(bin[6], bin[7]);
+    return len1 == len2 && pvn in {0xff80, 0x0001};
 }
 
-message DatagramOverTCP
+uint? IsCompleteKPasswdMessage(binary bin)
+{
+    uint len = MakeDWord(bin[0], bin[1], bin[2], bin[3]) + 4;
+    return bin.Count >= len ? 0 : len;
+}
+
+message Request[bool HasHeader]
+{
+    optional [|HasHeader|] uint Header;
+    ushort MessageLength;
+    ushort ProtocolVersionNumber where ValidationCheckValue(value == 0xff80, this, true, ReferenceType.Message, "KPasswd", "ProtocolVersionNumber", "Request", "0xff80", value);
+    ushort ApReqLength;
+    optional [|ApReqLength > 0|] KrbMessage[false] ApReqData with BinaryEncoding{WidthForComposedType = ApReqLength * 8};
+    KrbMessage[false] KrbMessage;
+    
+    override string ToString()
+    {
+        return "Request, MessageLength: " + MessageLength.ToString();
+    }
+}
+
+message Reply[bool HasHeader]
+{
+    optional [|HasHeader|] uint Header;
+    ushort MessageLength;
+    ushort ProtocolVersionNumber where ValidationCheckValue(value == 0x0001, this, true, ReferenceType.Message, "KPasswd", "ProtocolVersionNumber", "Reply", "0x0001", value);
+    ushort ApRepLength;
+    optional [|ApRepLength > 0|] KrbMessage[false] ApRepData with BinaryEncoding{WidthForComposedType = ApRepLength * 8};
+    KrbMessage[false] KrbMessage;
+    
+    override string ToString()
+    {
+        return "Reply, MessageLength: " + MessageLength.ToString();
+    }
+}
+
+// This message only exists on Server over ResseambleTCP.Server.
+message IncompleteKPasswdMessage
 {
     uint Header;
-    (Reply | Request) KPasswdMessage;
+    binary IncompleteKPasswdMessageData with BinaryEncoding{MaxLength = Header};
     
     override string ToString()
     {
-        if (KPasswdMessage is Request)
-        {
-            return "Request";
-        }
-        else
-        {
-            return "Reply";
-        }
-    } 
-}
-
-message DatagramOverUDP
-{
-    (Request | Reply) KPasswdMessage;
-    
-    override string ToString()
-    {
-        if (KPasswdMessage is Request)
-        {
-            return "Request";
-        }
-        else
-        {
-            return "Reply";
-        }
+        return "IncompleteKPasswdMessage";
     }
-}
-
-type Request
-{
-    ushort MessageLength;
-    (ushort where value == 0xff80) ProtocolVersionNumber;
-    ushort ApReqLength;
-    optional [|ApReqLength > 0|] binary ApReqData with BinaryEncoding{Length = ApReqLength};
-    binary KrbMessage;
-}
-
-type Reply
-{
-    ushort MessageLength;
-    (ushort where value == 0x0001) ProtocolVersionNumber;
-    ushort ApRepLength;
-    optional [|ApRepLength > 0|] binary ApRepData with BinaryEncoding{Length = ApRepLength};
-    binary KrbMessage;
 }
 
 type EData
 {
-   ResultCode ResultCode;
-   string ResultString with BinaryEncoding{TextEncoding = TextEncoding.UTF8};
+    ResultCode ResultCode;
+    string ResultString with BinaryEncoding{TextEncoding = TextEncoding.UTF8};
 }
 
 pattern ResultCode = enum ushort
 {
-     KrbsKpasswdSuccess                = 0,
-     KrbsKapasswdMalFormed             = 1,
-     KrbsKpasswdHardError              = 2,
-     KrbsKpasswdAuthError              = 3,
-     KrbsKpasswdSoftError              = 4,
-     KrbsKpasswdAccessDenied           = 5,
-     KrbsKpasswdBadVersion             = 6,
-     KrbsKpasswdInitialFlageNeeded     = 7,
-     RequestFailsWithOtherReason       = 0xFFFF    
+    KrbsKpasswdSuccess                = 0,
+    KrbsKapasswdMalFormed             = 1,
+    KrbsKpasswdHardError              = 2,
+    KrbsKpasswdAuthError              = 3,
+    KrbsKpasswdSoftError              = 4,
+    KrbsKpasswdAccessDenied           = 5,
+    KrbsKpasswdBadVersion             = 6,
+    KrbsKpasswdInitialFlageNeeded     = 7,
+    RequestFailsWithOtherReason       = 0xFFFF,
+    ...
 };
-
 
 string GetName(ResultCode code)
 {
     switch (code)
     {
-       case 0 => return "request succeeds ";
-       case 1 => return "request fails due to being malformed";
-       case 2 => return "request fails due to 'hard' error in processing the request";
-       case 3 => return "request fails due to an error in authentication processing";
-       case 4 => return "request fails due to 'soft' error in processing the request";
-       case 5 => return "requestor not authorized";
-       case 6 => return "protocol version unsupported";
-       case 7 => return "initial flag required";
-       case 0xFFFF => return "request fails with some other reason";
-       default => return "Unknown Result Code" + (code as string);
+        case 0 => return "request succeeds ";
+        case 1 => return "request fails due to being malformed";
+        case 2 => return "request fails due to 'hard' error in processing the request";
+        case 3 => return "request fails due to an error in authentication processing";
+        case 4 => return "request fails due to 'soft' error in processing the request";
+        case 5 => return "requestor not authorized";
+        case 6 => return "protocol version unsupported";
+        case 7 => return "initial flag required";
+        case 0xFFFF => return "request fails with some other reason";
+        default => return "Unknown Result Code(" + Utility.DecToHexFormat(code) + ")";
     }
 }

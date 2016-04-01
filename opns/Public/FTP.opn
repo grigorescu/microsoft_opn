@@ -1,4 +1,4 @@
-﻿protocol FTP with 
+protocol FTP with 
 BinaryEncodingDefaults{Endian = Endian.Big},
 Documentation
 {
@@ -15,7 +15,7 @@ OPNAuthoring
         ],
     RevisionSummary =
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "09/8/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "382141", Date = "10/13/2015"}
         ]
 };
 
@@ -23,91 +23,233 @@ using Standard;
 using IANA;
 using Utility;
 using TCP;
-using VirtualTransport;
+using DecodingUtility; // WORKAROUND: compiler bug#3131164, When type A inherit from type B, module C use tye A, and A, B, C is in different module file, compiler will give a compilation error
 
-// Initialize the Data Port number. When entering into to PASV command, Data Port number would change by using GetPort method.
-int pasvDataport = -1;
+// ------------------------------------------- Architecture ------------------------------------------- //
 
-endpoint Server over VirtualTransport.Server accepts DataToServer issues DataToClient accepts CommandToServer issues CommandToClient;
+// Endpoints
+
+/* 
+ * FTP traffic may be tunneled by SOCKS which is not over well known FTP port. So we add the ReassemblyServer
+ * to unify the FTP reassembly work. Now, FTP traffic from TCP or from SOCKS will be dispatched to 
+ * ReassemblyServer for reassembly. The endpoint index FtpServerPort is used to identify whether it's FTP data
+ * traffic or FTP control traffic.
+ * FTP Endpoint Layers:
+ * [Upper layer]
+ * ----------------------------------------------------------|-------------------------------------------
+ * [Per Application Open of a File]                        Server
+ * ----------------------------------------------------------|-------------------------------------------
+ * [Per Transport Connection]                            ReassemblyServer[IANA.Port FtpServerPort]
+ * ----------------------------------------------------------|-------------------------------------------
+ * [Lower layer]                                          TCP.Server
+ */
+endpoint Server over ReassemblyServer accepts DataToServer issues DataToClient accepts CommandToServer issues CommandToClient;
+
+endpoint ReassemblyServer[binary FtpServerAddress, IANA.Port FtpServerPort] over TCP.Server accepts TCP.Segment issues TCP.Segment;
 
 client endpoint Client connected to Server;
 
-autostart actor FTPOverTCP(VirtualTransport.Server server)
+// Dummy endpoint contains global variable to avoid cross capture impact
+endpoint DummyEndpoint accepts any message issues any message
 {
-    // Client listens on the default data port 20
-    process server issues s:VirtualTransport.VirtualDataSegment where s.DestinationPort == Port.FTPData || s.DestinationPort == pasvDataport
+    // When entering into to PASV command, Data Port number would be changed according the reply message.
+    // We should consider the situation that FTP will open PASV on several ports and severl IP addresses at one time.
+    set<binary> OpenedPasvDataPorts = {};
+};
+
+binary CantenateIPAddressAndPort(binary serverAddress, ushort port)
+{
+    return serverAddress + port.ToBinary();
+}
+
+bool IsFTPDataPort(binary serverAddress, ushort port)
+{
+    return CantenateIPAddressAndPort(serverAddress, port) in (endpoint DummyEndpoint).OpenedPasvDataPorts;
+}
+
+void RemoveFTPDataPort(binary serverAddress, ushort port)
+{
+    DummyEndpoint dummyEndpoint = endpoint DummyEndpoint;
+    dummyEndpoint.OpenedPasvDataPorts[CantenateIPAddressAndPort(serverAddress, port)] = false;
+}
+
+void InsertFTPDataPort(binary addressPort)
+{
+    DummyEndpoint dummyEndpoint = endpoint DummyEndpoint;
+    dummyEndpoint.OpenedPasvDataPorts += {addressPort};
+}
+
+pattern FTPTransportType = enum byte
+{
+    NotDetermined = 0,
+    None = 1,
+    FTPControl = 2,
+    FTPMissingTCPHandshake = 3,
+    FTPData = 4,
+    FTPDataReverse = 5,
+    ...
+};
+
+bool CheckFTPTransportType(binary address1, ushort port1, binary address2, ushort port2, bool isMissingTcpHandshake, binary data, out FTPTransportType ftpTransportType)
+{
+    if (port1 == Port.FTPControl || (port1 == Port.FTPS && CheckIsFTPControl(data)))
     {
-        switch (s.Payload)
-        {
-            case d:DataToClient from BinaryDecoder<DataToClient> =>
-                dispatch (endpoint Server over server) issues d;
-            default => 
-                ThrowDecodingExceptionForTCP("FTP", "DataToClient", s#IsIncomplete, s#SegmentLost);
-        }
+        ftpTransportType = FTPTransportType.FTPControl;
+        return true;
     }
-    process server accepts s:VirtualTransport.VirtualDataSegment where s.DestinationPort == Port.FTPData || s.DestinationPort == pasvDataport
+    if (isMissingTcpHandshake && port2 == Port.FTPS && CheckIsFTPControl(data))
     {
-        switch (s.Payload)
-        {
-            case d:DataToServer from BinaryDecoder<DataToServer> =>
-                dispatch (endpoint Server over server) accepts d;
-            default => 
-                ThrowDecodingExceptionForTCP("FTP", "DataToServer", s#IsIncomplete, s#SegmentLost);
-        }
+        ftpTransportType = FTPTransportType.FTPMissingTCPHandshake;
+        return true;
     }
-    
-    // Server listens on the default data port 20
-    process server accepts s:VirtualTransport.VirtualDataSegment where s.SourcePort== Port.FTPData || s.SourcePort == pasvDataport
+    if (port1 == Port.FTPData || port1 == Port.FTPS_DATA || IsFTPDataPort(address1, port1))
     {
-        switch (s.Payload)
-        {
-            case d:DataToServer from BinaryDecoder<DataToServer> =>
-                dispatch (endpoint Server over server) accepts d;
-            default => 
-                ThrowDecodingExceptionForTCP("FTP", "DataToServer", s#IsIncomplete, s#SegmentLost);
-        }
+        ftpTransportType = FTPTransportType.FTPData;
+        return true;
     }
-    process server issues s:VirtualTransport.VirtualDataSegment where s.SourcePort== Port.FTPData || s.SourcePort == pasvDataport
+    if (port2 == Port.FTPData || port2 == Port.FTPS_DATA || IsFTPDataPort(address2, port2))
     {
-        switch (s.Payload)
-        {
-            case d:DataToClient from BinaryDecoder<DataToClient> =>
-                dispatch (endpoint Server over server) issues d;
-            default => 
-                ThrowDecodingExceptionForTCP("FTP", "DataToClient", s#IsIncomplete, s#SegmentLost);
-        }
+        ftpTransportType = FTPTransportType.FTPDataReverse;
+        return true;
     }
 
-    // Server listens on control port
-    process server issues s:VirtualTransport.VirtualDataSegment{SourcePort is Port.FTPControl}
+    if ((port1 == Port.FTPS || (isMissingTcpHandshake && port2 == Port.FTPS)) &&
+        data.Count == 0)
     {
-        switch (s.Payload)
+        // in this situation when empty payload, return false but not update FTPTransportType
+        // It cannot identify FTP transport via this TCP segment, wait for next
+        return false;
+    }
+
+    ftpTransportType = FTPTransportType.None;
+    return false;
+}
+
+bool CheckIsFTPControl(binary data)
+{
+    if (data.Count > 0 && ((data.IndexOf(SPBinary) is idx:int && idx >= 0) || (data.IndexOf(CRLFBinary) is idx1:int && idx1 >= 0)) && CommandOnlyDecoder(data) is cmd:string)
+    {
+        return cmd.ToUpper() in FtpCommandList;
+    }
+    else if (data.Count > 0 && data.IndexOf(SPBinary) is idx2:int && idx2 >= 0 && ReplyCodeOnlyDecoder(data) is code:string)
+    {
+        return code in FtpReplyCodeList;
+    }
+    else if (data.Count > 0 && data.IndexOf(MINUSBinary) is idx3:int && idx3 >= 0 && ReplyCodeInMultipleLineDecoder(data) is code1:string)
+    {
+        return code1 in FtpReplyCodeList;
+    }
+    else
+    {
+        return false;
+    }
+}
+
+autostart actor FTPOverTcp(TCP.Server server)
+{
+    ushort serverPortForData = 0;
+    binary serverAddress = null;
+    FTPTransportType ftpTransportType = FTPTransportType.NotDetermined;
+    FtpCtrlDecodingHelper ctrlMsgDecodingHelper = null;
+    FtpDataDecodingHelper dataMsgDecodingHelper = null;
+
+    // 1. FTP server may initiate a data connection. In this case, TCP will mistake a FTP client as the TCP server. Please refer to RFC 959,
+    // page#8: "The user-DTP or its designate should "listen" on the specified data port, and the server initiate the data connection and 
+    // data transfer in accordance with the specified parameters."
+    // 2. Data message which missing TCP handshake message and client port is smaller than server port.
+    process server issues s:TCP.Segment where ftpTransportType != FTPTransportType.None &&
+        (ftpTransportType != FTPTransportType.NotDetermined || 
+        CheckFTPTransportType(s#SourceAddrBin as binary, s.SourcePort, s#DestinationAddrBin as binary, 
+        s.DestinationPort, server.isMissingThreeWayHandshake, s.Payload, out ftpTransportType))
+    {
+        switch (ftpTransportType)
         {
-            case c:CommandToClient from BinaryDecoder<CommandToClient> =>
-                if (c.Response is ResponseType)
+            case FTPTransportType.FTPControl =>
+                if (ctrlMsgDecodingHelper == null)
                 {
-                    var v = c.Response as ResponseType;
-                    CommandToClientDecoder(ref v);
+                    ctrlMsgDecodingHelper = new FtpCtrlDecodingHelper(endpoint Server over server);
                 }
-                else if (c.Response is ResponseMultipleLineType)
+                ctrlMsgDecodingHelper.TryDecode(s, MessageDirection.Issues);
+            case FTPTransportType.FTPMissingTCPHandshake =>
+                if (ctrlMsgDecodingHelper == null)
                 {
-                    var v = c.Response as ResponseMultipleLineType;
-                    CommandToClientDecoder(ref v);
+                    ctrlMsgDecodingHelper = new FtpCtrlDecodingHelper(endpoint Server over server);
                 }
-                dispatch (endpoint Server) issues c;
+                ctrlMsgDecodingHelper.TryDecode(s, MessageDirection.Accepts);
+            case FTPTransportType.FTPData =>
+                if (dataMsgDecodingHelper == null)
+                {
+                    serverPortForData = s.SourcePort;
+                    serverAddress = s#SourceAddrBin as binary;
+                    dataMsgDecodingHelper = new FtpDataDecodingHelper(endpoint Server over server);
+                }
+                dataMsgDecodingHelper.TryDecode(s, MessageDirection.Issues);
+            case FTPTransportType.FTPDataReverse =>
+                if (dataMsgDecodingHelper == null)
+                {
+                    serverPortForData = s.DestinationPort;
+                    serverAddress = s#DestinationAddrBin as binary;
+                    dataMsgDecodingHelper = new FtpDataDecodingHelper(endpoint Server over server);
+                }
+                dataMsgDecodingHelper.TryDecode(s, MessageDirection.Accepts);
             default =>
-                ThrowDecodingExceptionForTCP("FTP", "CommandToClient", s#IsIncomplete, s#SegmentLost);
+                // it will not be reached
         }
     }
 
-    process server accepts s:VirtualTransport.VirtualDataSegment{DestinationPort is Port.FTPControl}
+    process server accepts s:TCP.Segment where ftpTransportType != FTPTransportType.None &&
+        (ftpTransportType != FTPTransportType.NotDetermined || 
+        CheckFTPTransportType(s#DestinationAddrBin as binary, s.DestinationPort, 
+        s#SourceAddrBin as binary, s.SourcePort, server.isMissingThreeWayHandshake, s.Payload, out ftpTransportType))
     {
-        switch (s.Payload)
+        switch (ftpTransportType)
         {
-            case c:CommandToServer from BinaryDecoder<CommandToServer> =>
-                dispatch (endpoint Server over server) accepts c;
-            default => 
-                ThrowDecodingExceptionForTCP("FTP", "CommandToServer", s#IsIncomplete, s#SegmentLost);
+            case FTPTransportType.FTPControl =>
+                if (ctrlMsgDecodingHelper == null)
+                {
+                    ctrlMsgDecodingHelper = new FtpCtrlDecodingHelper(endpoint Server over server);
+                }
+                ctrlMsgDecodingHelper.TryDecode(s, MessageDirection.Accepts);
+            case FTPTransportType.FTPMissingTCPHandshake =>
+                if (ctrlMsgDecodingHelper == null)
+                {
+                    ctrlMsgDecodingHelper = new FtpCtrlDecodingHelper(endpoint Server over server);
+                }
+                ctrlMsgDecodingHelper.TryDecode(s, MessageDirection.Issues);
+            case FTPTransportType.FTPData =>
+                if (dataMsgDecodingHelper == null)
+                {
+                    serverPortForData = s.DestinationPort;
+                    serverAddress = s#DestinationAddrBin as binary;
+                    dataMsgDecodingHelper = new FtpDataDecodingHelper(endpoint Server over server);
+                }
+                dataMsgDecodingHelper.TryDecode(s, MessageDirection.Accepts);
+            case FTPTransportType.FTPDataReverse =>
+                if (dataMsgDecodingHelper == null)
+                {
+                    serverPortForData = s.SourcePort;
+                    serverAddress = s#SourceAddrBin as binary;
+                    dataMsgDecodingHelper = new FtpDataDecodingHelper(endpoint Server over server);
+                }
+                dataMsgDecodingHelper.TryDecode(s, MessageDirection.Issues);
+            default =>
+                // it will not be reached
+        }
+    }
+
+    ~endpoint(TCP.Server server)
+    {
+        if (serverAddress != null && serverPortForData != Port.FTPData)
+            RemoveFTPDataPort(serverAddress, serverPortForData);
+        if (dataMsgDecodingHelper != null)
+        {
+            dataMsgDecodingHelper.ClearInDestructor();
+            dataMsgDecodingHelper = null;
+        }
+        if (ctrlMsgDecodingHelper != null)
+        {
+            ctrlMsgDecodingHelper.ClearInDestructor();
+            ctrlMsgDecodingHelper = null;
         }
     }
 }
@@ -118,7 +260,7 @@ message DataToClient
 
     override string ToString()
     {
-        return "Data Transfer To Client, size = " + (PayLoadToClient.Count as string) + " bytes";
+        return "Data Transfer To Client, Size: " + (PayLoadToClient.Count as string) + " bytes";
     }
 }
 
@@ -128,170 +270,417 @@ message DataToServer
 
     override string ToString()
     {
-        return "Data Transfer To Server, size = " + (PayLoadToServer.Count as string) + " bytes";
+        return "Data Transfer To Server, Size: " + (PayLoadToServer.Count as string) + " bytes";
     }
 }
 
 // [RFC 959    Page 35    4.2.  FTP REPLIES]
 message CommandToClient
 {
-    (ResponseType | ResponseMultipleLineType) Response;
+    string ReplyCode;
+    string ReplyMessage;
 
     override string ToString()
     {
-        if (Response is ResponseType)
-        {
-            var v = Response as ResponseType;
-            return v.ReplyCode + " " + v.ReplyMessage;
-        }
-        else if (Response is ResponseMultipleLineType)
-        {
-            var v = Response as ResponseMultipleLineType;
-            string msg = null;
-            if (v.Reply != nothing)
-            {
-                var reply = v.Reply as ResponseType;
-                msg = reply.ReplyCode + " " + reply.ReplyMessage;
-            }
-            return (v.MessageArray as array<ResponseMultipleLine>)[0].Message + " " + msg;
-        }
-        return "";
+        return "Response, Reply Code: " + ReplyCode + ((ReplyMessage.Count == 0) ? "" : (", Reply Message: " + ReplyMessage));
     }
-}
-
-type ResponseType
-{
-    string ReplyCode where (((value as array<char>)[0] >= 0x31 && (value as array<char>)[0] <= 0x36)
-        && ((value as array<char>)[1] >= 0x30 && (value as array<char>)[1] <= 0x35)
-        && ((value as array<char>)[2] >= 0x30 && (value as array<char>)[2] <= 0x39)) with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = 3};
-    string ReplyMessage with BinaryEncoding{TextEncoding = TextEncoding.ASCII};
-    optional array<string> ReplyMessagePlus with Encoding{Ignore = true};
-}
-
-type ResponseMultipleLineType
-{
-    optional string Messages with BinaryEncoding{TextEncoding = TextEncoding.ASCII};
-    optional array<ResponseMultipleLine> MessageArray with Encoding{Ignore = true};
-    optional ResponseType Reply with Encoding{Ignore = true};
-}
-
-type ResponseMultipleLine
-{
-    string Message where (((value as array<char>)[0] < 0x31 || (value as array<char>)[0] > 0x36)
-        || ((value as array<char>)[1] < 0x30 || (value as array<char>)[1] > 0x35)
-        || ((value as array<char>)[2] < 0x30 || (value as array<char>)[2] > 0x39)) with BinaryEncoding{TextEncoding = TextEncoding.ASCII};
-}
-
-syntax CRLF = "\r\n";
-syntax Line = s:regex{[^\r\n]+} CRLF => s;
-
-//Sample: Entering Passive Mode (192,136,34,93,122,189).
-syntax Digit = s:regex{[0-9]+} => s;
-syntax PortNum = " Entering Passive Mode (" Digit "," Digit "," Digit "," Digit "," s1:Digit "," s2:Digit ")" => GetPort(s1, s2);
-
-int GetPort(string PortC1, string PortC2)
-{
-    int portC1L = PortC1.ToInt(false) as int;
-    int portC2L = PortC2.ToInt(false) as int;
-    int pasvDataPort = portC1L * 256 + portC2L;
-    return pasvDataPort;
-}
-
-void CommandToClientDecoder(ref ResponseType v)
-{
-    string rpCode = v.ReplyCode as string;
-    stream s = v.ReplyMessage;
-    int count = v.ReplyMessage.Count;
-    string first = Line(s) as string;
-    if (rpCode == "227")
-    {
-        pasvDataport = PortNum(first) as int;
-    }
-    if (s.BytePosition < count)
-    {
-        v.ReplyMessagePlus = [];
-    }
-    while (s.BytePosition < count)
-    {
-        string msg = Line(s) as string;
-        v.ReplyMessagePlus = (v.ReplyMessagePlus as array<string>) + [msg];
-    }
-}
-
-void CommandToClientDecoder(ref ResponseMultipleLineType v)
-{
-    stream s = v.Messages as string;
-    int count = (v.Messages as string).Count;
-
-    v.MessageArray = [];
-    while (s.BytePosition < count)
-    {
-        string msg = Line(s) as string;
-        optional ResponseMultipleLine multiple = BinaryDecoder<ResponseMultipleLine>(msg as stream);
-        if (multiple != nothing)
-        {
-            v.MessageArray = (v.MessageArray as array<ResponseMultipleLine>) + [multiple as ResponseMultipleLine];
-        }
-        else if (v.Reply == nothing)
-        {
-            v.Reply = BinaryDecoder<ResponseType>(msg as stream);
-            if (s.BytePosition < count && v.Reply != nothing)
-            {
-                var reply = v.Reply as ResponseType;
-                reply.ReplyMessagePlus = [];
-            }
-        }
-        else
-        {
-            var reply = v.Reply as ResponseType;
-            reply.ReplyMessagePlus = (reply.ReplyMessagePlus as array<string>) + [msg];
-        }
-    }
-
-    v.Messages = nothing;
 }
 
 // [RFC 959    Page 45    5.3.  COMMANDS]
 message CommandToServer
 {
-    (Request3NoParam | Request4NoParam | RequestWithParameter) Request;
+    string Command;
+    optional array<string> CommandParameter;
 
     override string ToString()
     {
-        if (Request is Request3NoParam)
+        string summary = "Request, Command: " + Command;
+        if (CommandParameter is para:array<string> && para.Count > 0)
         {
-            var v = Request as Request3NoParam;
-            return v.Command;
+            summary += ", Parameter:";
+            foreach (var p in para)
+            {
+                summary += " " + p;
+            }
         }
-        else if (Request is Request4NoParam)
-        {
-            var v = Request as Request4NoParam;
-            return v.Command;
-        }
-        else if (Request is RequestWithParameter)
-        {
-            var v = Request as RequestWithParameter;
-            return v.Command + " " + v.CommandParameter;
-        }
-        return "";
+        return summary;
     }
 }
 
-type Request3NoParam
+syntax CRLF = "\r\n";
+syntax Line = s:regex{[^\r\n]+} CRLF => s;
+syntax SP = regex{\x20};
+syntax COMMA = regex{\x2C};
+syntax MINUS = regex{\x2D};
+
+syntax Command = regex{[A-Za-z\x2D]{3,4}}; // command length is 3 or 4
+syntax CommandParameter = regex{[^\r\n]+};
+syntax CommandOnlyDecoder = c:Command (SP | CRLF) => c;
+syntax CommandToServerDecoder = c:Command p1:((SP param:CommandParameter => param)*) CRLF? =>
+    new CommandToServer
+    {
+        Command = c,
+        CommandParameter = p1.Count > 0 ? p1 : nothing,
+    };
+
+syntax ReplyCode = regex{[0-9]{3}}; // ReplyCode length is 3
+syntax ReplyMessage = regex{[^\r\n]*};
+syntax IntermediaryLine = regex{[^\r\n]*};
+syntax ReplyCodeOnlyDecoder = c:ReplyCode SP => c;
+syntax ReplyCodeInMultipleLineDecoder = c:ReplyCode MINUS => c;
+syntax LastLineStarterInMultipleLineReply = CRLF c:ReplyCode SP => c; // eg: "\r\n201 last line.\r\n"
+
+// deal with complete and incomplete single line CommandToClient message
+syntax CommandToClientDecoder = r:ReplyCode msg:(SP m:ReplyMessage => m)? CRLF?=>
+    new CommandToClient
+    {
+        ReplyCode = r,
+        ReplyMessage = msg.Count > 0 ? msg[0] : null,
+    };
+
+// deal with complete and incomplete multiple line CommandToClient message
+syntax CommandToClientMultiLineDecoder = r1:ReplyCode MINUS firstLine:(msg1:ReplyMessage => msg1)? CRLF lines:(l:IntermediaryLine CRLF? => l)* lastLine:(ReplyCode SP msg2:ReplyMessage => msg2)? (CRLF)? =>
+    new CommandToClient
+    {
+        ReplyCode = r1,
+        ReplyMessage = ConvertStringArrayToString(firstLine) + ConvertStringArrayToString(lines) + ConvertStringArrayToString(lastLine),
+    };
+
+// Entering Passive Mode (h1,h2,h3,h4,p1,p2).
+syntax OneByteInteger = s:regex{[0-9]{1,3}} => (s.ToByte(false) as byte);
+syntax GetBinaryPortFromPassiveReplyContent = "Entering Passive Mode (" byte1:OneByteInteger "," byte2:OneByteInteger "," byte3:OneByteInteger "," byte4:OneByteInteger "," byte5:OneByteInteger "," byte6:OneByteInteger ")" regex{\.?} => GetPort([byte1, byte2, byte3, byte4, byte5, byte6]);
+binary GetPort(array<byte> bytes)
 {
-    string Command where ((value as array<char>)[3] == 0x0D && (value as array<char>)[4] == 0x0A) with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = 5};
-    optional binary FTPPayLoad;
+    return bytes.ToBinary() as binary;
 }
 
-type Request4NoParam
+const set<string> FtpCommandList = {
+    // RFC959, 5.3.1. FTP COMMANDS
+    "USER",
+    "PASS",
+    "ACCT",
+    "CWD",
+    "CDUP",
+    "SMNT",
+    "QUIT",
+    "REIN",
+    "PORT",
+    "PASV",
+    "TYPE",
+    "STRU",
+    "MODE",
+    "RETR",
+    "STOR",
+    "STOU",
+    "APPE",
+    "ALLO",
+    "REST",
+    "RNFR",
+    "RNTO",
+    "ABOR",
+    "DELE",
+    "RMD",
+    "MKD",
+    "PWD",
+    "LIST",
+    "NLST",
+    "SITE",
+    "SYST",
+    "STAT",
+    "HELP",
+    "NOOP",
+    // RFC2228, 8.1.  FTP Security commands and arguments
+    "AUTH",
+    "ADAT",
+    "PROT",
+    "<SP>",
+    "CCC",
+    "MIC",
+    "CONF",
+    "ENC",
+    // http://networksorcery.com/enp/protocol/ftp.htm FTP Commands
+    "EPRT", // RFC 2428
+    "EPSV", // RFC 2428
+    "FEAT", // RFC 2389
+    "LANG", // RFC 2640
+    "LPRT", // RFC 1639
+    "LPSV", // RFC 1639
+    "MDTM", // RFC 3659
+    "MLSD", // RFC 3659
+    "MLST", // RFC 3659
+    "OPTS", // RFC 2389
+    "SIZE", // RFC 3659
+    "XCUP", // RFC 775
+    "XMKD", // RFC 775
+    "XPWD", // RFC 775
+    "XRCP", // RFC 743
+    "XRMD", // RFC 775
+    "XRSQ", // RFC 743
+    "XSEM", // RFC 737
+    "XSEN", // RFC 737
+};
+
+const set<string> FtpReplyCodeList = {
+    // RFC959 4.2.2 Numeric Order List of Reply Codes
+    "110",
+    "120",
+    "125",
+    "150",
+    "200",
+    "202",
+    "211",
+    "212",
+    "213",
+    "214",
+    "215",
+    "220",
+    "221",
+    "225",
+    "226",
+    "227",
+    "230",
+    "250",
+    "257",
+    "331",
+    "332",
+    "350",
+    "421",
+    "425",
+    "426",
+    "450",
+    "451",
+    "452",
+    "500",
+    "501",
+    "502",
+    "503",
+    "504",
+    "530",
+    "532",
+    "550",
+    "551",
+    "552",
+    "553",
+    // RFC2228 5.1. New individual reply codes
+    "232",
+    "234",
+    "235",
+    "334",
+    "335",
+    "336",
+    "431",
+    "533",
+    "534",
+    "535",
+    "536",
+    "537",
+    "631",
+    // http://networksorcery.com/enp/protocol/ftp.htm FTP reply codes
+    "228",
+    "229",
+};
+
+const binary CRLFBinary = $[0D0A];
+const binary SPBinary = $[20];
+const binary MINUSBinary= $[2D];
+
+binary FtpGetEndMarkBinary()
 {
-    string Command where ((value as array<char>)[4] == 0x0D && (value as array<char>)[5] == 0x0A) with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = 6};
-    optional binary FTPPayLoad;
+    return CRLFBinary;
 }
 
-type RequestWithParameter
+type FtpCtrlRequestDecodingCache : TCPTextDecodingCache
 {
-    string Command with BinaryEncoding{TextEncoding = TextEncoding.ASCII, TextTerminator = " "};
-    string CommandParameter with BinaryEncoding{TextEncoding = TextEncoding.ASCII};
-    optional binary FTPPayLoad;
+    string CurrentCmd;
+
+    FtpCtrlRequestDecodingCache(any endpoint ept)
+    {
+        CurrentCmd = "";
+        base.InitializeTextDecodingCache("FTP", ept, MessageDirection.Accepts, IsCommandToServerMsg,
+            FtpGetEndMarkBinary, DecodeSingleRequestMessage, DecodeIncompleteRequestMessage);
+    }
+
+    override void ClearInDestructor()
+    {
+        CurrentCmd = "";
+        base.ClearInDestructor();
+    }
+
+    bool? IsCommandToServerMsg(binary data)
+    {
+        if (CurrentCmd.Count == 0 && ((data.IndexOf(SPBinary) is idx:int && idx >= 0) || (data.IndexOf(CRLFBinary) is idx1:int && idx1 >= 0)) && CommandOnlyDecoder(data) is cmd:string)
+        {
+            CurrentCmd = cmd;
+        }
+        return CurrentCmd.ToUpper() in FtpCommandList;
+    }
+
+    optional any message DecodeSingleRequestMessage(stream s)
+    {
+        return CommandToServerDecoder(s) as optional any message;
+    }
+
+    optional any message DecodeIncompleteRequestMessage(binary data)
+    {
+        return CommandToServerDecoder(data) as optional any message;
+    }
+}
+
+type FtpCtrlResponseDecodingCache : TCPTextDecodingCache
+{
+    string CurrentReplyCode;
+    bool IsMultipleLine;
+    bool LastLineStarterMatched;
+    binary LastLineStarterBinary;
+
+    FtpCtrlResponseDecodingCache(any endpoint ept)
+    {
+        ResetFields();
+        base.InitializeTextDecodingCache("FTP", ept, MessageDirection.Issues, IsCommandToClientMsg,
+            FtpGetEndMarkBinary, DecodeSingleResponseMessage, DecodeIncompleteResponseMessage);
+    }
+
+    override uint? IsSufficientSingleTextMessage(binary data)
+    {
+        assert GetEndMarkBinary != null;
+
+        if (!IsMultipleLine) return base.IsSufficientSingleTextMessage(data); // search single line end mark
+
+        if (!LastLineStarterMatched) // search last line starter
+        {
+            if (SearchStartPosition > LastLineStarterBinary.Count)
+            {
+                // reverse the start position to avoid the situation that part of the end mark is in last coming segment
+                SearchStartPosition -= LastLineStarterBinary.Count;
+            }
+            int endMarkIndex = data.LastIndexOf(LastLineStarterBinary, data.Count - 1, data.Count - SearchStartPosition);
+        
+            if (endMarkIndex < 0)
+            {
+                // end mark is not found
+                SearchStartPosition = data.Count; // update the search start position to save search time
+                return null;
+            }
+            LastLineStarterMatched = true;
+            SearchStartPosition = endMarkIndex + LastLineStarterBinary.Count; // after last line starter matched, SearchStartPosition will be used to searching last line end mark
+        }
+
+        // search last line end mark
+        if (LastLineStarterMatched) return base.IsSufficientSingleTextMessage(data);
+        return null;
+    }
+
+    override void ClearExceptionally()
+    {
+        base.ClearExceptionally();
+        ResetFields();
+    }
+
+    override void ClearInDestructor()
+    {
+        base.ClearInDestructor();
+        ResetFields();
+    }
+
+    bool? IsCommandToClientMsg(binary data)
+    {
+       if (CurrentReplyCode.Count == 0)
+        {
+            if (data.IndexOf(SPBinary) is idx:int && idx >= 0 && ReplyCodeOnlyDecoder(data) is code:string)
+            {
+                CurrentReplyCode = code;
+            }
+            else if (data.IndexOf(MINUSBinary) is idx1:int && idx1 >= 0 && ReplyCodeInMultipleLineDecoder(data) is code1:string)
+            {
+                CurrentReplyCode = code1;
+                IsMultipleLine = true;
+                stream s = ("\r\n" + code1 + " ") as stream;
+                LastLineStarterBinary = s.PeekBytes(0, s.ByteLength); // eg: "...\r\n123 last line\r\n";
+            }
+        }
+        return CurrentReplyCode in FtpReplyCodeList;
+    }
+
+    optional any message DecodeSingleResponseMessage(stream s)
+    {
+        optional any message msg;
+        optional CommandToClient temp = nothing;
+        if (!IsMultipleLine)
+        {
+            temp = CommandToClientDecoder(s);
+        }
+        else
+        {
+            temp = CommandToClientMultiLineDecoder(s);
+        }
+        if (temp is m:CommandToClient)
+        {
+            if (m.ReplyCode == "227" && GetBinaryPortFromPassiveReplyContent(m.ReplyMessage) is addressPort:binary) // 227 Entering Passive Mode (h1,h2,h3,h4,p1,p2)
+            {
+                InsertFTPDataPort(addressPort);
+            }
+            msg = m;
+        }
+        ResetFields();
+        return msg;
+    }
+
+    optional any message DecodeIncompleteResponseMessage(binary data)
+    {
+        return DecodeSingleResponseMessage(data);
+    }
+
+    void ResetFields()
+    {
+        CurrentReplyCode = "";
+        IsMultipleLine = false;
+        LastLineStarterMatched = false;
+        LastLineStarterBinary = $[];
+    }
+}
+
+type FtpCtrlDecodingHelper : TCPDecodingHelper
+{
+    FtpCtrlDecodingHelper(any endpoint ept)
+    {
+        AcceptsCache = new FtpCtrlRequestDecodingCache(ept);
+        IssuesCache = new FtpCtrlResponseDecodingCache(ept);
+    }
+}
+
+type FtpDataDecodingCache : TCPDecodingCache
+{
+    FtpDataDecodingCache(any endpoint ept, MessageDirection direction)
+    {
+        base.Initialize("FTP", ept, direction, (x) => true, (x) => 0,
+            DecodeSingleResponseMessage, DecodeIncompleteResponseMessage);
+    }
+
+    optional any message DecodeSingleResponseMessage(stream s)
+    {
+        optional any message msg;
+        if (Direction == MessageDirection.Accepts)
+        {
+            msg = BinaryDecoder<DataToServer>(s);
+        }
+        else
+        {
+            msg = BinaryDecoder<DataToClient>(s);
+        }
+        return msg;
+    }
+
+    optional any message DecodeIncompleteResponseMessage(binary s)
+    {
+        return DecodeSingleResponseMessage(s);
+    }
+}
+
+type FtpDataDecodingHelper : TCPDecodingHelper
+{
+    FtpDataDecodingHelper(any endpoint ept)
+    {
+        AcceptsCache = new FtpDataDecodingCache(ept, MessageDirection.Accepts);
+        IssuesCache = new FtpDataDecodingCache(ept, MessageDirection.Issues);
+    }
 }

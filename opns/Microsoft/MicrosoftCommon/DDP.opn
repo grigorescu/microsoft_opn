@@ -15,7 +15,7 @@ OPNAuthoring
         ],
     RevisionSummary = 
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "05/02/2012"}
+            new Revision{Class = RevisionClass.Major, Version = "366681", Date = "07/24/2014"}
         ]
 };
 
@@ -24,20 +24,20 @@ using Utility;
 using SCTP;
 using MPA;
 
-endpoint Server issues Segment  accepts Segment;
+endpoint Server issues mutable Segment  accepts mutable Segment;
 endpoint ReassemblyNode issues Segment accepts Segment
 {
     array<Segment> tagedSgments = [];
-    map<uint,array<Segment>> unTagedSgments= {};
+    map<uint,array<Segment>> unTaggedSgments= {};
     
     process this accepts s:Segment
     {
-        ReassembleSegment(s, ref tagedSgments, ref unTagedSgments);
+        ReassembleSegment(s, ref tagedSgments, ref unTaggedSgments);
     }
     
     process this issues s:Segment
     {
-        ReassembleSegment(s, ref tagedSgments, ref unTagedSgments);
+        ReassembleSegment(s, ref tagedSgments, ref unTaggedSgments);
     }
 }
 endpoint MediaDDP accepts DDPSegmentChunkMsg issues DDPSegmentChunkMsg
@@ -164,10 +164,10 @@ autostart actor ReassemblyNodeActor(ReassemblyNode reassemblyNode)
             reassemblyNode.tagedSgments = [];
         }
         
-        // map<uint,array<Segment>> unTagedSgments
-        if ((reassemblyNode.unTagedSgments.Values).Count > 0)
+        // map<uint,array<Segment>> unTaggedSgments
+        if ((reassemblyNode.unTaggedSgments.Values).Count > 0)
         {
-            foreach (var segments in reassemblyNode.unTagedSgments.Values) // segments type is array<Segment>
+            foreach (var segments in reassemblyNode.unTaggedSgments.Values) // segments type is array<Segment>
             {
                 foreach (var s in segments)
                 {
@@ -175,7 +175,7 @@ autostart actor ReassemblyNodeActor(ReassemblyNode reassemblyNode)
                     DisplayTopLevelMessage(s);
                 }
             }
-            reassemblyNode.unTagedSgments = {};
+            reassemblyNode.unTaggedSgments = {};
         }
     }
 }
@@ -213,23 +213,23 @@ message DDPStreamSessionControlMsg
 
 message Segment
 {
-    ((UntagedBufferModel where !value.T) | (TagedBufferModel where value.T)) bufferModel;
+    ((UntaggedBufferModel where !value.T) | (TaggedBufferModel where value.T)) BufferModel;
         
     binary Payload;
     
     override string ToString()
     {
-        return (bufferModel is UntagedBufferModel) ? "DDP Untagged Buffer Model" : "DDP Tagged Buffer Model";
+        return (BufferModel is UntaggedBufferModel) ? "DDP Untagged Buffer Model" : "DDP Tagged Buffer Model";
     }
 }
 
-type TagedBufferModel
+type TaggedBufferModel
 {
     bool T with BinaryEncoding{Width = 1}; 
     bool L with BinaryEncoding{Width = 1};
     byte Rsvd with BinaryEncoding{Width = 4}; 
     byte DV with BinaryEncoding{Width = 2};    
-    byte RsvdULP;
+    RsvdULPType RsvdULP with BinaryEncoding{WidthForComposedType = 8};
     uint STag;
     ulong TO;
         
@@ -238,13 +238,13 @@ type TagedBufferModel
     invariant DV == 1; 
 }
 
-type UntagedBufferModel
+type UntaggedBufferModel
 {
     bool T with BinaryEncoding{Width = 1}; 
     bool L with BinaryEncoding{Width = 1};
     byte Rsvd with BinaryEncoding{Width = 4}; 
     byte DV with BinaryEncoding{Width = 2};    
-    ulong RsvdULP with BinaryEncoding {Width = 40};
+    RsvdULPType RsvdULP with BinaryEncoding{WidthForComposedType = 40};
     uint QN;
     uint MSN;
     uint MO;   
@@ -254,37 +254,42 @@ type UntagedBufferModel
     invariant DV == 1;
 }
 
-void ReassembleSegment(Segment d, ref array<Segment> tagedSgments, ref map<uint,array<Segment>> unTagedSgments)
+type RsvdULPType
+{
+    binary Value;
+}
+
+void ReassembleSegment(Segment d, ref array<Segment> tagedSgments, ref map<uint,array<Segment>> unTaggedSgments)
 { 
-    if (d.bufferModel is UntagedBufferModel)
+    if (d.BufferModel is UntaggedBufferModel)
     {
-        UntagedBufferModel unTag = d.bufferModel as UntagedBufferModel;
+        UntaggedBufferModel unTag = d.BufferModel as UntaggedBufferModel;
         if (!unTag.L)
         {
-            if (unTag.QN in unTagedSgments)
+            if (unTag.QN in unTaggedSgments)
             {
-                unTagedSgments[unTag.QN] += [d];
+                unTaggedSgments[unTag.QN] += [d];
             }
             else
             {
-                unTagedSgments[unTag.QN] = [d];
+                unTaggedSgments[unTag.QN] = [d];
             }
         }
         else 
         {
-            if (unTagedSgments.Count == 0)
+            if (unTaggedSgments.Count == 0)
             {
                 dispatch (endpoint DDP.Server) accepts d;
             }
             else
             {
                 Segment seg = new Segment{};
-                UntagedBufferModel unTagbf = new UntagedBufferModel{};
+                UntaggedBufferModel unTagbf = new UntaggedBufferModel{};
                 seg.Payload = $[];
                 
-                if (unTag.QN in unTagedSgments)
+                if (unTag.QN in unTaggedSgments)
                 {
-                    UntagedBufferModel unTagSg = unTagedSgments[unTag.QN][0].bufferModel as UntagedBufferModel;
+                    UntaggedBufferModel unTagSg = unTaggedSgments[unTag.QN][0].BufferModel as UntaggedBufferModel;
                     unTagbf.T = unTagSg.T;
                     unTagbf.L = unTagSg.L;
                     unTagbf.Rsvd = unTagSg.Rsvd;
@@ -293,11 +298,11 @@ void ReassembleSegment(Segment d, ref array<Segment> tagedSgments, ref map<uint,
                     unTagbf.QN = unTagSg.QN;
                     unTagbf.MSN = unTagSg.MSN;
                     unTagbf.MO = unTagSg.MO;
-                    seg.bufferModel = unTagbf;
-                    for (int i = 0; i < unTagedSgments.Count; i++)
+                    seg.BufferModel = unTagbf;
+                    for (int i = 0; i < unTaggedSgments.Count; i++)
                     {
-                        seg.Payload += unTagedSgments[unTag.QN][0].Payload;
-                        seg.Origins += [unTagedSgments[unTag.QN][0]];
+                        seg.Payload += unTaggedSgments[unTag.QN][0].Payload;
+                        seg.Origins += [unTaggedSgments[unTag.QN][0]];
                     }
                     dispatch (endpoint DDP.Server) accepts seg;
                 }
@@ -306,7 +311,7 @@ void ReassembleSegment(Segment d, ref array<Segment> tagedSgments, ref map<uint,
     }
     else
     {
-        TagedBufferModel tag = d.bufferModel as TagedBufferModel;
+        TaggedBufferModel tag = d.BufferModel as TaggedBufferModel;
         if (!tag.L)
         {
             tagedSgments +=[d];
@@ -320,9 +325,9 @@ void ReassembleSegment(Segment d, ref array<Segment> tagedSgments, ref map<uint,
             else
             {
                 Segment seg = new Segment{};
-                TagedBufferModel tagbf = new TagedBufferModel{};
+                TaggedBufferModel tagbf = new TaggedBufferModel{};
                 seg.Payload = $[];
-                TagedBufferModel tagBfModel = tagedSgments[0].bufferModel as TagedBufferModel;
+                TaggedBufferModel tagBfModel = tagedSgments[0].BufferModel as TaggedBufferModel;
                 tagbf.T = tagBfModel.T;
                 tagbf.L = tagBfModel.L;
                 tagbf.Rsvd = tagBfModel.Rsvd;
@@ -330,7 +335,7 @@ void ReassembleSegment(Segment d, ref array<Segment> tagedSgments, ref map<uint,
                 tagbf.RsvdULP = tagBfModel.RsvdULP;
                 tagbf.STag = tagBfModel.STag;
                 tagbf.TO = tagBfModel.TO;
-                seg.bufferModel = tagbf;
+                seg.BufferModel = tagbf;
                 for (int i = 0; i < tagedSgments.Count; i++)
                 {
                     seg.Payload += tagedSgments[i].Payload;

@@ -15,7 +15,7 @@ OPNAuthoring
         ],
     RevisionSummary =
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "10/18/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "362740", Date = "04/18/2014"}
         ]
 };
 
@@ -23,8 +23,6 @@ using Standard;
 using IANA;
 using Utility;
 using UDP;
-using IPv4;
-using IPv6;
 
 endpoint Node over UDP.Host accepts Packet;
 
@@ -32,7 +30,7 @@ const set<byte> MADCAPMsgType = {1, 2, 3, 4, 5, 6, 7, 8};
 
 autostart actor MADCAPOverUDP(UDP.Host node)
 {
-    process node accepts s:UDP.Datagram where ((s.SourcePort is Port.MADCAP || s.DestinationPort is Port.MADCAP) && MADCAPMsgType[s.Payload[1]])
+    process node accepts s:UDP.Datagram where s.Payload.Count > 1 && ((s.SourcePort is Port.MADCAP || s.DestinationPort is Port.MADCAP) && MADCAPMsgType[s.Payload[1]])
     {
         switch (s.Payload)
         {
@@ -55,9 +53,9 @@ message Packet
     
     override string ToString()
     {
-        return "MsgType=" + MadcapMessageTypes(MsgType) + 
-            ", TransID=" + Utility.DecToHexFormat(TransactionID) +
-            ", AddressFamily=" + AddressFamilyTable(AddrFamily);
+        return "MsgType: " + MadcapMessageTypes(MsgType) + 
+            ", TransID: " + Utility.DecToHexFormat(TransactionID) +
+            ", AddressFamily: " + AddressFamilyTable(AddrFamily);
     }
 }
 
@@ -72,6 +70,7 @@ pattern MessageTypes = enum byte
     Nak      = 6,
     Release  = 7,
     GetInfo  = 8,
+    ...
 };
 
 pattern FeatureName = enum ushort
@@ -168,7 +167,7 @@ type MulticastScope[ushort AddrFamily]
 {
     (ushort where value == 4) Code;
     ushort Length where ValidationCheck(value >= 1, null, "The code for Multicast Scope option is 4, and its minimum length is 1.");
-    array<ScopeIDType[AddrFamily]> ScopeID with BinaryEncoding{Length = (Length as uint) / AddressFamilySize(AddrFamily)};
+    array<ScopeIDType[AddrFamily]> ScopeID with BinaryEncoding{Length = (Length) / AddressFamilySize(AddrFamily)};
 }
 
 type ScopeIDType[ushort AddrFamily]
@@ -180,7 +179,7 @@ type OptionRequestList
 {
     (ushort where value == 5) Code;
     ushort Length where ValidationCheck(value >= 2, null, "The code for Option Request List option is 5, and its minimum length is 2.");
-    array<MadcapOption> Option with BinaryEncoding{Length = (Length as uint) / 2};
+    array<MadcapOption> Option with BinaryEncoding{Length = (Length) / 2};
 }
 
 type StartTime
@@ -202,7 +201,7 @@ type RequestedLanguage
 {
     (ushort where value == 8) Code;
     ushort Length;
-    string Language with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = (Length as uint)};
+    string Language with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = (Length)};
 }
 
 type MultiScopeList[ushort AddrFamily]
@@ -210,7 +209,7 @@ type MultiScopeList[ushort AddrFamily]
     (ushort where value == 9) Code;
     ushort Length;
     ushort Count with BinaryEncoding{Width = 8};
-    array<ScopeItem[AddrFamily]> Scopes with BinaryEncoding{Length = (Count as uint)};
+    array<ScopeItem[AddrFamily]> Scopes with BinaryEncoding{Length = (Count)};
 }
 
 type ScopeItem[ushort AddrFamily]
@@ -219,23 +218,23 @@ type ScopeItem[ushort AddrFamily]
     ScopeIDType[AddrFamily] LastAddress;
     ushort TTL with BinaryEncoding{Width = 8};
     ushort NameCount with BinaryEncoding{Width = 8};
-    array<MadcapNames> NameList with BinaryEncoding{Length = (NameCount as uint)};
+    array<MadcapNames> NameList with BinaryEncoding{Length = (NameCount)};
 }
 
 type MadcapNames
 {
     ushort Flags with BinaryEncoding{Width = 8};
     ushort LangLength with BinaryEncoding{Width = 8};
-    string LanguageTag with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = (LangLength as uint)};
+    string LanguageTag with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = (LangLength)};
     ushort NameLength with BinaryEncoding{Width = 8};
-    string Name with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = (NameLength as uint)};
+    string Name with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = (NameLength)};
 }
 
 type ListOfAddressRanges[ushort AddrFamily]
 {
     (ushort where value == 10) Code;
     ushort Length;
-    array<AddressRangeList[AddrFamily]> AddressList with BinaryEncoding{Length = (Length as uint) / (AddressFamilySize(AddrFamily) + 2)};
+    array<AddressRangeList[AddrFamily]> AddressList with BinaryEncoding{Length = (Length) / (AddressFamilySize(AddrFamily) + 2)};
 }
 
 type AddressRangeList[ushort AddrFamily]
@@ -263,7 +262,7 @@ type FeatureList
 type FeatureLists
 {
     ushort FeatureCount;
-    array<FeatureName> Feature with BinaryEncoding{Length = (FeatureCount as uint)};
+    array<FeatureName> Feature with BinaryEncoding{Length = (FeatureCount)};
 }
 
 type RetryTime
@@ -292,7 +291,7 @@ type Error
     (ushort where value == 16) Code;
     ushort Length where ValidationCheck(value >= 2, null, "The code for Error option is 16, and its minimum length is 2.");
     ushort ErrorCode;
-    binary ExtraData with BinaryEncoding{Length = (Length as uint) - 2};
+    binary ExtraData with BinaryEncoding{Length = (Length) - 2};
 }
 
 string MadcapMessageTypes(byte msgType)

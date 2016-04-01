@@ -2,8 +2,8 @@ protocol WSMetadataExchange with
 XmlEncodingDefaults{Namespace = WSMetadataExchangeNamespace},
 Documentation
 {
-    ProtocolName = "WSMetadataExchange",
-    ShortName = "WSME",
+    ProtocolName = "Web Services Metadata Exchange",
+    ShortName = "WSMetadataExchange",
     Description = "Web Services Metadata Exchange (WS-MetadataExchange)"
 },
 OPNAuthoring
@@ -15,7 +15,7 @@ OPNAuthoring
         ],
     RevisionSummary =
         [
-            new Revision{Class=RevisionClass.Major, Version="1.0.0", Date="10/31/2011"}
+            new Revision{Class=RevisionClass.Major, Version="361425", Date="03/26/2014"}
         ]
 };
 
@@ -96,17 +96,17 @@ contract OperationContract
         
         override string ToString()
         {
-            return this.ExtendingSummary + "WSMetadataExchange.GetMetadata Operation";
+            return "WSMetadataExchange.GetMetadata Operation";
         }
     } with SoapMessageInfo{
                 Action = WSMetadataExchangeGetmetadataAction,
                 ReplyAction = WSMetadataExchangeGetmetadataResponseAction};
 }
 
-autostart actor MessageActor(SOAP.Server node) precedes SOAP.Server
+autostart actor MessageActor(SOAP.Server node)
 {
     // request
-    process node accepts soap:SOAP.SoapMessage where soap.Action == WSMetadataExchangeGetmetadataAction
+    process node accepts soap:SOAP.SoapMessage where soap.WsaAction == WSMetadataExchangeGetmetadataAction
     {
         switch (soap.Body)
         {
@@ -117,7 +117,7 @@ autostart actor MessageActor(SOAP.Server node) precedes SOAP.Server
         }
     }
     // response
-    process node issues soap:SOAP.SoapMessage where soap.Action == WSMetadataExchangeGetmetadataResponseAction
+    process node issues soap:SOAP.SoapMessage where soap.WsaAction == WSMetadataExchangeGetmetadataResponseAction
     {
         switch (soap.Body)
         {
@@ -136,10 +136,18 @@ contract MessageContract
     accepts message GetMetadataRequest
     {
         GetMetadataType GetMetadata with XmlEncoding{Name = "GetMetadata"};
+        override string ToString()
+        {
+            return "Get Metadata Request Message";
+        }
     }
     issues message GetMetadataResponse
     {
         MetadataType Metadata with XmlEncoding{Name = "Metadata"}; 
+        override string ToString()
+        {
+            return "Get Metadata Response Message";
+        }
     }
 }
 

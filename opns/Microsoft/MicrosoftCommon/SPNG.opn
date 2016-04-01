@@ -1,4 +1,4 @@
-﻿module SPNG
+module SPNG
 with Asn1EncodingDefaults{EncodingRule = Asn1EncodingRule.BER},
 Documentation
 {
@@ -12,29 +12,29 @@ OPNAuthoring
     References = 
         [
             new Reference{Name = "RFC 4178"},
-            new Reference{Name = "MS-SPNG", Version = "11.2", ProgramName = ProgramName.WSPP},
+            new Reference{Name = "MS-SPNG", Version = "11.2", Date = "01/31/2013", ProgramName = ProgramName.WSPP},
         ],
     RevisionSummary = 
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "3/23/2012"}
+            new Revision{Class = RevisionClass.Major, Version = "363762", Date = "05/07/2014"}
         ]
 };
 
 using Standard;
 using IANA;
 using Utility;
-using ASN1;
+using Technologies.ASN1;
 
-pattern ContextFlags = BitString;
-pattern MechType = ObjectIdentifier;
-pattern MechTypeList = array<MechType>;
+pattern NegotiationToken = NegTokenInitPatter | NegTokenRespPatter;
 
-pattern NegotiationToken = NegTokenInitPattern | NegTokenRespPattern;
-
-type NegotiationTokenType
-{
-    NegotiationToken NegotiationToken;
+// WORKAROUND for bug that Asn1BerDecoder report exception when decode or-pattern.
+type NegotiationTokenType 
+{  
+    (NegTokenInitPatter | NegTokenRespPatter) SpnegoToken;
 } with Asn1Encoding{Flags = Asn1EncodingFlags.TagLengthSkipped};
+
+// Have to define a standalone pattern to consume explict tag.
+pattern NegTokenInitPatter = NegTokenInit with Asn1Encoding{TagClass = Asn1TagClass.ContextSpecific, TagNumber = 0, Tagging = Asn1Tagging.Explicit};
 
 // RFC 4178 Section 4.2.1
 type NegTokenInit
@@ -46,9 +46,10 @@ type NegTokenInit
     // Future Reference: Separate NegTokenInit and NegTokenInit2
     //optional OctetString MechListMIC with Asn1Encoding{TagClass = Asn1TagClass.ContextSpecific, TagNumber = 3, Tagging = Asn1Tagging.Explicit};  //RFC 4178 Section 4.2.1
     optional OctetString MechListMIC2 with Asn1Encoding{TagClass = Asn1TagClass.ContextSpecific, TagNumber = 4, Tagging = Asn1Tagging.Explicit}; // MS-SPNG 2.2.1
-}
+} 
 
-pattern NegTokenInitPattern = NegTokenInit with Asn1Encoding {TagNumber = 0, Tagging = Asn1Tagging.Explicit};
+// Have to define a standalone pattern to consume explict tag.
+pattern NegTokenRespPatter = NegTokenResp with Asn1Encoding {TagClass = Asn1TagClass.ContextSpecific, TagNumber = 1, Tagging = Asn1Tagging.Explicit};
 
 // RFC 4178 Section 4.2.2
 type NegTokenResp
@@ -57,9 +58,11 @@ type NegTokenResp
     optional MechType SupportedMech with Asn1Encoding{TagClass = Asn1TagClass.ContextSpecific, TagNumber = 1, Tagging = Asn1Tagging.Explicit}, DisplayInfo{ToText = MechTypeToText};
     optional (OctetString | any) ResponseToken with Asn1Encoding{TagClass = Asn1TagClass.ContextSpecific, TagNumber = 2, Tagging = Asn1Tagging.Explicit};
     optional (OctetString | any) MechListMIC with Asn1Encoding{TagClass = Asn1TagClass.ContextSpecific, TagNumber = 3, Tagging = Asn1Tagging.Explicit};
-}
+} 
 
-pattern NegTokenRespPattern = NegTokenResp with Asn1Encoding {TagNumber = 1, Tagging = Asn1Tagging.Explicit};
+pattern ContextFlags = BitString;
+pattern MechType = ObjectIdentifier with DisplayInfo{ToText = MechTypeToText};
+pattern MechTypeList = array<MechType>;
 
 pattern NegStateEnumerated = enum Integer
 {
@@ -79,19 +82,18 @@ type NegHints
 static string MechTypeToText(any data)
 {
     string summary = "";
-	if (data is optional MechType)
-	{
-	    array<int> intArray = (data as optional MechType) as array<int>;
-        summary += OidMapToText(Array2String<int>(intArray, "."));
-	}
- 	return summary;
+    if (data is intArray:array<int>)
+    {
+        summary += GetOidMeaning(Array2String<int>(intArray, "."));
+    }
+    return summary;
 }
 
 static string MechTypesToText(any data)
 {
     string summary = "[";
     MechTypeList mechTypeList = data as array<MechType>;
-    for (int i= 0; i< mechTypeList.Count; i++)
+    for (int i= 0; i < mechTypeList.Count; i++)
     {
         summary += MechTypeToText(mechTypeList[i]);
         if (i != mechTypeList.Count - 1)

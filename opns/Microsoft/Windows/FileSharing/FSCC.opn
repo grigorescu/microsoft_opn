@@ -11,32 +11,27 @@ OPNAuthoring
     Copyright = "(c) Microsoft Corporation",
     References = 
         [
-            new Reference{Name = "MS-FSCC", Version = "35.0", ProgramName = ProgramName.WSPP},
+            new Reference{Name = "MS-FSCC", Version = "38.0", Date = "08/19/2015", ProgramName = ProgramName.WSPP},
         ],
     RevisionSummary = 
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "09/02/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "381842", Date = "10/14/2015"}
         ]
 };
 
 using Standard;
 using Utility;
-using CommonResources;
+using InfrastructureResources;
 using DTYP;
-using Diagnostics; 
+using Diagnostics;
 
 // Types
 type ReparseDataBuffer
 {
-    (SymbolicLinkReparseDataBuffer | MountPointReparseDataBuffer | GenericReparseDataBuffer) DataBuffer;
-}
-
-type GenericReparseDataBuffer
-{
     (ReparseTags where (value & 0x80000000) == 0x80000000) ReparseTag; // High bit is set to 1.
     ushort ReparseDataLength;
     ushort Reserved;
-    array<byte> DataBuffer with BinaryEncoding{Length = ReparseDataLength as uint};
+    binary DataBuffer with BinaryEncoding{Length = ReparseDataLength};
 }
 
 type SymbolicLinkReparseDataBuffer
@@ -49,42 +44,66 @@ type SymbolicLinkReparseDataBuffer
     ushort PrintNameOffset;
     ushort PrintNameLength;
     uint Flags where value in {0, 1};
-    ([|SubstituteNameOffset == 0|] SubstituteNameFirst[SubstituteNameLength, PrintNameLength]
-    | [|PrintNameOffset == 0|] PrintNameFirst[SubstituteNameLength, PrintNameLength]) PathBuffer;
+    optional [|ReparseDataLength - 12 > 0|] PathBuffer[SubstituteNameOffset, SubstituteNameLength, PrintNameOffset, PrintNameLength] PathBuffer
+        with BinaryEncoding{WidthForComposedType = (ReparseDataLength - 12) * 8};
 }
 
-type SubstituteNameFirst[ushort SubstituteNameLength, ushort PrintNameLength]
+type PathBuffer[USHORT SubstituteNameOffset, USHORT SubstituteNameLength, USHORT PrintNameOffset, USHORT PrintNameLength]
 {
-    string SubstituteName with BinaryEncoding{Length = (SubstituteNameLength / 2) as uint};
-    string PrintName with BinaryEncoding{Length = (PrintNameLength / 2) as uint};
-}
-
-type PrintNameFirst[ushort SubstituteNameLength, ushort PrintNameLength]
-{
-    string PrintName with BinaryEncoding{Length = (PrintNameLength / 2) as uint};
-    string SubstituteName with BinaryEncoding{Length = (SubstituteNameLength / 2) as uint};
+    string SubstituteName with Encoding{Offset = SubstituteNameOffset, Size = SubstituteNameLength};
+    string PrintName with Encoding{Offset = PrintNameOffset, Size = PrintNameLength};
 }
 
 type MountPointReparseDataBuffer
 {
     (ReparseTags where value == ReparseTags.IOReparseTagMountPoint) ReparseTag; // 0xA0000003
     ushort ReparseDataLength;
-    array<byte> Reserved with BinaryEncoding{Length = 2};
+    ushort Reserved;
     ushort SubstituteNameOffset;
     ushort SubstituteNameLength;
     ushort PrintNameOffset;
     ushort PrintNameLength;
-    ([|SubstituteNameOffset == 0|] SubstituteNameFirst[SubstituteNameLength, PrintNameLength]
-    | [|PrintNameOffset == 0|] PrintNameFirst[SubstituteNameLength, PrintNameLength]) PathBuffer;
+    optional [|ReparseDataLength - 8 > 0|] PathBuffer[SubstituteNameOffset, SubstituteNameLength, PrintNameOffset, PrintNameLength] PathBuffer
+        with BinaryEncoding{WidthForComposedType = (ReparseDataLength - 8) * 8};
 }
+
+// 2.1.2.6 Network File System (NSF) Reparse Data Buffer
+type NetworkFileSystemReparseDataBuffer
+{
+    (uint where value == 0x80000014) ReparseTag; // 0x80000014
+    ushort ReparseDataLength;
+    ushort Reserved;
+    NetworkFileSystemReparseDataBuffer_Type Type;
+    optional [|ReparseDataLength - 8 > 0|]
+    (
+        [|NetworkFileSystemReparseDataBuffer_Type.NFS_SPECFILE_CHR == Type || 
+            NetworkFileSystemReparseDataBuffer_Type.NFS_SPECFILE_BLK == Type|] DeviceNumbers | 
+        [|NetworkFileSystemReparseDataBuffer_Type.NFS_SPECFILE_LNK == Type|] string | binary
+    ) DataBuffer with BinaryEncoding{WidthForComposedType = (ReparseDataLength - 8) * 8};
+}
+
+type DeviceNumbers
+{
+    uint MajorDeviceNumbers;
+    uint MinorDeviceNumbers;
+}
+
+pattern NetworkFileSystemReparseDataBuffer_Type = enum ulong
+{
+    NFS_SPECFILE_LNK = 0x00000000014b4e4c,
+    NFS_SPECFILE_CHR = 0x0000000000524843,
+    NFS_SPECFILE_BLK = 0x00000000004b4c42,
+    NFS_SPECFILE_FIFO = 0x000000004F464946,
+    NFS_SPECFILE_SOCK = 0x000000004B434F53,
+};
 
 type ReparseGuidDataBuffer 
 {
     (ReparseTags where (value & 0x80000000) == 0x00000000) ReparseTag; // High bit is set to 0.
     ushort ReparseDataLength;
-    array<byte> Reserved with BinaryEncoding{Length = 2};
+    ushort Reserved;
     ushort ReparseGuid;
-    array<byte> DataBuffer with BinaryEncoding{Length = ReparseDataLength as uint};
+    binary DataBuffer with BinaryEncoding{Length = ReparseDataLength};
 }
 
 type FileObjectIdBufferType1
@@ -92,7 +111,7 @@ type FileObjectIdBufferType1
     guid ObjectId;
     guid BirthVolumeId;
     guid BirthObjectId;
-    guid DomainId where value == {00000000-0000-0000-0000-000000000000}; 
+    guid DomainId where value == {00000000-0000-0000-0000-000000000000};
 }
 
 type FileObjectIdBufferType2
@@ -106,7 +125,7 @@ pattern FileObjectIdBuffer = FileObjectIdBufferType1 | FileObjectIdBufferType2;
 type FileNameInformation
 {
     uint FileNameLength;
-    string FileName with BinaryEncoding{Length = (FileNameLength / 2) as uint};
+    string FileName with BinaryEncoding{Length = (FileNameLength / 2)};
 }
 
 type FSCTLCreateOrGetObjectIDReply
@@ -116,8 +135,34 @@ type FSCTLCreateOrGetObjectIDReply
 
 type FSCTLDeleteReparsePointRequest
 {
-    (ReparseGuidDataBuffer | ReparseDataBuffer) DeleteReparsePointDataBuffer;
+    ([|stream.RemainingByteLength >= 4|] 
+        ([|(stream.PeekByte(stream.BitPosition + 24) & 0x80) == 0|] ReparseGuidDataBuffer
+        | [|stream.PeekByteCompare(stream.BitPosition, [0x0C, 0x00, 0x00, 0xA0])|] SymbolicLinkReparseDataBuffer
+        | [|stream.PeekByteCompare(stream.BitPosition, [0x03, 0x00, 0x00, 0xA0])|] MountPointReparseDataBuffer
+        | [|stream.PeekByteCompare(stream.BitPosition, [0x14, 0x00, 0x00, 0x80])|] NetworkFileSystemReparseDataBuffer
+        | ReparseDataBuffer)) DeleteReparsePointDataBuffer;
 }
+
+// 2.3.7 FSCTL_DUPLICATE_EXTENTS_TO_FILE Request
+type FSCTLDuplicateExtensToFileRequest
+{
+    SMB2Fileid SourceFileID;
+    UINT64 SourceFileOffset;
+    UINT64 TargetFileOffset;
+    UINT64 ByteCount;
+}
+
+// [MS-SMB2] 2.2.14.1   SMB2_FILEID
+type SMB2Fileid
+{
+    UINT64 Persistent with DisplayInfo{ToText = (any data) => Utility.DecToHexFormat(data)};
+    UINT64 Volatile with DisplayInfo{ToText = (any data) => Utility.DecToHexFormat(data)};
+
+    override string ToString()
+    {
+        return "Persistent = " + Utility.DecToHexFormat(Persistent) + ", Volatile = " + Utility.DecToHexFormat(Volatile);
+    }
+};
 
 type FSCTLFilesystemGetStatisticsReply
 {
@@ -296,6 +341,24 @@ type FSCTLGetNtfsVolumeDataReply
     NtfsVolumeDataBuffer NtfsVolumeDataBuffer;
 }
 
+// 2.3.18 FSCTL_GET_REFS_VOLUME_DATA Reply
+type FSCTLGetREFSVolumeDataReply
+{
+    uint ByteCount;
+    uint MajorVersion;
+    uint MinorVersion;
+    uint BytesPerPhysicalSector;
+    ulong VolumeSerialNumber;
+    ulong NumberSectors;
+    ulong TotalClusters;
+    ulong FreeClusters;
+    ulong TotalReserved;
+    uint BytesPerSector;
+    uint BytesPerCluster;
+    ulong MaximumSizeOfResidentFile;
+    binary Reserved with BinaryEncoding{Length = 80};
+}
+
 type NtfsVolumeDataBuffer
 {
     ulong VolumeSerialNumber;
@@ -321,7 +384,12 @@ type FSCTLGetObjectIdReply
 
 type FSCTLGetReparsePointReply
 {
-    (ReparseGuidDataBuffer | ReparseDataBuffer) GetReparsePointDataBuffer;
+    ([|stream.RemainingByteLength >= 4|] 
+        ([|(stream.PeekByte(stream.BitPosition + 24) & 0x80) == 0|] ReparseGuidDataBuffer
+        | [|stream.PeekByteCompare(stream.BitPosition, [0x0C, 0x00, 0x00, 0xA0])|] SymbolicLinkReparseDataBuffer
+        | [|stream.PeekByteCompare(stream.BitPosition, [0x03, 0x00, 0x00, 0xA0])|] MountPointReparseDataBuffer
+        | [|stream.PeekByteCompare(stream.BitPosition, [0x14, 0x00, 0x00, 0x80])|] NetworkFileSystemReparseDataBuffer
+        | ReparseDataBuffer)) GetReparsePointDataBuffer;
 }
 
 type FSCTLGetRetrievalPointersRequest
@@ -346,14 +414,14 @@ type Extents
 type FSCTLIsPathnameValidRequest
 {
     uint PathNameLength;
-    string PathName with BinaryEncoding{Length = (PathNameLength / 2) as uint};
+    string PathName with BinaryEncoding{Length = (PathNameLength / 2)};
 }
 
 type FSCTLLmrSetLinkTrackingInformationRequestForSmb
 {
     uint TargetFileObject;
     uint TargetLinkTrackingInformationLength;
-    ([|TargetLinkTrackingInformationLength < 36|] TargetLinkTrackingInformationBuffer1 | TargetLinkTrackingInformationBuffer2 ) TargetLinkTrackingInformationBuffer;
+    ([|TargetLinkTrackingInformationLength < 36|] TargetLinkTrackingInformationBuffer1 | TargetLinkTrackingInformationBuffer2) TargetLinkTrackingInformationBuffer;
 }
 
 type FSCTLLmrSetLinkTrackingInformationRequestForSmb2
@@ -376,14 +444,14 @@ type TargetLinkTrackingInformationBuffer2
     string NetBIOSName with BinaryEncoding{TextEncoding = TextEncoding.ASCII};
 }
 
-type FSCTLPipePeekReply[ULONG outputCount]
+type FSCTLPipePeekReply[ULONG OutputCount]
 {
     NamedPipeState NamedPipeState where ValidationCheckEnumValue(value in {0x00000003, 0x00000004}, null, true, ReferenceType.Type, "FSCC", "NamedPipeState", "FSCTLPipePeekReply", "0x00000003, 0x00000004", value);
     uint ReadDataAvailable;
     uint NumberOfMessages;
     uint MessageLength;
     // Future Reference: Add value validation:Name MUST not include the "\pipe\"
-    binary Data with BinaryEncoding{Length = (outputCount - 16) as uint};
+    binary Data with BinaryEncoding{Length = (OutputCount - 16)};
 }
 
 type FSCTLPipeWaitRequest
@@ -393,7 +461,7 @@ type FSCTLPipeWaitRequest
     byte TimeoutSpecified;
     byte Padding;
     // Future Reference: Add value validation:Name MUST not include the "\pipe\"
-    string Name with BinaryEncoding{Length = (NameLength / 2) as uint};
+    string Name with BinaryEncoding{Length = (NameLength / 2)};
 }
 
 type FSCTLPipeTransceiveReply
@@ -445,7 +513,7 @@ type FileRegionOutput
     uint TotalRegionEntryCount;
     uint RegionEntryCount;
     uint Reserved where ValidationCheckZero(value == 0, null, false, ReferenceType.Type, "FSCC", "Reserved", "FileRegionOutput", value);
-    array<FileRegionInfo> Region with BinaryEncoding{Length = RegionEntryCount as uint};
+    array<FileRegionInfo> Region with BinaryEncoding{Length = RegionEntryCount};
 }
 
 type FileRegionInfo
@@ -462,13 +530,13 @@ type FSCTLQueryOnDiskVolumeInfoReply
     ulong FileCount;
     ushort FsFormatMajVersion;
     ushort FsFormatMinVersion;
-    string FsFormatName with BinaryEncoding{Length = (24 / 2) as uint};
+    string FsFormatName with BinaryEncoding{Length = (24 / 2)};
     FILETIME FormatTime;
     ulong LastUpdateTime;
-    string CopyrightInfo with BinaryEncoding{Length = (68 / 2) as uint};
-    string AbstractInfo with BinaryEncoding{Length = (68 / 2) as uint};
-    string FormattingImplementationInfo with BinaryEncoding{Length = (68 / 2) as uint};
-    string LastModifyingImplementationInfo with BinaryEncoding{Length = (68 / 2) as uint};
+    string CopyrightInfo with BinaryEncoding{Length = (68 / 2)};
+    string AbstractInfo with BinaryEncoding{Length = (68 / 2)};
+    string FormattingImplementationInfo with BinaryEncoding{Length = (68 / 2)};
+    string LastModifyingImplementationInfo with BinaryEncoding{Length = (68 / 2)};
 }
 
 type FSCTLQuerySparingInfoReply
@@ -480,7 +548,19 @@ type FSCTLQuerySparingInfoReply
     uint FreeSpareBlocks;
 }
 
-type USNRecord
+type FSCTLReadFileUSNDataRequest
+{
+    optional ushort MinMajorVersion;
+    optional ushort MaxMajorVersion;
+}
+
+pattern FSCTLReadFileUSNDataResponse = [|RemainingBitLength(stream) >= 64|]
+    ([|PeekByte(stream, stream.BitPosition + 32) == 0x02|] USNRecordV2 |
+    [|PeekByte(stream, stream.BitPosition + 32) == 0x03|] USNRecordV3);
+
+// 2.3.46.1 USN_RECORD_COMMON_HEADER
+// 2.3.46.2 USN_RECORD_V2
+type USNRecordV2
 {
     uint RecordLength;
     ushort MajorVersion;
@@ -495,7 +575,26 @@ type USNRecord
     FileAttributes  FileAttributes;
     ushort FileNameLength;
     ushort FileNameOffset;
-    string FileName with BinaryEncoding{Length = (FileNameLength / 2) as uint};
+    string FileName with BinaryEncoding{Length = (FileNameLength / 2)};
+}
+
+// 2.3.46.3 USN_RECORD_V3
+type USNRecordV3
+{
+    uint RecordLength;
+    ushort MajorVersion;
+    ushort MinorVersion;
+    UINT128 FileReferenceNumber;
+    UINT128 ParentFileReferenceNumber;
+    long  Usn;
+    FILETIME TimeStamp;
+    Reason Reason;
+    SourceInfo SourceInfo where ValidationCheckEnumValue(InRange<SourceInfo>(value), null, true, ReferenceType.Type, "FSCC", "SourceInfo", "USNRecord", "0x00000001, 0x00000002, 0x00000004", value);
+    uint SecurityId;
+    FileAttributes  FileAttributes;
+    ushort FileNameLength;
+    ushort FileNameOffset;
+    string FileName with BinaryEncoding{Length = (FileNameLength / 2)};
 }
 
 type FSCTLSetCompressionRequest
@@ -527,7 +626,9 @@ type FSCTLGetIntegrityInformationBuffer
 pattern ChecksumAlgorithm = enum ushort
 {
     ChecksumTypeNone    = 0x0000,
-    ChecksumTypeCRC64   = 0x0002
+    ChecksumTypeCRC32   = 0x0001,
+    ChecksumTypeCRC64   = 0x0002,
+    ...
 };
 
 pattern GetIntegrityInformationFlags = flags uint
@@ -559,12 +660,11 @@ type EncryptionBuffer
 
 pattern EncryptionOperation = enum uint
 {
-    FileSetEncryption                           = 0x00000001,
-    FileClearEncryption                         = 0x00000002,
-    StreamSetEncryption                         = 0x00000003,
-    StreamClearEncryption                       = 0x00000004,
+    FileSetEncryption     = 0x00000001,
+    FileClearEncryption   = 0x00000002,
+    StreamSetEncryption   = 0x00000003,
+    StreamClearEncryption = 0x00000004,
 };
-
 
 type DecryptionStatusBuffer
 {
@@ -586,8 +686,10 @@ pattern SetIntegrityInformationFlags = flags uint
 pattern SetIntegrityChecksumAlgorithm = enum ushort
 {
     ChecksumTypeNone            = 0x0001,
+    ChecksumTypeCrc32           = 0x0002,
     ChecksumTypeCrc64           = 0x0002,
-    ChecksumTypeUnchanged       = 0xFFFF
+    ChecksumTypeUnchanged       = 0xFFFF,
+    ...
 };
 
 type FSCTLSetObjectIdRequest
@@ -602,7 +704,12 @@ type FSCTLSetObjectIdExtendedRequest
 
 type FSCTLSetReparsePointRequest
 {
-    (ReparseGuidDataBuffer | ReparseDataBuffer) SetReparsePointDataBuffer;
+    ([|stream.RemainingByteLength >= 4|] 
+        ([|(stream.PeekByte(stream.BitPosition + 24) & 0x80) == 0|] ReparseGuidDataBuffer
+        | [|stream.PeekByteCompare(stream.BitPosition, [0x0C, 0x00, 0x00, 0xA0])|] SymbolicLinkReparseDataBuffer
+        | [|stream.PeekByteCompare(stream.BitPosition, [0x03, 0x00, 0x00, 0xA0])|] MountPointReparseDataBuffer
+        | [|stream.PeekByteCompare(stream.BitPosition, [0x14, 0x00, 0x00, 0x80])|] NetworkFileSystemReparseDataBuffer
+        | ReparseDataBuffer)) SetReparsePointDataBuffer;
 }
 
 type FSCTLSetSparseRequest
@@ -621,8 +728,8 @@ type FSCTLSisCopyfileRequest
     uint SourceFileNameLength;
     uint DestinationFileNameLength;
     SisCopyfileFlags Flags;
-    string SourceFileName with BinaryEncoding{Length = (SourceFileNameLength / 2) as uint};
-    string DestinationFileName with BinaryEncoding{Length = (DestinationFileNameLength / 2) as uint};
+    string SourceFileName with BinaryEncoding{Length = (SourceFileNameLength / 2)};
+    string DestinationFileName with BinaryEncoding{Length = (DestinationFileNameLength / 2)};
 }
 
 pattern SisCopyfileFlags = flags uint
@@ -633,7 +740,7 @@ pattern SisCopyfileFlags = flags uint
 
 type FSCTLWriteUSNCloseRecordReply
 {
-    long Usn where ValidationCheckGreaterThanOrEqualTo(value >= 0, null, true, ReferenceType.Type, "FSCC", "Usn", "FSCTLWriteUSNCloseRecordReply", COMMON_STR_ZERO, value);
+    long Usn where ValidationCheckGreaterThanOrEqualTo(value >= 0, null, true, ReferenceType.Type, "FSCC", "Usn", "FSCTLWriteUSNCloseRecordReply", INFRASTRUCTURE_STR_ZERO, value);
 }
 
 type FSCTLFileLevelTrimRequest
@@ -670,8 +777,8 @@ type FSCTLOffloadReadInput
     uint Flags;
     uint TokenTimeToLive;
     uint Reserved where ValidationCheckZero(value == 0x00000000, null, false, ReferenceType.Type, "FSCC", "Reserved", "FSCTLOffloadReadInput", value);
-    ulong FileOffset where ValidationCheckGreaterThanOrEqualTo(value >= 0x0000000000000000, null, true, ReferenceType.Type, "FSCC", "FileOffset", "FSCTLOffloadReadInput", COMMON_STR_ZERO, value);
-    ulong CopyLength where ValidationCheckGreaterThanOrEqualTo(value >= 0x0000000000000000, null, true, ReferenceType.Type, "FSCC", "CopyLength", "FSCTLOffloadReadInput", COMMON_STR_ZERO, value);
+    ulong FileOffset where ValidationCheckGreaterThanOrEqualTo(value >= 0x0000000000000000, null, true, ReferenceType.Type, "FSCC", "FileOffset", "FSCTLOffloadReadInput", INFRASTRUCTURE_STR_ZERO, value);
+    ulong CopyLength where ValidationCheckGreaterThanOrEqualTo(value >= 0x0000000000000000, null, true, ReferenceType.Type, "FSCC", "CopyLength", "FSCTLOffloadReadInput", INFRASTRUCTURE_STR_ZERO, value);
 }
 
 type FSCTLOffloadReadReply
@@ -692,13 +799,15 @@ pattern FSCTLOffloadReadFlags = flags uint
     OffloadReadFlagAllZeroBeyondCurrentRange  = 0x00000001,
 };
 
+// 2.3.77 STORAGE_OFFLOAD_TOKEN
+// STORAGE_OFFLOAD_TOKEN structures are sent in big-endian format.
 type StorageOffloadToken
 {
     TokenType TokenType;
     ushort Reserved where ValidationCheckZero(value == 0, null, false, ReferenceType.Type, "FSCC", "Reserved", "StorageOffloadToken", value);
     ushort TokenIdLength where ValidationCheckValue(value == 504, null, false, ReferenceType.Type, "FSCC", "TokenIdLength", "StorageOffloadToken", 504, value);
     binary TokenId with BinaryEncoding{Length = 504};
-}
+} with BinaryEncodingDefaults{Endian = Endian.Big};
 
 pattern TokenType = enum uint
 {
@@ -715,9 +824,9 @@ type FSCTLOffloadWriteInput
 {
     uint Size;
     uint Flags;
-    ulong FileOffset where ValidationCheckGreaterThanOrEqualTo(value >= 0x0000000000000000, null, true, ReferenceType.Type, "FSCC", "FileOffset", "FSCTLOffloadWriteInput", COMMON_STR_ZERO, value);
-    ulong CopyLength where ValidationCheckGreaterThanOrEqualTo(value >= 0x0000000000000000, null, true, ReferenceType.Type, "FSCC", "CopyLength", "FSCTLOffloadWriteInput", COMMON_STR_ZERO, value);
-    ulong TransferOffset where ValidationCheckGreaterThanOrEqualTo(value >= 0x0000000000000000, null, true, ReferenceType.Type, "FSCC", "TransferOffset", "FSCTLOffloadWriteInput", COMMON_STR_ZERO, value);
+    ulong FileOffset where ValidationCheckGreaterThanOrEqualTo(value >= 0x0000000000000000, null, true, ReferenceType.Type, "FSCC", "FileOffset", "FSCTLOffloadWriteInput", INFRASTRUCTURE_STR_ZERO, value);
+    ulong CopyLength where ValidationCheckGreaterThanOrEqualTo(value >= 0x0000000000000000, null, true, ReferenceType.Type, "FSCC", "CopyLength", "FSCTLOffloadWriteInput", INFRASTRUCTURE_STR_ZERO, value);
+    ulong TransferOffset where ValidationCheckGreaterThanOrEqualTo(value >= 0x0000000000000000, null, true, ReferenceType.Type, "FSCC", "TransferOffset", "FSCTLOffloadWriteInput", INFRASTRUCTURE_STR_ZERO, value);
     StorageOffloadToken Token;
 }
 
@@ -730,7 +839,7 @@ type FSCTLOffloadWriteOutput
 {
     uint Size;
     uint Flags;
-    ulong LengthWritten where ValidationCheckGreaterThanOrEqualTo(value >= 0x0000000000000000, null, true, ReferenceType.Type, "FSCC", "LengthWritten", "FSCTLOffloadWriteInput", COMMON_STR_ZERO, value);
+    ulong LengthWritten where ValidationCheckGreaterThanOrEqualTo(value >= 0x0000000000000000, null, true, ReferenceType.Type, "FSCC", "LengthWritten", "FSCTLOffloadWriteInput", INFRASTRUCTURE_STR_ZERO, value);
 }
 
 type FileAccessInformation
@@ -858,10 +967,10 @@ type FileBothDirectoryInformation
     uint EaSize;
     byte ShortNameLength;
     byte Reserved;
-    string ShortName with BinaryEncoding{Length = (24 / 2) as uint};
-    string FileName  with BinaryEncoding{Length = (FileNameLength / 2) as uint};
-    optional [|NextEntryOffset != 0 && (FileNameLength + 6) % 8 != 0|] binary Padding with BinaryEncoding{Length = ConvertToValidLength((NextEntryOffset - 94 - FileNameLength) as uint)};
-    //optional [|NextEntryOffset != 0|] FileBothDirectoryInformation NextEntry;
+    string ShortName with BinaryEncoding{Length = (24 / 2)};
+    string FileName  with BinaryEncoding{Length = (FileNameLength / 2)};
+    optional [|NextEntryOffset != 0 && (FileNameLength + 6) % 8 != 0|] binary Padding with BinaryEncoding{Length = ConvertToValidLength((NextEntryOffset - 94 - FileNameLength))};
+    // optional [|NextEntryOffset != 0|] FileBothDirectoryInformation NextEntry;
     
     override string ToString()
     {
@@ -897,9 +1006,9 @@ type FileDirectoryInformation
     long AllocationSize;
     FileAttributes FileAttributes;
     uint FileNameLength;
-    string FileName with BinaryEncoding{Length = (FileNameLength / 2) as uint};
-    optional [|NextEntryOffset != 0 && FileNameLength % 8 != 0|] binary Padding with BinaryEncoding{Length = ConvertToValidLength((NextEntryOffset - 64 - FileNameLength) as uint)};
-    //optional [|NextEntryOffset != 0|] FileDirectoryInformation NextEntry;
+    string FileName with BinaryEncoding{Length = (FileNameLength / 2)};
+    optional [|NextEntryOffset != 0 && FileNameLength % 8 != 0|] binary Padding with BinaryEncoding{Length = ConvertToValidLength((NextEntryOffset - 64 - FileNameLength))};
+    // optional [|NextEntryOffset != 0|] FileDirectoryInformation NextEntry;
     
     override string ToString()
     {
@@ -919,7 +1028,7 @@ type FileEaInformation
 
 type FileEndOfFileInformation
 {
-    long EndOfFile where ValidationCheckGreaterThanOrEqualTo(value >= 0, null, true, ReferenceType.Type, "FSCC", "EndOfFile", "FileEndOfFileInformation", COMMON_STR_ZERO, value);
+    long EndOfFile where ValidationCheckGreaterThanOrEqualTo(value >= 0, null, true, ReferenceType.Type, "FSCC", "EndOfFile", "FileEndOfFileInformation", INFRASTRUCTURE_STR_ZERO, value);
 }
 
 // WORKAROUND for Bug#45787 [Runtime]MA crash with exception Stack overflow in SMB2
@@ -941,9 +1050,9 @@ type FileFullDirectoryInformation
     FileAttributes FileAttributes;
     uint FileNameLength;
     uint EaSize;
-    string FileName with BinaryEncoding{Length = (FileNameLength / 2) as uint};
-    optional [|NextEntryOffset != 0 && (FileNameLength + 4) % 8 != 0|] binary Padding with BinaryEncoding{Length = ConvertToValidLength((NextEntryOffset - 68 - FileNameLength) as uint)};
-    //optional [|NextEntryOffset != 0|] FileFullDirectoryInformation NextEntry;
+    string FileName with BinaryEncoding{Length = (FileNameLength / 2)};
+    optional [|NextEntryOffset != 0 && (FileNameLength + 4) % 8 != 0|] binary Padding with BinaryEncoding{Length = ConvertToValidLength((NextEntryOffset - 68 - FileNameLength))};
+    // optional [|NextEntryOffset != 0|] FileFullDirectoryInformation NextEntry;
     
     override string ToString()
     {
@@ -960,9 +1069,9 @@ type FileFullEaInformation
     /* Future Reference: Add value validation: The EaName MUST be less than 255 characters and MUST NOT contain any of the following characters:
      * ASCII values 0x00 - 0x1F,  \ / : * ? " < > | , + = [ ] ;
      */
-    string EaName with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = (EaNameLength + 1) as uint};
+    string EaName with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = (EaNameLength + 1)};
     array<byte> EaValue with BinaryEncoding{Length = EaValueLength};
-    optional [|NextEntryOffset != 0 && (NextEntryOffset - EaNameLength - 1 - EaValueLength - 8) > 0|] binary Padding with BinaryEncoding{Length = ConvertToValidLength((NextEntryOffset - EaNameLength - 1 - EaValueLength - 8) as uint)};
+    optional [|NextEntryOffset != 0 && (NextEntryOffset - EaNameLength - 1 - EaValueLength - 8) > 0|] binary Padding with BinaryEncoding{Length = ConvertToValidLength((NextEntryOffset - EaNameLength - 1 - EaValueLength - 8))};
     optional [|NextEntryOffset != 0|] FileFullEaInformation NextEntry;
     
     override string ToString()
@@ -998,9 +1107,9 @@ type FileGetEaInformation
 {
     uint NextEntryOffset;
     byte EaNameLength;
-    string EaName with BinaryEncoding{Length = EaNameLength as uint};
-    optional [|NextEntryOffset != 0 && ((EaNameLength + 1) % 4) != 0|] binary Padding with BinaryEncoding{Length = ConvertToValidLength((NextEntryOffset - 5 -EaNameLength) as uint)};
-    //optional [|NextEntryOffset != 0|] FileGetEaInformation NextEntry;
+    string EaName with BinaryEncoding{Length = EaNameLength};
+    optional [|NextEntryOffset != 0 && ((EaNameLength + 1) % 4) != 0|] binary Padding with BinaryEncoding{Length = ConvertToValidLength((NextEntryOffset - 5 - EaNameLength))};
+    // optional [|NextEntryOffset != 0|] FileGetEaInformation NextEntry;
 
     override string ToString()
     {
@@ -1026,9 +1135,9 @@ type FileLinkEntryInformation
     uint NextEntryOffset;
     long ParentFileId;
     uint FileNameLength;
-    string FileName with BinaryEncoding{Length = (FileNameLength / 2) as uint};
-    optional [|NextEntryOffset != 0 && (FileNameLength % 8) != 0|] binary Padding with BinaryEncoding{Length = ConvertToValidLength((NextEntryOffset - 16 -FileNameLength) as uint)};
-    //optional [|NextEntryOffset != 0|] FileLinkEntryInformation NextEntry;
+    string FileName with BinaryEncoding{Length = (FileNameLength / 2)};
+    optional [|NextEntryOffset != 0 && (FileNameLength % 8) != 0|] binary Padding with BinaryEncoding{Length = ConvertToValidLength((NextEntryOffset - 16 - FileNameLength))};
+    // optional [|NextEntryOffset != 0|] FileLinkEntryInformation NextEntry;
 
     override string ToString()
     {
@@ -1050,19 +1159,19 @@ type FileIdBothDirectoryInformation
     FILETIME LastAccessTime;
     FILETIME LastWriteTime;
     FILETIME ChangeTime;
-    long EndOfFile where ValidationCheckGreaterThanOrEqualTo(value >= 0, null, true, ReferenceType.Type, "FSCC", "EndOfFile", "FileIdBothDirectoryInformation", COMMON_STR_ZERO, value);
+    long EndOfFile where ValidationCheckGreaterThanOrEqualTo(value >= 0, null, true, ReferenceType.Type, "FSCC", "EndOfFile", "FileIdBothDirectoryInformation", INFRASTRUCTURE_STR_ZERO, value);
     long AllocationSize;
     FileAttributes  FileAttributes;
     uint FileNameLength;
     uint EaSize;
     byte ShortNameLength;
     byte Reserved1 where ValidationCheckZero(value == 0, null, true, ReferenceType.Type, "FSCC", "Reserved1", "FileIdBothDirectoryInformation", value);
-    string ShortName  with BinaryEncoding{Length = (24 / 2) as uint};
-    array<byte> Reserved2 where value == [00,00] with BinaryEncoding{Length = 2};
+    string ShortName  with BinaryEncoding{Length = (24 / 2)};
+    ushort Reserved2 where value == 0;
     ulong FileId;
-    string FileName  with BinaryEncoding{Length = (FileNameLength / 2) as uint};
-    optional [|NextEntryOffset != 0 && FileNameLength % 8 != 0|] binary Padding with BinaryEncoding{Length = ConvertToValidLength((NextEntryOffset - 104 - FileNameLength) as uint)};
-    //optional [|NextEntryOffset != 0|] FileIdBothDirectoryInformation NextEntry;
+    string FileName  with BinaryEncoding{Length = (FileNameLength / 2)};
+    optional [|NextEntryOffset != 0 && FileNameLength % 8 != 0|] binary Padding with BinaryEncoding{Length = ConvertToValidLength((NextEntryOffset - 104 - FileNameLength))};
+    // optional [|NextEntryOffset != 0|] FileIdBothDirectoryInformation NextEntry;
     
     override string ToString()
     {
@@ -1084,16 +1193,16 @@ type FileIdFullDirectoryInformation
     FILETIME LastAccessTime;
     FILETIME LastWriteTime;
     FILETIME ChangeTime;
-    long EndOfFile where ValidationCheckGreaterThanOrEqualTo(value >= 0, null, true, ReferenceType.Type, "FSCC", "EndOfFile", "FileIdFullDirectoryInformation", COMMON_STR_ZERO, value);
+    long EndOfFile where ValidationCheckGreaterThanOrEqualTo(value >= 0, null, true, ReferenceType.Type, "FSCC", "EndOfFile", "FileIdFullDirectoryInformation", INFRASTRUCTURE_STR_ZERO, value);
     long AllocationSize;
     FileAttributes  FileAttributes;
     uint FileNameLength;
     uint EaSize;
     array<byte> Reserved with BinaryEncoding{Length = 4};
     ulong FileId;
-    string FileName with BinaryEncoding{Length = (FileNameLength / 2) as uint};
-    optional [|NextEntryOffset != 0 && (FileNameLength % 8) != 0|] binary Padding with BinaryEncoding{Length = ConvertToValidLength((NextEntryOffset - 80 - FileNameLength) as uint)};
-    //optional [|NextEntryOffset != 0|] FileIdFullDirectoryInformation NextEntry;
+    string FileName with BinaryEncoding{Length = (FileNameLength / 2)};
+    optional [|NextEntryOffset != 0 && (FileNameLength % 8) != 0|] binary Padding with BinaryEncoding{Length = ConvertToValidLength((NextEntryOffset - 80 - FileNameLength))};
+    // optional [|NextEntryOffset != 0|] FileIdFullDirectoryInformation NextEntry;
 
     override string ToString()
     {
@@ -1115,16 +1224,16 @@ type FileIdGlobalTxDirectoryInformation
     FILETIME LastAccessTime;
     FILETIME LastWriteTime;
     FILETIME ChangeTime;
-    long EndOfFile where ValidationCheckGreaterThanOrEqualTo(value >= 0, null, true, ReferenceType.Type, "FSCC", "EndOfFile", "FileIdGlobalTxDirectoryInformation", COMMON_STR_ZERO, value);
+    long EndOfFile where ValidationCheckGreaterThanOrEqualTo(value >= 0, null, true, ReferenceType.Type, "FSCC", "EndOfFile", "FileIdGlobalTxDirectoryInformation", INFRASTRUCTURE_STR_ZERO, value);
     long AllocationSize;
     FileAttributes FileAttributes;
     uint FileNameLength;
     ulong FileId where ValidationCheckZero(value == 0, null, true, ReferenceType.Type, "FSCC", "FileId", "FileIdGlobalTxDirectoryInformation", value);
     guid LockingTransactionId;
     TxInfoFlags TxInfoFlags;
-    string FileName with BinaryEncoding{Length = (FileNameLength / 2) as uint};
-    optional [|NextEntryOffset != 0 && ((FileNameLength + 4) % 8) != 0|] binary Padding with BinaryEncoding{Length = ConvertToValidLength((NextEntryOffset - 92 - FileNameLength) as uint)};
-    //optional [|NextEntryOffset != 0|] FileIdGlobalTxDirectoryInformation NextEntry;
+    string FileName with BinaryEncoding{Length = (FileNameLength / 2)};
+    optional [|NextEntryOffset != 0 && ((FileNameLength + 4) % 8) != 0|] binary Padding with BinaryEncoding{Length = ConvertToValidLength((NextEntryOffset - 92 - FileNameLength))};
+    // optional [|NextEntryOffset != 0|] FileIdGlobalTxDirectoryInformation NextEntry;
 
     override string ToString()
     {
@@ -1150,7 +1259,7 @@ type FileLinkInformationForSMB
     array<byte> Reserved with BinaryEncoding{Length = 3};
     uint RootDirectory where ValidationCheckZero(value == 0, null, true, ReferenceType.Type, "FSCC", "RootDirectory", "FileLinkInformationForSMB", value);
     uint FileNameLength;
-    string FileName with BinaryEncoding{Length = (FileNameLength / 2) as uint};
+    string FileName with BinaryEncoding{Length = (FileNameLength / 2)};
 }
 
 type FileLinkInformationForSMB2
@@ -1159,7 +1268,7 @@ type FileLinkInformationForSMB2
     array<byte> Reserved with BinaryEncoding{Length = 7};
     ulong RootDirectory where ValidationCheckZero(value == 0, null, true, ReferenceType.Type, "FSCC", "RootDirectory", "FileLinkInformationForSMB2", value);
     uint FileNameLength;
-    string FileName with BinaryEncoding{Length = (FileNameLength / 2) as uint};
+    string FileName with BinaryEncoding{Length = (FileNameLength / 2)};
 }
 
 type FileMailslotQueryInformation
@@ -1183,17 +1292,17 @@ type FileModeInformation
 
 type Mode 
 {
-    byte Reserved2                          with BinaryEncoding{Width = 2}; 
+    byte Reserved2                          with BinaryEncoding{Width = 2};
     bool FileSynchronousIONonalert          with BinaryEncoding{Width = 1}; // 0x00000020
     bool FileSynchronousIOAlert             with BinaryEncoding{Width = 1}; // 0x00000010
     bool FileNoIntermediateBuffering        with BinaryEncoding{Width = 1}; // 0x00000008
     bool FileSequentialOnly                 with BinaryEncoding{Width = 1}; // 0x00000004
     bool FileWriteThrough                   with BinaryEncoding{Width = 1}; // 0x00000002
-    byte Reserved1                          with BinaryEncoding{Width = 1}; 
+    byte Reserved1                          with BinaryEncoding{Width = 1};
     
     byte Reserved4                          with BinaryEncoding{Width = 3};
     bool FileDeleteOnClose                  with BinaryEncoding{Width = 1}; // 0x00001000
-    byte Reserved3                          with BinaryEncoding{Width = 4}; 
+    byte Reserved3                          with BinaryEncoding{Width = 4};
     
     ushort Reserved5;
 }
@@ -1209,9 +1318,9 @@ type FileNamesInformation
     uint NextEntryOffset;
     uint FileIndex;
     uint FileNameLength;
-    string FileName with BinaryEncoding{Length = (FileNameLength / 2) as uint};
-    optional [|NextEntryOffset != 0 && ((FileNameLength + 4) % 8) != 0|] binary Padding with BinaryEncoding{Length = ConvertToValidLength((NextEntryOffset - 12 - FileNameLength) as uint)};
-    //optional [|NextEntryOffset != 0|] FileNamesInformation NextEntry;
+    string FileName with BinaryEncoding{Length = (FileNameLength / 2)};
+    optional [|NextEntryOffset != 0 && ((FileNameLength + 4) % 8) != 0|] binary Padding with BinaryEncoding{Length = ConvertToValidLength((NextEntryOffset - 12 - FileNameLength))};
+    // optional [|NextEntryOffset != 0|] FileNamesInformation NextEntry;
 
     override string ToString()
     {
@@ -1226,7 +1335,7 @@ type FileNetworkOpenInformation
     FILETIME LastWriteTime;
     FILETIME ChangeTime;
     long AllocationSize;
-    long EndOfFile where ValidationCheckGreaterThanOrEqualTo(value >= 0, null, true, ReferenceType.Type, "FSCC", "EndOfFile", "FileNetworkOpenInformation", COMMON_STR_ZERO, value);
+    long EndOfFile where ValidationCheckGreaterThanOrEqualTo(value >= 0, null, true, ReferenceType.Type, "FSCC", "EndOfFile", "FileNetworkOpenInformation", INFRASTRUCTURE_STR_ZERO, value);
     FileAttributes FileAttributes;
     uint Reserved;
 }
@@ -1328,12 +1437,12 @@ type FileQuotaInformation
     uint NextEntryOffset;
     uint SidLength;
     FILETIME ChangeTime;
-    long QuotaUsed where ValidationCheckGreaterThanOrEqualTo(value >= 0, null, true, ReferenceType.Type, "FSCC", "QuotaUsed", "FileQuotaInformation", COMMON_STR_ZERO, value);
+    long QuotaUsed where ValidationCheckGreaterThanOrEqualTo(value >= 0, null, true, ReferenceType.Type, "FSCC", "QuotaUsed", "FileQuotaInformation", INFRASTRUCTURE_STR_ZERO, value);
     long QuotaThreshold;
     long QuotaLimit;
     SID SID;
-    optional [|NextEntryOffset != 0 && (SidLength % 8) != 0|] binary Padding with BinaryEncoding{Length = ConvertToValidLength((NextEntryOffset - 40 -SidLength) as uint)};
-    //optional [|NextEntryOffset != 0|] FileQuotaInformation NextEntry;
+    optional [|NextEntryOffset != 0 && (SidLength % 8) != 0|] binary Padding with BinaryEncoding{Length = ConvertToValidLength((NextEntryOffset - 40 - SidLength))};
+    // optional [|NextEntryOffset != 0|] FileQuotaInformation NextEntry;
 
     override string ToString()
     {
@@ -1352,8 +1461,8 @@ type FileGetQuotaInformation
     uint NextEntryOffset;
     uint SidLength;
     SID SID;
-    optional [|NextEntryOffset != 0 && (SidLength % 8) != 0|] binary Padding with BinaryEncoding{Length = ConvertToValidLength((NextEntryOffset - 8 - SidLength) as uint)};
-    //optional [|NextEntryOffset != 0|] FileGetQuotaInformation NextEntry;
+    optional [|NextEntryOffset != 0 && (SidLength % 8) != 0|] binary Padding with BinaryEncoding{Length = ConvertToValidLength((NextEntryOffset - 8 - SidLength))};
+    // optional [|NextEntryOffset != 0|] FileGetQuotaInformation NextEntry;
 
     override string ToString()
     {
@@ -1367,7 +1476,7 @@ type FileRenameInformationForSMB
     array<byte> Reserved with BinaryEncoding{Length = 3};
     uint RootDirectory where ValidationCheckZero(value == 0, null, true, ReferenceType.Type, "FSCC", "RootDirectory", "FileRenameInformationForSMB", value);
     uint FileNameLength;
-    string FileName with BinaryEncoding{Length = (FileNameLength / 2) as uint};
+    string FileName with BinaryEncoding{Length = (FileNameLength / 2)};
 }
 
 type FileRenameInformationForSMB2
@@ -1376,12 +1485,12 @@ type FileRenameInformationForSMB2
     array<byte> Reserved with BinaryEncoding{Length = 7};
     ulong RootDirectory where ValidationCheckZero(value == 0, null, true, ReferenceType.Type, "FSCC", "RootDirectory", "FileRenameInformationForSMB2", value);
     uint FileNameLength;
-    string FileName with BinaryEncoding{Length = (FileNameLength / 2) as uint};
+    string FileName with BinaryEncoding{Length = (FileNameLength / 2)};
 }
 
 type FileReparsePointInformation
 {
-    long FileReferenceNumber where ValidationCheckGreaterThanOrEqualTo(value >= 0, null, true, ReferenceType.Type, "FSCC", "FileReferenceNumber", "FileReparsePointInformation", COMMON_STR_ZERO, value);
+    long FileReferenceNumber where ValidationCheckGreaterThanOrEqualTo(value >= 0, null, true, ReferenceType.Type, "FSCC", "FileReferenceNumber", "FileReparsePointInformation", INFRASTRUCTURE_STR_ZERO, value);
     ReparseTags Tag;
 }
 
@@ -1399,11 +1508,11 @@ type FileSfioReserveInformation
 type FileStandardInformation
 {
     long AllocationSize;
-    long EndOfFile where ValidationCheckGreaterThanOrEqualTo(value >= 0, null, true, ReferenceType.Type, "FSCC", "EndOfFile", "FileStandardInformation", COMMON_STR_ZERO, value);
+    long EndOfFile where ValidationCheckGreaterThanOrEqualTo(value >= 0, null, true, ReferenceType.Type, "FSCC", "EndOfFile", "FileStandardInformation", INFRASTRUCTURE_STR_ZERO, value);
     uint NumberOfLinks;
     BOOLEAN DeletePending;
     BOOLEAN Directory;
-    array<byte> Reserved with BinaryEncoding{Length = 2};
+    ushort Reserved;
 }
 
 type FileStandardLinkInformation
@@ -1427,9 +1536,9 @@ type FileStreamInformation
     uint StreamNameLength;
     long StreamSize;
     long StreamAllocationSize;
-    string StreamName with BinaryEncoding{Length = (StreamNameLength / 2) as uint};
-    optional [|NextEntryOffset != 0 && (StreamNameLength % 8) != 0|] binary Padding with BinaryEncoding{Length = (NextEntryOffset - 24 -StreamNameLength) as uint};
-    //optional [|NextEntryOffset != 0|] FileStreamInformation NextEntry;
+    string StreamName with BinaryEncoding{Length = (StreamNameLength / 2)};
+    optional [|NextEntryOffset != 0 && (StreamNameLength % 8) != 0|] binary Padding with BinaryEncoding{Length = (NextEntryOffset - 24 - StreamNameLength)};
+    // optional [|NextEntryOffset != 0|] FileStreamInformation NextEntry;
 
     override string ToString()
     {
@@ -1439,19 +1548,19 @@ type FileStreamInformation
 
 type FileValidDataLengthInformation
 {
-    long ValidDataLength where ValidationCheckGreaterThan(value > 0, null, true, ReferenceType.Type, "FSCC", "ValidDataLength", "FileValidDataLengthInformation", COMMON_STR_ZERO, value);
+    long ValidDataLength where ValidationCheckGreaterThan(value > 0, null, true, ReferenceType.Type, "FSCC", "ValidDataLength", "FileValidDataLengthInformation", INFRASTRUCTURE_STR_ZERO, value);
 }
 
 // 2.4.42   FileNotifyInformation
 type FileNotifyInformation
 {
-    ULONG NextEntryOffset where ValidationCheck(0 == NextEntryOffset % 4, null, DiagnosisLevel.Error, "SMB2: The NextEntryOffset field in type FileNotifyInformation MUST always be an integral multiple of 4.")
+    ULONG NextEntryOffset where ValidationCheck(0 == NextEntryOffset % 4, null, DiagnosisLevel.Error, "SMB2: The NextEntryOffset field in type FileNotifyInformation must always be an integral multiple of 4.")
         with Documentation
             {Description = "The offset, in bytes, from the beginning of this structure to the subsequent FILE_NOTIFY_INFORMATION structure. If there are no subsequent structures, the NextEntryOffset field MUST be 0. NextEntryOffset MUST always be an integral multiple of 4. The FileName array MUST be padded to the next 4-byte boundary counted from the beginning of the structure."};
 
     FileNotifyInformationAction Action
         where ValidationCheck(InRange<FileNotifyInformationAction>(value), null, DiagnosisLevel.Error,
-             () => Format(COMMON_STR_CHECK_VALUE_IN_RANGE, ["SMB2", "Action", COMMON_STR_TYPE, "FileNotifyInformation", COMMON_STR_MUST, "0x00000001", "0x00000005", Utility.DecToHexFormat(value)]))
+             () => Format(INFRASTRUCTURE_STR_CHECK_VALUE_IN_RANGE, ["SMB2", "Action", INFRASTRUCTURE_STR_TYPE, "FileNotifyInformation", INFRASTRUCTURE_STR_MUST, "0x00000001", "0x00000005", Utility.DecToHexFormat(value)]))
         with Documentation
             {Description = "The changes that occurred on the file. This field MUST contain one of the following values."};
 
@@ -1463,7 +1572,7 @@ type FileNotifyInformation
        Documentation
             {Description = "A Unicode string with the name of the file that changed."};
 
-    optional [|NextEntryOffset > FileNameLength + 12|] array<byte> EntryPadding with BinaryEncoding{Length = NextEntryOffset - FileNameLength - 12 as uint};
+    optional [|NextEntryOffset > FileNameLength + 12|] array<byte> EntryPadding with BinaryEncoding{Length = NextEntryOffset - FileNameLength - 12};
 }
 with Documentation
        {Description = "The FILE_NOTIFY_INFORMATION packet is sent in the SMB2 CHANGE_NOTIFY Response to return the changes that the client is being notified of. The structure consists of the following:"};
@@ -1490,8 +1599,8 @@ type FileFsAttributeInformation
 {
     FileSystemAttributes FileSystemAttributes;
     int MaximumComponentNameLength where ValidationCheck(value > 0 && value <= 510, null, "FSCC: The MaximumComponentNameLength field in type FileFsAttributeInformation must be greater than zero and must be less than or equal to 510, not " + value.ToString());
-    uint FileSystemNameLength where ValidationCheckGreaterThan(value > 0, null, true, ReferenceType.Type, "FSCC", "FileSystemNameLength", "FileFsAttributeInformation", COMMON_STR_ZERO, value);
-    string FileSystemName with BinaryEncoding{Length = (FileSystemNameLength / 2) as uint};
+    uint FileSystemNameLength where ValidationCheckGreaterThan(value > 0, null, true, ReferenceType.Type, "FSCC", "FileSystemNameLength", "FileFsAttributeInformation", INFRASTRUCTURE_STR_ZERO, value);
+    string FileSystemName with BinaryEncoding{Length = (FileSystemNameLength / 2)};
 }
 
 type FileSystemAttributes
@@ -1558,14 +1667,14 @@ type FileFsDriverPathInformation
     BOOLEAN DriverInPath;
     array<byte> Reserved with BinaryEncoding{Length = 3};
     uint DriverNameLength;
-    string DriverName with BinaryEncoding{Length = (DriverNameLength / 2) as uint};
+    string DriverName with BinaryEncoding{Length = (DriverNameLength / 2)};
 }
 
 type FileFsFullSizeInformation
 {
-    long TotalAllocationUnits where ValidationCheckGreaterThanOrEqualTo(value >= 0, null, true, ReferenceType.Type, "FSCC", "TotalAllocationUnits", "FileFsFullSizeInformation", COMMON_STR_ZERO, value);
-    long CallerAvailableAllocationUnits where ValidationCheckGreaterThanOrEqualTo(value >= 0, null, true, ReferenceType.Type, "FSCC", "CallerAvailableAllocationUnits", "FileFsFullSizeInformation", COMMON_STR_ZERO, value);
-    long ActualAvailableAllocationUnits where ValidationCheckGreaterThanOrEqualTo(value >= 0, null, true, ReferenceType.Type, "FSCC", "ActualAvailableAllocationUnits", "FileFsFullSizeInformation", COMMON_STR_ZERO, value);
+    long TotalAllocationUnits where ValidationCheckGreaterThanOrEqualTo(value >= 0, null, true, ReferenceType.Type, "FSCC", "TotalAllocationUnits", "FileFsFullSizeInformation", INFRASTRUCTURE_STR_ZERO, value);
+    long CallerAvailableAllocationUnits where ValidationCheckGreaterThanOrEqualTo(value >= 0, null, true, ReferenceType.Type, "FSCC", "CallerAvailableAllocationUnits", "FileFsFullSizeInformation", INFRASTRUCTURE_STR_ZERO, value);
+    long ActualAvailableAllocationUnits where ValidationCheckGreaterThanOrEqualTo(value >= 0, null, true, ReferenceType.Type, "FSCC", "ActualAvailableAllocationUnits", "FileFsFullSizeInformation", INFRASTRUCTURE_STR_ZERO, value);
     uint SectorsPerAllocationUnit;
     uint BytesPerSector;
 }
@@ -1573,7 +1682,7 @@ type FileFsFullSizeInformation
 type FileFsLabelInformation
 {
     uint VolumeLabelLength;
-    string VolumeLabel with BinaryEncoding{Length = (VolumeLabelLength / 2) as uint};
+    string VolumeLabel with BinaryEncoding{Length = (VolumeLabelLength / 2)};
 }
 
 type FileFsObjectIdInformation
@@ -1604,8 +1713,8 @@ pattern FileFsSectorSizeInformationFlags = flags uint
 
 type FileFsSizeInformation
 {
-    long TotalAllocationUnits where ValidationCheckGreaterThanOrEqualTo(value >= 0, null, true, ReferenceType.Type, "FSCC", "TotalAllocationUnits", "FileFsSizeInformation", COMMON_STR_ZERO, value);
-    long AvailableAllocationUnits where ValidationCheckGreaterThanOrEqualTo(value >= 0, null, true, ReferenceType.Type, "FSCC", "AvailableAllocationUnits", "FileFsSizeInformation", COMMON_STR_ZERO, value);
+    long TotalAllocationUnits where ValidationCheckGreaterThanOrEqualTo(value >= 0, null, true, ReferenceType.Type, "FSCC", "TotalAllocationUnits", "FileFsSizeInformation", INFRASTRUCTURE_STR_ZERO, value);
+    long AvailableAllocationUnits where ValidationCheckGreaterThanOrEqualTo(value >= 0, null, true, ReferenceType.Type, "FSCC", "AvailableAllocationUnits", "FileFsSizeInformation", INFRASTRUCTURE_STR_ZERO, value);
     uint SectorsPerAllocationUnit;
     uint BytesPerSector;
 }
@@ -1645,6 +1754,8 @@ pattern Characteristics = flags uint
     FileCharacteristicWebdavDevice       = 0x00002000,
     FileCharacteristicTSDevice           = 0x00001000,
     FileDeviceSecureOpen                 = 0x00000100,
+    FileDeviceAllowAppcontainerTraversal = 0x00020000,
+    FileProtableDevice                   = 0x00040000,
     ...
 };
 
@@ -1668,8 +1779,7 @@ pattern FileAttributes = flags uint
     ...
 };
     
-//Enums
-
+// Enums
 pattern CompressionFormat = enum ushort
 {
     CompressionFormatNone     = 0x0000,
@@ -1710,7 +1820,7 @@ type Reason
     bool UsnReasonFileDelete                    with BinaryEncoding{Width = 1}; // 0x0200
     bool UsnReasonFileCreate                    with BinaryEncoding{Width = 1}; // 0x0100
     
-    byte Reserved3                              with BinaryEncoding{Width = 2}; 
+    byte Reserved3                              with BinaryEncoding{Width = 2};
     bool UsnReasonStreamChange                  with BinaryEncoding{Width = 1}; // 0x200000
     bool UsnReasonReparsePointChange            with BinaryEncoding{Width = 1}; // 0x100000
     bool UsnReasonObjectIdChange                with BinaryEncoding{Width = 1}; // 0x080000
@@ -1719,7 +1829,7 @@ type Reason
     bool UsnReasonHardLinkChange                with BinaryEncoding{Width = 1}; // 0x010000
     
     bool USnReasonClose                         with BinaryEncoding{Width = 1}; // 0x80000000
-    byte Reserved4                              with BinaryEncoding{Width = 7}; 
+    byte Reserved4                              with BinaryEncoding{Width = 7};
 };
 
 pattern SourceInfo = enum uint 
@@ -1771,12 +1881,14 @@ pattern CtlCode = enum uint
     FSCTLCreateOrGetObjectID                        = 0x900c0,
     FSCTLDeleteObjectID                             = 0x900a0,
     FSCTLDeleteReparsePoint                         = 0x900ac,
+    FSCTLDuplicateExtensToFile                      = 0x98344,
     FSCTLFileLevelTrim                              = 0x98208,
     FSCTLFilesystemGetStatistics                    = 0x90060,
     FSCTLFindFilesBySID                             = 0x9008f,
     FSCTLGetCompression                             = 0x9003c,
     FSCTLGetIntegrityInformation                    = 0x9027c,
     FSCTLGetNTFSVolumeData                          = 0x90064,
+    FSCTLGetREFSVolumeData                          = 0x902D8,
     FSCTLGetObjectID                                = 0x9009c,
     FSCTLGetReparsePoint                            = 0x900a8,
     FSCTLGetRetrievalPointers                       = 0x90073,
@@ -1856,6 +1968,7 @@ pattern FileInformationClasses = enum byte
     FileNormalizedNameInformation       =    48,
     FileIdGlobalTxDirectoryInformation  =    50,
     FileStandardLinkInformation         =    54,
+    ...
 };
 
 pattern FileSystemInformationClasses = enum byte
@@ -1871,6 +1984,7 @@ pattern FileSystemInformationClasses = enum byte
     FileFsDriverPathInformation         =   9,
     FileFsVolumeFlagsInformation        =   10,
     FileFsSectorSizeInformation         =   11,
+    ...
 };
 
 // Below map consts and ToText funtions are defined for the summary of SMB2/SMB messages
@@ -1881,12 +1995,14 @@ const map<uint, string> FsctlNameMap =
         0x900C0 -> "FSCTL_CREATE_OR_GET_OBJECT_ID",
         0x900A0 -> "FSCTL_DELETE_OBJECT_ID",
         0x900AC -> "FSCTL_DELETE_REPARSE_POINT",
+        0x98344 -> "FSCTL_DUPLICATE_EXTENTS_TO_FILE",
         0x98208 -> "FSCTL_FILE_LEVEL_TRIM",
         0x90060 -> "FSCTL_FILESYSTEM_GET_STATISTICS",
         0x9008F -> "FSCTL_FIND_FILES_BY_SID",
         0x9003C -> "FSCTL_GET_COMPRESSION",
         0x9027C -> "FSCTL_GET_INTEGRITY_INFORMATION",
         0x90064 -> "FSCTL_GET_NTFS_VOLUME_DATA",
+        0x902D8 -> "FSCTL_GET_REFS_VOLUME_DATA",
         0x9009C -> "FSCTL_GET_OBJECT_ID",
         0x900A8 -> "FSCTL_GET_REPARSE_POINT",
         0x90073 -> "FSCTL_GET_RETRIEVAL_POINTERS",
@@ -1899,6 +2015,7 @@ const map<uint, string> FsctlNameMap =
         0x110018 -> "FSCTL_PIPE_WAIT",
         0x940CF -> "FSCTL_QUERY_ALLOCATED_RANGES",
         0x90058 -> "FSCTL_QUERY_FAT_BPB",
+        0x940cf -> "FSCTL_QUERY_ALLOCATED_RANGES",
         0x90284 -> "FSCTL_QUERY_FILE_REGIONS",
         0x9013C -> "FSCTL_QUERY_ON_DISK_VOLUME_INFO",
         0x90138 -> "FSCTL_QUERY_SPARING_INFO",

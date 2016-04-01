@@ -11,11 +11,11 @@ OPNAuthoring
     Copyright = "(c) Microsoft Corporation",
     References = 
         [
-             new Reference{Name = "MS-PCHC", Version = "4.0", ProgramName = ProgramName.WSPP},
+             new Reference{Name = "MS-PCHC", Version = "4.0", Date = "01/31/2013", ProgramName = ProgramName.WSPP},
         ],
     RevisionSummary = 
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "12/12/2012"}
+            new Revision{Class = RevisionClass.Major, Version = "357145", Date = "12/20/2013"}
         ]
 };
 
@@ -34,8 +34,7 @@ endpoint Server over HTTP.Server accepts Request issues Response;
 
 autostart actor PCHCOverHTTP(HTTP.Server server)
 {
-    process server accepts req:HttpContract.Request where GetUri(req).Contains("C574AC30-5794-4AEE-B1BB-6651C5315029") ||
-                                                          GetUri(req).Contains("0131501b-d67f-491b-9a40-c4bf27bcb4d4")
+    process server accepts req:HttpContract.Request where IsPCHC(req.Uri)
     {
         switch(req.Payload)
         {
@@ -47,8 +46,7 @@ autostart actor PCHCOverHTTP(HTTP.Server server)
         }
     }
     
-    process server issues res:HttpContract.Response where GetUri(res).Contains("C574AC30-5794-4AEE-B1BB-6651C5315029") ||
-                                                          GetUri(res).Contains("0131501b-d67f-491b-9a40-c4bf27bcb4d4")
+    process server issues res:HttpContract.Response where IsPCHC(res#Uri)
     {
         switch(res.Payload)
         {
@@ -58,6 +56,12 @@ autostart actor PCHCOverHTTP(HTTP.Server server)
             default =>
                 ThrowDecodingException("PCHC");
         }
+    }
+    
+    bool IsPCHC(optional UriType uriType)
+    {
+        return (uriType is uri:UriType) && uri.AbsPath is absPath:string && 
+            (absPath.Contains("C574AC30-5794-4AEE-B1BB-6651C5315029") || absPath.Contains("0131501b-d67f-491b-9a40-c4bf27bcb4d4"));
     }
 }
 

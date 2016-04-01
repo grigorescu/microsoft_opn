@@ -3,7 +3,7 @@ BinaryEncodingDefaults{Endian = Endian.Big, TextEncoding = TextEncoding.ASCII},
 Documentation
 {
     ProtocolName = "RPC: Remote Procedure Call Protocol Specification Version 2",
-    ShortName = "Sun RPC",
+    ShortName = "SunRPC",
     Description = ""
 },
 OPNAuthoring
@@ -17,15 +17,13 @@ OPNAuthoring
         ],
     RevisionSummary = 
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "09/08/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "370484", Date = "11/06/2014"}
         ]
 };
 
 using Utility;
-using IANA;
-using TCP;
 using UDP;
-using VirtualTransport;
+using TCP;
 
 endpoint Node over RecordMarking | over SunRpcOverTcp accepts RpcMsg issues RpcMsg;
 
@@ -34,15 +32,11 @@ endpoint SunRpcOverTcp over RecordMarking accepts SunRpcOverTcpHeader issues Sun
     map<uint, RpcGssProcT> ProcMapping = {};
     map<uint, RpcGssServiceT> ServiceMapping = {};
     
-    SunRPCOverTCPCache AcceptsCache = null;
-    SunRPCOverTCPCache IssuesCache = null;
+    SunRPCOverTCPCache AcceptsCache = new SunRPCOverTCPCache{Node = (endpoint Node over this), IsAccepts = true};
+    SunRPCOverTCPCache IssuesCache = new SunRPCOverTCPCache{Node = (endpoint Node over this), IsAccepts = false};
     
     process this accepts s:SunRpcOverTcpHeader
     {
-        if (AcceptsCache == null)
-        {
-            AcceptsCache = new SunRPCOverTCPCache{Node = (endpoint Node over this), IsAccepts = true};
-        }
         AcceptsCache.Add(s);
         if (s.LastFragment)
         {
@@ -52,10 +46,6 @@ endpoint SunRpcOverTcp over RecordMarking accepts SunRpcOverTcpHeader issues Sun
     
     process this issues s:SunRpcOverTcpHeader
     {
-        if (IssuesCache == null)
-        {
-            IssuesCache = new SunRPCOverTCPCache{Node = (endpoint Node over this), IsAccepts = false};
-        }
         IssuesCache.Add(s);
         if (s.LastFragment)
         {
@@ -66,7 +56,6 @@ endpoint SunRpcOverTcp over RecordMarking accepts SunRpcOverTcpHeader issues Sun
 
 type SunRPCOverTCPCache
 {
-    bool HasSegmentLost = false;
     array<any message> Origins = [];
     binary Buffer = $[];
     Node Node = null;
@@ -74,17 +63,8 @@ type SunRPCOverTCPCache
     
     void Add(SunRpcOverTcpHeader header)
     {
-        if (HasSegmentLost)
-        {
-            DispatchOriginsToRevive();
-            Buffer = header.Payload;
-            Origins = [header];
-        }
-        else
-        {
-            Buffer += header.Payload;
-            Origins += [header];
-        }
+        Buffer += header.Payload;
+        Origins += [header];
     }
     
     void DispatchOriginsToRevive()
@@ -122,70 +102,103 @@ autostart actor SunRpcOverTcpDestructor(SunRpcOverTcp sunRpcOverTcp)
     }
 }
 
-endpoint RecordMarking over VirtualTransport.Server | over UDP.Host accepts VirtualTransport.VirtualDataSegment issues VirtualTransport.VirtualDataSegment accepts UDP.Datagram
+endpoint RecordMarking over TCP.Server | over UDP.Host accepts TCP.Segment issues TCP.Segment accepts UDP.Datagram
 {
     map<uint, RpcGssProcT> ProcMapping = {};
     map<uint, RpcGssServiceT> ServiceMapping = {};
+
+    uint? ExpectedProgram;
+    set<uint> VerSet = {};
+    set<uint> XidSet = {};
     
-    process this accepts s:VirtualTransport.VirtualDataSegment
+    TCPDecodingHelper decodingHelper = null;
+
+    process this accepts s:TCP.Segment
     {
-        DecodeSunRpcOverTcpHeader(this, s, true);
+        if (decodingHelper == null)
+        {
+            decodingHelper = new TCPDecodingHelper();
+            decodingHelper.Initialize(new TCPDecodingCache(), new TCPDecodingCache(), "SunRPC", endpoint SunRpcOverTcp over this, 
+                                    IsSunRPCProtocol, IsCompleteSunRPC, 
+                                    (stream s) => BinaryDecoder<SunRpcOverTcpHeader>(s) as optional any message, 
+                                    (binary b) => BinaryDecoder<SunRpcOverTcpPartialHeader>(b) as optional any message);
+        }
+        AddXidSet(s.Payload, ref XidSet, true);
+        decodingHelper.TryDecode(s, MessageDirection.Accepts);
     }
-    process this issues s:VirtualTransport.VirtualDataSegment
+    process this issues s:TCP.Segment
     {
-        DecodeSunRpcOverTcpHeader(this, s, false);
+        if (decodingHelper == null)
+        {
+            decodingHelper = new TCPDecodingHelper();
+            decodingHelper.Initialize(new TCPDecodingCache(), new TCPDecodingCache(), "SunRPC", endpoint SunRpcOverTcp over this, 
+                                    IsSunRPCProtocol, IsCompleteSunRPC, 
+                                    (stream s) => BinaryDecoder<SunRpcOverTcpHeader>(s) as optional any message, 
+                                    (binary b) => BinaryDecoder<SunRpcOverTcpPartialHeader>(b) as optional any message);
+        }
+        decodingHelper.TryDecode(s, MessageDirection.Issues);
+        RemoveXidSet(s.Payload, ref XidSet, true);
     }
     process this accepts d:UDP.Datagram
     {
         SunRPCOverUDPMessageProcessing(this, ref ProcMapping, ref ServiceMapping, d);
     }
+
+    ~endpoint(RecordMarking server)
+    {
+        if (decodingHelper != null)
+        {
+            decodingHelper.ClearInDestructor();
+        }
+        ProcMapping = {};
+        ServiceMapping = {};
+        VerSet = {};
+        XidSet = {};
+    }
+    bool? IsSunRPCProtocol(binary b)
+    {
+        if (b.Count < 12)
+        {
+            return null;
+        }
+        if (b[8] != 0 || b[9] != 0 || b[10] != 0) // b[8] ~ b[11] is MsgType (0x0000 or 0x0001)
+        {
+            return false;
+        }
+        if (b[11] == 1) // if MsgType is 0x0001, it is a response, b[4] ~ b[7] is Xid
+        {
+            return ((((b[4] << 24) + (b[5] << 16) + (b[6] << 8) + b[7]) as uint) in XidSet);
+        }
+        if (b[11] == 0) // if MsgType is 0x0000, it is a request
+        {
+            if (b.Count < 24)
+            {
+                return null;
+            }
+            if (ExpectedProgram != null) // PortMapper may not assign 'ExpectedProgram', skip comparing it
+            {
+                uint prog = ((b[16] << 24) + (b[17] << 16) + (b[18] << 8) + b[19]) as uint;
+                uint ver = ((b[20] << 24) + (b[21] << 16) + (b[22] << 8) + b[23]) as uint;
+                return (prog == ExpectedProgram) && (ver in VerSet);
+            }
+            return true;
+        }
+        return false;
+    }
 }
 
-void DecodeSunRpcOverTcpHeader(RecordMarking recordMarking, VirtualDataSegment s, bool isAccepts)
+uint? IsCompleteSunRPC(binary b)
 {
-    var myNode = endpoint SunRpcOverTcp over recordMarking;
-    bool isSegmentLost = ((s#IsIncomplete != nothing && (s#IsIncomplete as bool)) || (s#SegmentLost != nothing && (s#SegmentLost as bool)));
-    if (isSegmentLost)
+    stream payloadStream = b;
+    if (payloadStream.ByteLength < 4)
     {
-        if (isAccepts)
-        {
-            if (myNode.AcceptsCache == null)
-            {
-                myNode.AcceptsCache = new SunRPCOverTCPCache{Node = (endpoint Node over myNode), IsAccepts = true};
-            }
-            myNode.AcceptsCache.HasSegmentLost = true; // Only set true if accept any Segment lost data and change to false after reassembly decoding.
-        }
-        else
-        {
-            if (myNode.IssuesCache == null)
-            {
-                myNode.IssuesCache = new SunRPCOverTCPCache{Node = (endpoint Node over myNode), IsAccepts = false};
-            }
-            myNode.IssuesCache.HasSegmentLost = true;
-        }
+        return null;
     }
-    switch (s.Payload)
-    {
-        case h:SunRpcOverTcpHeader from BinaryDecoder<SunRpcOverTcpHeader> =>
-            if (isAccepts)
-            {
-                dispatch myNode accepts h;
-            }
-            else
-            {
-                dispatch myNode issues h;
-            }
-        default =>
-            if (isSegmentLost)
-            {
-                ValidationCheck(false, s, DiagnosisLevel.Error, "SunRPC: Failed to parse SunRpcOverTcpHeader due to TCP segments lost.");
-                DisplayTopLevelMessage(s);
-            }
-            else
-            {
-                ThrowDecodingException("SunRPC", "SunRpcOverTcpHeader");
-            }
-    }
+    // Calculate the expected length
+    var uintInBig = BinaryDecoder<UintInBigEndian>(payloadStream.PeekBytes(payloadStream.BitPosition, 4)) as UintInBigEndian;
+    var length = (uintInBig.Value & 0x7FFFFFFF) + 4;
+
+    return length <= payloadStream.ByteLength ? 0 : length;
 }
 
 pattern AuthFlavor = enum int
@@ -215,7 +228,7 @@ type OpaqueAuth[OpaqueAuthType AuthType]
     | [|AuthType == OpaqueAuthType.CallVerifier || AuthType == OpaqueAuthType.ResponseVerifier|] Checksum[BodyLength]
     | Blob[BodyLength]
     ) Body with BinaryEncoding{Length = BodyLength};
-    binary BodyPadding with BinaryEncoding{Length = ((4 - (BodyLength % 4)) % 4) as uint};
+    binary BodyPadding with BinaryEncoding{Length = ((4 - (BodyLength % 4)) % 4)};
 }
 
 pattern MsgType = enum int
@@ -285,7 +298,19 @@ message SunRpcOverTcpHeader
     
     override string ToString()
     {
-        return "SunRpcOverTcp Blob";
+        return "SunRpcOverTcp Blob" + ", Fragment Length: " + (FragmentLength.ToString());
+    }
+}
+
+message SunRpcOverTcpPartialHeader
+{
+    bool LastFragment with BinaryEncoding{Width = 1};
+    uint FragmentLength with BinaryEncoding{Width = 31};
+    binary Payload with BinaryEncoding{MaxLength = FragmentLength};
+    
+    override string ToString()
+    {
+        return "SunRpcOverTcp Partial Blob";
     }
 }
 
@@ -301,16 +326,16 @@ message RpcMsg
         if (MType == MsgType.Call)
         {
             CallBody callBody = Body as CallBody;
-            text = "Call, Program = " + GetSunRPCKnownPrograms(callBody.Prog) + ", ProgramVersion = " + (callBody.Vers as string) + ", ProcedureNumber = " + (callBody.Proc as string);
+            text = "CALL, Program: " + GetSunRPCKnownPrograms(callBody.Prog) + ", ProgramVersion: " + (callBody.Vers as string) + ", ProcedureNumber: " + (callBody.Proc as string);
         }
-        else if (MType == MsgType.Reply)
+        else
         {
             ReplyBody replyBody = Body as ReplyBody;
-            text = "Reply, ReplyStatus = ";
+            text = "REPLY, ReplyStatus: ";
             if (replyBody.Stat == ReplyStat.MsgAccepted)
             {
                 AcceptedReply acceptedReply = replyBody.Reply as AcceptedReply;
-                text += "MsgAccepted, AcceptedReply = ";
+                text += "MsgAccepted, AcceptedReply: ";
                 switch (acceptedReply.Stat)
                 {
                     case AcceptStat.Success => text += "Success";
@@ -319,25 +344,22 @@ message RpcMsg
                     case AcceptStat.ProcUnavail => text += "ProcUnavail";
                     case AcceptStat.GarbageArgs => text += "GarbageArgs";
                     case AcceptStat.SystemErr => text += "SystemErr";
-                    default => text += "";
+                    default => text += "Unknown";
                 }
             }
             else if (replyBody.Stat == ReplyStat.MsgDenied)
             {
                 RejectedReply rejectedReply = replyBody.Reply as RejectedReply;
-                text += "MsgAccepted, RejectedReply = ";
+                text += "MsgAccepted, RejectedReply: ";
                 switch (rejectedReply.Stat)
                 {
                     case RejectStat.RpcMismatch => text += "RpcMismatch";
                     case RejectStat.AuthError => text += "AuthError";
-                    default => text += "";
+                    default => text += "Unknown";
                 }
             }
         }
-        else
-        {
-            text = "ParserError: Unknown MessageType";
-        }
+        
         return text;
     }
 }
@@ -351,12 +373,12 @@ type CallBody
     OpaqueAuth[OpaqueAuthType.CallCredential] Cred;
     OpaqueAuth[OpaqueAuthType.CallVerifier] Verf;
     /* procedure specific parameters start here */
-    //binary CallData; // Maybe RpcGssInitArg, RpcGssNoneData, RpcGssIntegData, RpcGssPrivData when Cred.Flavor == AuthFlavor.RpcsecGss
+    // binary CallData; // Maybe RpcGssInitArg, RpcGssNoneData, RpcGssIntegData, RpcGssPrivData when Cred.Flavor == AuthFlavor.RpcsecGss
     ([|Cred != nothing && Cred.Flavor == AuthFlavor.RpcsecGss && (((Cred.Body as RpcGssCredT).CredData as RpcGssCredVers1T).GssProc == RpcGssProcT.RpcsecGssInit || ((Cred.Body as RpcGssCredT).CredData as RpcGssCredVers1T).GssProc == RpcGssProcT.RpcsecGssInit)|] RpcGssInitArg
     | [|Cred != nothing && Cred.Flavor == AuthFlavor.RpcsecGss && ((Cred.Body as RpcGssCredT).CredData as RpcGssCredVers1T).GssProc == RpcGssProcT.RpcsecGssData && (((Cred.Body as RpcGssCredT).CredData as RpcGssCredVers1T).Service == RpcGssServiceT.RpcGssSvcNone)|] RpcGssNoneData
     | [|Cred != nothing && Cred.Flavor == AuthFlavor.RpcsecGss && ((Cred.Body as RpcGssCredT).CredData as RpcGssCredVers1T).GssProc == RpcGssProcT.RpcsecGssData && (((Cred.Body as RpcGssCredT).CredData as RpcGssCredVers1T).Service == RpcGssServiceT.RpcGssSvcIntegrity)|] RpcGssIntegData
     | [|Cred != nothing && Cred.Flavor == AuthFlavor.RpcsecGss && ((Cred.Body as RpcGssCredT).CredData as RpcGssCredVers1T).GssProc == RpcGssProcT.RpcsecGssData && (((Cred.Body as RpcGssCredT).CredData as RpcGssCredVers1T).Service == RpcGssServiceT.RpcGssSvcPrivacy)|] RpcGssPrivData
-    | [|Cred != nothing && Cred.Flavor != AuthFlavor.RpcsecGss|] BinaryCallDataType //WORKAROUND: 24283, Decoder failed when the binary type is selected in OR pattern
+    | [|Cred != nothing && Cred.Flavor != AuthFlavor.RpcsecGss|] BinaryCallDataType // WORKAROUND: 24283, Decoder failed when the binary type is selected in OR pattern
     ) CallData;
 }
 
@@ -380,7 +402,7 @@ type MismatchInfo
 
 type AcceptedReply
 {
-    OpaqueAuth[OpaqueAuthType.ResponseVerifier] Verf; //If gss_major is GssSComplete, the verifier's (the verf element in  the response) flavor field is set to RPCSEC_GSS, and the body field set to the checksum of the seq_window (in network order). 
+    OpaqueAuth[OpaqueAuthType.ResponseVerifier] Verf; // If gss_major is GssSComplete, the verifier's (the verf element in  the response) flavor field is set to RPCSEC_GSS, and the body field set to the checksum of the seq_window (in network order). 
     AcceptStat Stat;
     // Ref:RFC2203:
     // If the status of the message is SUCCESS, the format of the rest of
@@ -413,7 +435,7 @@ type AuthsysParms
     uint Stamp;
     uint MachineNameLength where value < 255;
     string Machinename with BinaryEncoding{Length = MachineNameLength};
-    array<byte> MachinenamePadding with BinaryEncoding{Length = ((4 - (MachineNameLength % 4)) % 4) as uint};
+    array<byte> MachinenamePadding with BinaryEncoding{Length = ((4 - (MachineNameLength % 4)) % 4)};
     uint Uid;
     uint Gid;
     uint GidsLength where value < 16;
@@ -460,7 +482,7 @@ type RpcGssCredVers1T
     RpcGssServiceT Service;  /* service used */
     uint HandleLength;
     binary Handle with BinaryEncoding{Length = HandleLength};  /* context handle */
-    binary HandlePadding with BinaryEncoding{Length = ((4 - (HandleLength % 4)) % 4) as uint};
+    binary HandlePadding with BinaryEncoding{Length = ((4 - (HandleLength % 4)) % 4)};
 }
 
 /*
@@ -476,21 +498,21 @@ const uint MaxSeq = 0x80000000;
 type RpcGssInitArg
 {
     uint GssTokenLength;
-    binary GssToken with BinaryEncoding{Length = GssTokenLength}; 
-    binary GssTokenPadding with BinaryEncoding{Length = ((4 - (GssTokenLength % 4)) % 4) as uint};
+    binary GssToken with BinaryEncoding{Length = GssTokenLength};
+    binary GssTokenPadding with BinaryEncoding{Length = ((4 - (GssTokenLength % 4)) % 4)};
 }
 
 type RpcGssInitRes
 {
     uint HandleLength where ValidationCheck(value > 0, null, "SunRPC: The Handle in type RpcGssInitRes is non-NULL opaque data that serves as the context identifier.");
     binary Handle with BinaryEncoding{Length = HandleLength};
-    binary HandlePadding with BinaryEncoding{Length = ((4 - (HandleLength % 4)) % 4) as uint};
-    RpcGssMajor GssMajor; //If gss_major is not one of GssSComplete or GssSContinueNeeded, the context setup has failed;
-    uint GssMinor; //The values for the gss_minor field are GSS-API mechanism specific and are defined in the mechanism's specification.
-    uint SeqWindow; //If the last sequence number seen is N, the server is prepared to receive requests with sequence numbers in the range N through (N - seq_window + 1), both inclusive.
-    uint GssTokenLength; //The gss_token field contains any token returned by the GSS_Accept_sec_context() call executed by the server.
-    binary GssToken with BinaryEncoding{Length = GssTokenLength}; 
-    binary GssTokenPadding with BinaryEncoding{Length = ((4 - (GssTokenLength % 4)) % 4) as uint};
+    binary HandlePadding with BinaryEncoding{Length = ((4 - (HandleLength % 4)) % 4)};
+    RpcGssMajor GssMajor; // If gss_major is not one of GssSComplete or GssSContinueNeeded, the context setup has failed;
+    uint GssMinor; // The values for the gss_minor field are GSS-API mechanism specific and are defined in the mechanism's specification.
+    uint SeqWindow; // If the last sequence number seen is N, the server is prepared to receive requests with sequence numbers in the range N through (N - seq_window + 1), both inclusive.
+    uint GssTokenLength; // The gss_token field contains any token returned by the GSS_Accept_sec_context() call executed by the server.
+    binary GssToken with BinaryEncoding{Length = GssTokenLength};
+    binary GssTokenPadding with BinaryEncoding{Length = ((4 - (GssTokenLength % 4)) % 4)};
 }
 
 type RpcGssNoneData
@@ -502,13 +524,13 @@ type RpcGssIntegData
 {
     // opaque databody_integ<>;
     uint DatabodyIntegLength;
-    RpcGssDataT[DatabodyIntegLength - 4] DatabodyInteg;// with BinaryEncoding{Length = DatabodyIntegLength};
-    binary DatabodyIntegPadding with BinaryEncoding{Length = ((4 - (DatabodyIntegLength % 4)) % 4) as uint};
+    RpcGssDataT[DatabodyIntegLength - 4] DatabodyInteg; // with BinaryEncoding{Length = DatabodyIntegLength};
+    binary DatabodyIntegPadding with BinaryEncoding{Length = ((4 - (DatabodyIntegLength % 4)) % 4)};
     uint ChecksumLength;
     // Represents the XDR encoded rpc_gss_data_t structure (note, this is not the checksum of the databody_integ field).
     // This is obtained using the GSS_GetMIC() call, with the same QOP as was used to compute the header checksum (in the verifier).
-    binary Checksum with BinaryEncoding{Length = ChecksumLength}; 
-    binary ChecksumPadding with BinaryEncoding{Length = ((4 - (ChecksumLength % 4)) % 4) as uint};
+    binary Checksum with BinaryEncoding{Length = ChecksumLength};
+    binary ChecksumPadding with BinaryEncoding{Length = ((4 - (ChecksumLength % 4)) % 4)};
 }
       
 type RpcGssDataT[uint ArgLength]
@@ -525,8 +547,8 @@ type RpcGssPrivData
     // opaque databody_priv<>
     // The GSS_Wrap() call returns an opaque octet stream (representing the encrypted rpc_gss_data_t structure) and its length, and this is encoded as the databody_priv field.
     uint DatabodyPrivLength;
-    binary DatabodyPriv with BinaryEncoding{Length = DatabodyPrivLength}; 
-    binary DatabodyPrivPadding with BinaryEncoding{Length = ((4 - (DatabodyPrivLength % 4)) % 4) as uint};
+    binary DatabodyPriv with BinaryEncoding{Length = DatabodyPrivLength};
+    binary DatabodyPrivPadding with BinaryEncoding{Length = ((4 - (DatabodyPrivLength % 4)) % 4)};
 }
 
 pattern RpcGssMajor = enum uint
@@ -626,7 +648,7 @@ void SunRPCOverUDPMessageProcessing(RecordMarking recMarkingEp, ref map<uint, Rp
                                         acceptedReply.ReplyData = BinaryDecoder<binary>(recordStream);
                                     }
                                 default => // Future Reference: RpcsecGssContinueInit && RpcsecGssDestroy
-                                    throw "SunRPC: Not implemented RpcGssProcT: " + (procMapping[m.Xid] as string )+ ".";
+                                    throw "SunRPC: Not implemented RpcGssProcT: " + (procMapping[m.Xid] as string) + ".";
                             }
                             procMapping = procMapping.Remove(m.Xid);
                         }
@@ -735,113 +757,90 @@ void SunRPCOverTCPMessageProcessing(SunRPCOverTCPCache overTCPCache, ref map<uin
                 dispatch overTCPCache.Node issues m;
             }
             overTCPCache.Origins = [];
-            overTCPCache.HasSegmentLost = false;
         default =>
-            overTCPCache.DispatchOriginsToRevive();
-            if (overTCPCache.HasSegmentLost)
-            {
-                ValidationCheck(false, null, DiagnosisLevel.Error, "SunRPC: Failed to parse RpcMsg due to TCP segments lost.");
-            }
-            else
-            {
-                ThrowDecodingException("SunRPC", "RpcMsg");
-            }
+            overTCPCache.Clear();
+            ThrowDecodingException("SunRPC", "RpcMsg");
     }
 }
 
-// used for assistant check for SunRpc to avoid port competition.
-bool IsSunRPC(binary payload)
+// Used for TCP processing rule of actor, not used by DC
+bool IsSunRPCRequest(binary b, set<uint> verSet, uint expectedProgram, ref bool isSunRPCFlag)
 {
-    return payload[4] == 0 && payload[5] == 0 && payload[6] == 0 && (payload[7] == 0 | payload[7] == 1);
+    if (isSunRPCFlag)
+    {
+        return true;
+    }
+    if (b.Count < 24)
+    {
+        return false;
+    }
+    isSunRPCFlag = b[8] == 0 && b[9] == 0 && b[10] == 0 && b[11] == 0 && 
+        (((b[16] << 24) + (b[17] << 16) + (b[18] << 8) + b[19]) as uint) == expectedProgram &&
+        (((b[20] << 24) + (b[21] << 16) + (b[22] << 8) + b[23]) as uint) in verSet;
+    return isSunRPCFlag;
+}
+// Used for assistant check for SunRpc to avoid port competition. Only for TCP processing rule of actor.
+bool IsSunRPC(binary payload, ref bool isSunRPCAssist)
+{
+    if (isSunRPCAssist)
+    {
+        return true;
+    }
+    if (payload.Count < 12)
+    {
+        return false;
+    }
+    isSunRPCAssist = payload[8] == 0 && payload[9] == 0 && payload[10] == 0 && (payload[11] == 0 || payload[11] == 1);
+    return isSunRPCAssist;
 }
 
-// Below codes are implemented for former obsoleted RFC's authentication
-//pattern AuthdesNamekind = enum int
-//{
-    //ADNFullName = 0,
-    //ADNNickName = 1    
-//}
-//
-//const MaxNetNameLen = 255;
-//
-//pattern DesBlock = binary with BinaryEncoding{Length = 8};
-//
-//type AuthdesFullname
-//{
-    //uint NameLength where value = MaxNetNameLen;
-    //string Name with BinaryEncoding{Length = ((4 - (255 % 4)) % 4) as uint};/* name of client                */
-    //DesBlock Key;/* PK encrypted conversation key */
-    //binary Window with BinaryEncoding{Length = 4};/* encrypted window              */
-//}
-//
-   ////union authdes_cred switch (authdes_namekind adc_namekind) {
-   ////case ADN_FULLNAME:
-      ////authdes_fullname adc_fullname;
-   ////case ADN_NICKNAME:
-      ////int adc_nickname;
-   ////};
-//type AuthdesCred
-//{
-    //AuthdesNamekind AdcNameKind;
-    //([|AdcNameKind == AuthdesNamekind.ADNFullName|] AuthdesFullname | [|AdcNameKind == AuthdesNamekind.ADNNickName|] int) AdcName;
-//}
-//
-////A timestamp encodes the time since midnight,   March 1, 1970.
-//type Timestamp
-//{
-    //uint Seconds;    /* seconds          */
-    //uint Useconds;   /* and microseconds */    
-//}
-//
-//type AuthdesVerfClnt
-//{
-    //DesBlock AdvTimestamp;    /* encrypted timestamp       */
-    //binary AdvWinverf with BinaryEncoding{Length = 4};      /* encrypted window verifier */    
-//}
-//
-//type AuthdesVerfSvr
-//{
-    //DesBlock AdvTimeverf;     /* encrypted verifier      */
-    //int AdvNickname;      /* new nickname for client */    
-//}
-   //
-//const Base = 3;
-//
-//const Modulus = "d4a0ba0250b6fd2ec626e7efd637df76c716e22d0944b88b";
-//
-//const PMapPort = 111;      /* portmapper port number */
-//
-//type Mapping
-//{
-    //uint Prog;
-    //uint Vers;
-    //uint Prot where value in [6, 17];
-    //uint Port;
-//}
-//
-//const IPPROTO_TCP = 6;      /* protocol number for TCP/IP */
-//
-//const IPPROTO_UDP = 17;     /* protocol number for UDP/IP */
-         //
-   ////A list of mappings:
-////
-         ////struct *pmaplist {
-            ////mapping map;
-            ////pmaplist next;
-         ////};
-//
-//type CallArgs
-//{
-    //uint Prog;
-    //uint Vers;
-    //uint Proc;
-    //binary Args with BinaryEncoding{Length = 4294967295};//opaque args<>; 2**32 -1
-//}         
-//
-//type CallResult
-//{
-    //uint Port;
-    //binary Res with BinaryEncoding{Length = 4294967295};//opaque res<>; 2**32 -1
-//}
-//
+// Used for UDP
+bool IsSunRPCRequest(binary b, set<uint> verSet, uint expectedProgram)
+{
+    return ((b.Count >= 20) && b[4] == 0 && b[5] == 0 && b[6] == 0 && b[7] == 0 &&
+        (((b[12] << 24) + (b[13] << 16) + (b[14] << 8) + b[15]) as uint) == expectedProgram &&
+        (((b[16] << 24) + (b[17] << 16) + (b[18] << 8) + b[19]) as uint) in verSet);
+}
+// Used for UDP
+bool IsSunRPCResponse(binary b, ref set<uint> xidSet)
+{
+    return ((b.Count >= 8) && b[4] == 0 && b[5] == 0 && b[6] == 0 && b[7] == 1 &&
+            (((b[0] << 24) + (b[1] << 16) + (b[2] << 8) + b[3]) as uint) in xidSet);
+}
+// used for assistant check for SunRpc to avoid port competition in UDP processing rule
+bool IsSunRPC(binary payload)
+{
+    if (payload.Count < 8)
+    {
+        return false;
+    }
+    return payload[4] == 0 && payload[5] == 0 && payload[6] == 0 && (payload[7] == 0 || payload[7] == 1);
+}
 
+void AddXidSet(binary payload, ref set<uint> xidSet, bool isTCP)
+{
+    int index = isTCP ? 4 : 0;
+    if (payload.Count < index + 4)
+        return;
+    
+    binary b = payload.Segment(index, 4);
+    uint bUint = BinaryPrimitiveTypeDecoder<uint>(b, Endian.Big) as uint;
+    if (!(bUint in xidSet))
+    {
+        xidSet[bUint] = true;
+    }
+}
+
+void RemoveXidSet(binary payload, ref set<uint> xidSet, bool isTCP)
+{
+    int index = isTCP ? 4 : 0;
+    if (payload.Count < index + 4)
+        return;
+    
+    binary b = payload.Segment(index, 4);
+    uint bUint = BinaryPrimitiveTypeDecoder<uint>(b, Endian.Big) as uint;
+    if (bUint in xidSet)
+    {
+        xidSet[bUint] = false;
+    }
+}

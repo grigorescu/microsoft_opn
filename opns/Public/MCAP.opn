@@ -15,15 +15,13 @@ OPNAuthoring
         ],
     RevisionSummary = 
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "10/25/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "362740", Date = "04/18/2014"}
         ]
 };
 
 using Standard;
 using Utility;
 using IP1394;
-using IPv4;
-
 
 endpoint Node
     accepts Message;
@@ -53,14 +51,28 @@ message Message
     override string ToString()
     {
         string summary;
-        summary = "MCAP message length:" + (Length as string) + ", OpCode: ";
+        summary = "Message Length: " + Length.ToString() + ", OpCode: ";
         if (OpCode == 0)
         {
-            summary = summary + "Advertise";
+            summary += "Advertise, Speed: ";
+            switch (MessageData.Speed) 
+            {
+                case 0 => summary += "S100";
+                case 1 => summary += "S200";
+                case 2 => summary += "S400";
+                case 3 => summary += "S800";
+                case 4 => summary += "S1600";
+                case 5 => summary += "S3200";
+                default => summary += "Unknown Value(" + (MessageData.Speed.ToString()) + ")";
+            }
         }
         else if (OpCode == 1)
         {
-            summary = summary + "Solicit";
+            summary += "Solicit";
+        }
+        else
+        {
+            summary += "Unknown(" + (OpCode.ToString()) + ")";
         }
         return summary;
     }
@@ -76,5 +88,5 @@ type MSGData
     byte Speed;
     byte Reserved1 where ValidationCheck(value == 0, null, "Reserved must be zero.");
     uint BandWidth where ValidationCheck(value == 0, null, "This field must be zero.");
-    optional [|(DataLength - 12) / 4 > 0|] array<IPv4Address> GroupAddress with BinaryEncoding{Length = (DataLength - 12) / 4 as uint};
+    optional [|(DataLength - 12) / 4 > 0|] array<IPv4Address> GroupAddress with BinaryEncoding{Length = (DataLength - 12) / 4};
 };

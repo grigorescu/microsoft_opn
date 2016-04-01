@@ -1,4 +1,4 @@
-﻿protocol IPCP 
+protocol IPCP 
     with BinaryEncodingDefaults{Endian = Endian.Big},
 Documentation
 {
@@ -20,14 +20,13 @@ OPNAuthoring
         ],
     RevisionSummary = 
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "11/28/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "362740", Date = "04/18/2014"}
         ]
 };
 
 using Standard;
 using PPP;
 using Utility;
-using IPv4;
 
 endpoint Node
     over PPP.Node
@@ -50,30 +49,29 @@ autostart actor IPCPOverPPP(PPP.Node node)
 
 message Datagram
 {
-    byte Code;
+    Code Code;
     byte Identifier;
     ushort Length;
     optional array<OptionType> Options;
 
     override string ToString()
     {
-        string display;
-        switch (Code)
-        {
-            case 0 => display = "Vendor Specific";
-            case 1 => display = "Configure-Request";
-            case 2 => display = "Configure-Ack";
-            case 3 => display = "Configure-Nak";
-            case 4 => display = "Configure-Reject";
-            case 5 => display = "Terminate-Request";
-            case 6 => display = "Terminate-Ack";
-            case 7 => display = "Code-Reject";
-            default => display = "Unknown Packet (Code = " + (Code as string) + ")";
-        }
-        display = "Code = " + display + ", Length = " + (Length as string);
-        return display;
+        return "Code: " + EnumToString<IPCP.Code>(Code, false) + ", Length: " + (Length as string);
     }
 }
+
+pattern Code = enum byte
+{
+    $"Vendor Specific" = 0,
+    $"Configure-Request" = 1,
+    $"Configure-Ack" = 2,
+    $"Configure-Nak" = 3,
+    $"Configure-Reject" = 4,
+    $"Terminate-Request" = 5,
+    $"Terminate-Ack" = 6,
+    $"Code-Reject" = 7,
+    ...
+};
 
 type OptionType
 {
@@ -92,7 +90,7 @@ type DefaultOption
 {
     byte Option;
     (byte where value >= 2) Length;
-    binary Data with BinaryEncoding{Length = (Length - 2) as uint};
+    binary Data with BinaryEncoding{Length = (Length - 2)};
 }
 
 type IPAddresses
@@ -107,7 +105,7 @@ type IPCompressionProtocol
     (byte where value == 2) Option;
     byte Length where ValidationCheck(value >= 4, null, "IPCP: The Length in type IPCompressionProtocol must be greater than or equal to 4.");
     ushort IPCompressionProtocoltype;
-    optional [|Length - 4 > 0|] array<byte> Data with BinaryEncoding{Length = (Length - 4) as uint};
+    optional [|Length - 4 > 0|] array<byte> Data with BinaryEncoding{Length = (Length - 4)};
 }
 
 type IPAddress

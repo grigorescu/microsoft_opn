@@ -1,4 +1,4 @@
-﻿protocol TSAP
+protocol TSAP
     with StreamEncodingDefaults{Encoding = TextEncoding.UTF16},
 Documentation
 {
@@ -14,7 +14,7 @@ OPNAuthoring
         ],
     RevisionSummary =
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "11/10/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "371102", Date = "11/14/2014"}
         ]
 };
 
@@ -27,150 +27,53 @@ endpoint Node
     over UDP.Host
     accepts Datagram;
 
+const char TestNameTag = 'i';
+const char TestStatusTag = 'f';
+const char TestMessageTag = 'm';
+
 autostart actor TSAPOverUDP(UDP.Host host)
 {
     // $[3D00] stands for '=' of UTF16, this to check if the frame is TSAP message.
-    process host accepts m:UDP.Datagram where ((m.DestinationPort == Port.TSAP || m.SourcePort == Port.TSAP) && m.Payload.Segment(4, 2) == $[3D00])
+    process host accepts m:UDP.Datagram where m.Payload.Count >= 6 && ((m.DestinationPort == Port.TSAP || m.SourcePort == Port.TSAP) && m.Payload.Segment(4, 2) == $[3D00])
     {
-        optional Datagram p = TSAPDecoder(m.Payload as stream);
-        if (p != nothing)
+        switch (m.Payload)
         {
-            Datagram d = p as Datagram;
-            d.SourceData = m.Payload;
-            var n = endpoint TSAP.Node over host;
-            dispatch n accepts d;
-        }
-        else
-        {
-            ThrowDecodingException("TSAP");
+            case d:Datagram from BinaryDecoder =>
+                dispatch endpoint TSAP.Node over host accepts d;
+            default =>
+                ThrowDecodingException("TSAP");
         }
     }
-}
-
-optional Datagram TSAPDecoder(stream payload)
-{
-    optional string ko;
-    optional string crlf;
-    Datagram d = new Datagram{};
-    array<string> Information = [];
-    HeaderType VersionCommand = Header(payload) as HeaderType;
-    d.Version = VersionCommand.Version as byte;
-    d.Command = VersionCommand.Command as byte;
-    d.AssignFieldEncodingInfo("Version", 0, 8);
-    d.AssignFieldEncodingInfo("Command", 8, 8);
-    d.Configure = [];
-    d.DefaultMessage = [];
-    d.testcase = new TestCase{};
-    TestCase dt = d.testcase as TestCase;
-    
-    while (payload.BytePosition < payload.ByteLength)
-    {
-        ko = Token(payload);
-        if (ko == nothing)
-        {
-            break;
-        }
-        string k = ko as string;
-        if (k != "")
-        {
-            switch (k[0])
-            {
-                case 'a' => d.Configure = (d.Configure as array<string>) + [k];
-                case 'p' => d.Configure = (d.Configure as array<string>) + [k];
-                case 'v' => d.Configure = (d.Configure as array<string>) + [k];
-                case 'u' => d.Configure = (d.Configure as array<string>) + [k];
-                case 'i' =>
-                    dt.Name = k;
-                    dt.AssignFieldEncodingInfo("Name", payload.BitPosition - (k.Count * 16), k.Count * 16);
-                case 't' =>
-                    dt.t = k;
-                    dt.AssignFieldEncodingInfo("t", payload.BitPosition - (k.Count * 16), k.Count * 16);
-                case 'T' =>
-                    dt.T = k;
-                    dt.AssignFieldEncodingInfo("T", payload.BitPosition - (k.Count * 16), k.Count * 16);
-                case 'f' =>
-                    dt.Status = k;
-                    dt.AssignFieldEncodingInfo("Status", payload.BitPosition - (k.Count * 16), k.Count * 16);
-                case 'c' =>
-                    dt.Comment = k;
-                    dt.AssignFieldEncodingInfo("Comment", payload.BitPosition - (k.Count * 16), k.Count * 16);
-                case 'm' =>
-                    d.Message = k;
-                    d.AssignFieldEncodingInfo("Message", payload.BitPosition - (k.Count * 16), k.Count * 16);
-                default =>
-                    d.DefaultMessage = (d.DefaultMessage as array<string>) + [k];
-            }
-        }
-
-        if (payload.BytePosition < payload.ByteLength)
-        {
-            crlf = CRLF(payload);
-            if (crlf == nothing)
-            {
-                break;
-            }
-        }
-    }
-
-    if ((d.Configure as array<string>).Count == 0)
-    {
-        d.Configure = nothing;
-    }
-    if ((d.DefaultMessage as array<string>).Count == 0)
-    {
-        d.DefaultMessage = nothing;
-    }
-    if (dt.t == nothing && dt.Name == nothing && dt.T == nothing && dt.Status == nothing && dt.Comment == nothing)
-    {
-        d.testcase = nothing;
-    }
-    return d;
 }
 
 message Datagram
 {
     byte Version;
     byte Command;
-    optional array<string> Configure;
-    optional TestCase testcase;
-    optional string Message;
-    optional array<string> DefaultMessage;
+    optional array<string> Configure with BinaryEncoding{TextTerminator = "\r\n"};
 
     override string ToString()
     {
-        string summary;
-        if (testcase != nothing)
+        string tName = "";
+        string tStatus = "";
+        string tMsg = "";
+        if (Configure is config:array<string>)
         {
-            TestCase dt = testcase as TestCase;
-            summary = (dt.Name == nothing ? "TestCase Name: " : (dt.Name as string).Segment(2)) 
-                        + ", Status: " + (dt.Status == nothing ? "" : (dt.Status as string).Segment(2)) 
-                        + ", Message: " + (Message == nothing ? "" : (Message as string).Segment(2));
+            foreach (var str in config)
+            {
+                if (str.Count > 0)
+                {
+                    switch (str[0])
+                    {
+                        case TestNameTag => tName = str.Segment(2);
+                        case TestStatusTag => tStatus = str.Segment(2);
+                        case TestMessageTag => tMsg = str.Segment(2);
+                        default =>;
+                    }
+                }
+            }
         }
-        else
-        {
-            summary = "TestCase Name: , Status: , Message: " + (Message == nothing ? "" : (Message as string).Segment(2));
-        }
-        return summary;
+
+        return tName + (tName.Count == 0 ? "" : ", ") + "Status: " + tStatus + ", Message: " + tMsg;
     }
-}
-
-type TestCase
-{
-    optional string Name;
-    optional string t;
-    optional string T;
-    optional string Status;
-    optional string Comment;
-}
-
-syntax decoder = TextDecoder;
-syntax Byte = byte from BinaryDecoder;
-syntax CRLF = "\r\n";
-syntax Token = s:regex{[^\r\n]*} => s;
-syntax Header = h1:Byte h2:Byte => new HeaderType{Version = h1, Command = h2};
-
-type HeaderType
-{
-    optional byte Version;
-    optional byte Command;
 }

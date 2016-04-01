@@ -12,11 +12,11 @@ OPNAuthoring
     Copyright = "(c) Microsoft Corporation",
     References =
     [
-        new Reference{Name = "MS-RAA", Version = "1.0", ProgramName = ProgramName.WSPP}
+        new Reference{Name = "MS-RAA", Version = "1.0", Date = "10/25/2012", ProgramName = ProgramName.WSPP}
     ],
     RevisionSummary =
     [
-        new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "11/12/2012"}
+        new Revision{Class = RevisionClass.Major, Version = "355026", Date = "10/10/2013"}
     ]
 };
 

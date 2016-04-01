@@ -1,4 +1,4 @@
-﻿protocol LinuxCookedMode with 
+protocol LinuxCookedMode with 
 BinaryEncodingDefaults{Endian = Endian.Big},
 Documentation
 {
@@ -15,14 +15,13 @@ OPNAuthoring
         ],
     RevisionSummary = 
         [
-             new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "09/07/2011"}
+             new Revision{Class = RevisionClass.Major, Version = "370439", Date = "11/03/2014"}
         ]
 };
 
 using Standard;
 using Utility;
 using IANA;
-using CapFile;
 using IPv4;
 using IPv6;
 //using ARP;
@@ -38,7 +37,7 @@ endpoint Node
         switch (lcm.Payload)
         {
             case d:IPv4.Datagram from BinaryDecoder =>
-                dispatch endpoint IPv4.ReassemblyNode[d.DestinationAddress.FlatAddress < d.SourceAddress.FlatAddress ? d.DestinationAddress.FlatAddress : d.SourceAddress.FlatAddress] accepts d;
+                DispatchIPv4DatagramToReassemblyNode(d);
             default =>
                 ThrowDecodingException("LinuxCookedMode");
         }
@@ -49,7 +48,7 @@ endpoint Node
         switch (lcm.Payload)
         {
             case d:IPv6.Datagram from IPv6Decoder =>
-                dispatch (endpoint IPv6.ReassemblyNode[d.DestinationAddress.FlatAddress < d.SourceAddress.FlatAddress ? d.DestinationAddress.FlatAddress : d.SourceAddress.FlatAddress]) accepts d;
+                DispatchIPv6DatagramToReassemblyNode(d);
             default =>
                 ThrowDecodingException("LinuxCookedMode");
         }

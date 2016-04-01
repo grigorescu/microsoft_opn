@@ -1,4 +1,4 @@
-﻿protocol Finger
+protocol Finger
     with StreamEncodingDefaults{Encoding = TextEncoding.ASCII},
 Documentation
 {
@@ -15,74 +15,109 @@ OPNAuthoring
         ],
     RevisionSummary = 
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "11/25/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "376094", Date = "03/30/2015"}
         ]
 };
 
 using Standard;
+using Utility;
 using TCP;
 using IANA;
-using Utility;
-using VirtualTransport;
 
 endpoint Server
-    over VirtualTransport.Server
+    over TCP.Server
     accepts Request issues Response;
 
 client endpoint Client connected to Server;
 
-autostart actor FingerOverTCP(VirtualTransport.Server server)
+autostart actor FingerOverTCP(TCP.Server server)
 {
-    process server accepts p:VirtualTransport.VirtualDataSegment{DestinationPort is Port.Finger}
+    TCPDecodingHelper decodingHelper = null;
+
+    process server accepts p:TCP.Segment where p.DestinationPort == Port.Finger
     {
-        optional Request d = Q(p.Payload);
-        if (d != nothing)
+        InitializeDecodingHelperIfNull();
+        decodingHelper.TryDecode(p, MessageDirection.Accepts);
+    }
+    process server issues p:TCP.Segment where p.SourcePort == Port.Finger
+    {
+        InitializeDecodingHelperIfNull();
+        decodingHelper.TryDecode(p, MessageDirection.Issues);
+    }
+
+    ~endpoint(TCP.Server server)
+    {
+        if (decodingHelper != null)
         {
-            Request m = d as Request;
-            m#RequestPort = p.SourcePort;
-            var n = endpoint Finger.Server over server;
-            dispatch n accepts m;
-        }
-        else
-        {
-            ThrowDecodingExceptionForTCP("Finger", "Request", p#IsIncomplete, p#SegmentLost);
+            decodingHelper.ClearInDestructor();
         }
     }
-    process server issues p:VirtualTransport.VirtualDataSegment{SourcePort is Port.Finger}
+
+    void InitializeDecodingHelperIfNull()
     {
-        optional Response d = Fields(p.Payload);
-        if (d != nothing)
+        if (decodingHelper == null)
         {
-            Response m = d as Response;
-            m#ResponsePort = p.DestinationPort;
-            var n = endpoint Finger.Server over server;
-            dispatch n issues m;
+            TCP.TCPTextDecodingCache reqCache = new TCP.TCPTextDecodingCache();
+            reqCache.InitializeTextDecodingCache("Finger",
+                endpoint Server over server,
+                MessageDirection.Accepts,
+                (binary b) => (true as bool?), // isCurrentProtocol
+                () => CRLFBinary, // getEndMarkBinary
+                (stream s) => Q(s) as optional any message, // decodeSingleMessage
+                (binary b)=> Q(b) as optional any message // decodeIncompleteMessage
+            );
+            TCP.TCPDecodingCache resCache = new TCP.TCPDecodingCache();
+            resCache.Initialize("Finger",
+                endpoint Server over server,
+                MessageDirection.Issues,
+                (binary b) => (true as bool?), // isCurrentProtocol
+                IsSufficientForSingleResponseMsg, // isSufficientForSingleMsg
+                (stream s) => Fields(s) as optional any message, // decodeSingleMessage
+                (binary b)=> Fields(b) as optional any message // decodeIncompleteMessage
+            );
+            decodingHelper = new TCPDecodingHelper();
+            decodingHelper.AcceptsCache = reqCache;
+            decodingHelper.IssuesCache = resCache;
         }
-        else
-        {
-            ThrowDecodingExceptionForTCP("Finger", "Response", p#IsIncomplete, p#SegmentLost);
-        }
+    }
+
+    uint? IsSufficientForSingleResponseMsg(binary data)
+    {
+        int cnt = data.Count;
+        if (cnt < 2) return null;
+        return (data[cnt - 2] == 0x0D && data[cnt - 1] == 0x0A) ? 0 : null; // the last 2 bytes must be CRLF($[0D0A])
     }
 }
-
-annotation ushort Finger.Request#RequestPort;
-annotation ushort Finger.Response#ResponsePort;
 
 message Request
 {
     string RequestCommandLine;
     override string ToString()
     {
-        return "Request from client using port = " + (this#RequestPort as string);
+        return "Finger Request" + (RequestCommandLine.Count == 0 ? "" : ", Command: " + RequestCommandLine);
     }
 }
 
 message Response
 {
-    array<string> FingerInformationReturn;
+    array<string> FingerInformationReturn with DisplayInfo{ToText = MergeFingerInformation};
+
     override string ToString()
     {
-        return "Response to client using port = " + (this#ResponsePort as string);
+        return "Finger Response" + (FingerInformationReturn.Count > 0 ? ", User Information: " + FingerInformationReturn[0] + " ..." : "");
+    }
+
+    string MergeFingerInformation(any s)
+    {
+        string str = "";
+        if (s is arr:array<string>)
+        {
+            foreach (var item in arr)
+            {
+                str += item + "\r\n";
+            }
+        }
+        return str;
     }
 }
 
@@ -95,11 +130,13 @@ syntax U = UserName;
 syntax S = " ";
 syntax SP = S+;
 
-//Request:::::::::::::::::::::::::::::::
-syntax Q1 = SP? s:UserName CRLF => s; 
+// Request:::::::::::::::::::::::::::::::
+syntax Q1 = SP? s:UserName CRLF => s;
 syntax Q2 = SP? u:UserName h:H+ CRLF => (u + ConvertStringArrayToString(h));
 syntax Q = u:(Q1 | Q2)  => new Request{RequestCommandLine = u};
 
-//Response::::::::::::::::::::::::::::::
+// Response::::::::::::::::::::::::::::::
 syntax Field = s:Token CRLF => s;
 syntax Fields = s:Field+ => new Response{FingerInformationReturn = s};
+
+const binary CRLFBinary = $[0D0A];

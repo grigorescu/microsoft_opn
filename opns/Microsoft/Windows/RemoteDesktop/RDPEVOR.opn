@@ -14,11 +14,11 @@ OPNAuthoring
     Copyright = "(c) Microsoft Corporation",
     References = 
         [
-            new Reference{Name = "MS-RDPEVOR", Version = "4.0", ProgramName = ProgramName.MCPP}
+            new Reference{Name = "MS-RDPEVOR", Version = "4.0", Date = "01/31/2013", ProgramName = ProgramName.MCPP}
         ],
     RevisionSummary =
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "06/12/2012"}
+            new Revision{Class = RevisionClass.Major, Version = "383234", Date = "12/23/2015"}
         ]
 };
 
@@ -268,8 +268,12 @@ pattern FlagsSupported = enum uint
 
 pattern TsmmVideoDataFlags = flags byte
 {
-    TSMM_VIDEO_DATA_FLAG_HAS_TIMESTAMPS = 0x01,           
-    TSMM_VIDEO_DATA_FLAG_KEYFRAME = 0x02,
+    TSMM_VIDEO_DATA_FLAG_HAS_TIMESTAMPS = 0x01
+        with Documentation
+            {Description = "This message has a valid hnsTimestamp field."},           
+    TSMM_VIDEO_DATA_FLAG_KEYFRAME = 0x02
+        with Documentation
+            {Description = "The sample contained in this message is part of a keyframe."},
     ...
 } with Documentation{Ignore = true};
 

@@ -13,23 +13,23 @@ OPNAuthoring
         [
             new Reference{Name = "RFC 1002"},
             new Reference{Name = "RFC 883"},
+            new Reference{Name = "MS-NBTE", Version = "14.0", Date = "02/13/2014", ProgramName = ProgramName.WSPP},
         ], 
     RevisionSummary = 
         [ 
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "09/02/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "370484", Date = "11/06/2014"}
         ] 
 };
 
 using Standard;
-using IANA;
 using UDP;
-using TCP;
-using IPv4;
 using Utility;
-using VirtualTransport;
-using CommonResources;
+using TCP;
+using InfrastructureResources;
+using IANA;
 
-endpoint Server over UDP.Host| over VirtualTransport.Server accepts NameService issues NameService
+// In [MS-NBTE] 2.1, "The transport is unchanged from [RFC1002] except that name resolution is supported only over UDP and not TCP." 
+endpoint Server over UDP.Host| over NBTNS.SocketServer accepts NameService issues NameService
 {
     observe this accepts m:NameService
     {
@@ -83,7 +83,7 @@ endpoint Server over UDP.Host| over VirtualTransport.Server accepts NameService 
         // 4.2.8.  NAME CONFLICT DEMAND
         if(m.Header.Flags.R && m.Header.Flags.Opcode == 5)
         {
-            ErrorCodeIf(m.Header.Flags.Rcode != 0, m, DiagnosisLevel.Warning, "NBTNS: The Rcode of the message is "+ RcodeToString(m.Header.Flags.Rcode) + "(" + m.Header.Flags.Rcode.ToString() + "). Please refer to " + RcodeToString(m.Header.Flags.Rcode) + " in Technical Document RFC 1002.");
+            ErrorCodeIf(m.Header.Flags.Rcode != 0, m, DiagnosisLevel.Warning, "NBTNS: The Rcode of the message is " + RcodeToString(m.Header.Flags.Rcode) + "(" + m.Header.Flags.Rcode.ToString() + "). Please refer to " + RcodeToString(m.Header.Flags.Rcode) + " in Technical Document RFC 1002.");
             ValidationCheckZero(m.Header.QuestionCount == 0, m, true, ReferenceType.Message, "NBTNS", "Header.QuestionCount", "NameService", m.Header.QuestionCount);
             ValidationCheckValue(m.Header.AnswerResourceRecordCount == 1, m, true, ReferenceType.Message, "NBTNS", "Header.AnswerResourceRecordCount", "NameService", 1, m.Header.AnswerResourceRecordCount);
             ValidationCheckZero(m.Header.AuthorityResourceRecordCount == 0, m, true, ReferenceType.Message, "NBTNS", "Header.AuthorityResourceRecordCount", "NameService", m.Header.AuthorityResourceRecordCount);
@@ -98,10 +98,10 @@ endpoint Server over UDP.Host| over VirtualTransport.Server accepts NameService 
             {
                 if(answerResourceRecord != null)
                 {
-                    var data = answerResourceRecord.RData as NetBIOSGeneralNameServiceResourceRecord; 
+                    var data = answerResourceRecord.RData as NetBIOSGeneralNameServiceResourceRecord;
                     if (data != null && data.AddrEnty.Count > 0) 
                     {
-                        ValidationCheckZero(data.AddrEnty[0].NBAddress.Octets == $[0000], m, true, ReferenceType.Type, "NBTNS", "AddrEnty[0].NBAddress", "NetBIOSGeneralNameServiceResourceRecord", data.AddrEnty[0].NBAddress.Octets); 
+                        ValidationCheckZero(data.AddrEnty[0].NBAddress.Octets == $[0000], m, true, ReferenceType.Type, "NBTNS", "AddrEnty[0].NBAddress", "NetBIOSGeneralNameServiceResourceRecord", data.AddrEnty[0].NBAddress.Octets);
                     }
                 }
             }
@@ -132,7 +132,7 @@ endpoint Server over UDP.Host| over VirtualTransport.Server accepts NameService 
         // 4.2.11.  NEGATIVE NAME RELEASE RESPONSE
         if(m.Header.Flags.R && m.Header.Flags.Opcode == 6)
         {
-            ErrorCodeIf(m.Header.Flags.Rcode != 0, m, DiagnosisLevel.Warning, "NBTNS: The Rcode of the message is "+ RcodeToString(m.Header.Flags.Rcode) + "(" + m.Header.Flags.Rcode.ToString() + "). Please refer to " + RcodeToString(m.Header.Flags.Rcode) + " in Technical Document RFC 1002.");
+            ErrorCodeIf(m.Header.Flags.Rcode != 0, m, DiagnosisLevel.Warning, "NBTNS: The Rcode of the message is " + RcodeToString(m.Header.Flags.Rcode) + "(" + m.Header.Flags.Rcode.ToString() + "). Please refer to " + RcodeToString(m.Header.Flags.Rcode) + " in Technical Document RFC 1002.");
             ValidationCheckZero(m.Header.QuestionCount == 0, m, true, ReferenceType.Message, "NBTNS", "Header.QuestionCount", "NameService", m.Header.QuestionCount);
             ValidationCheckValue(m.Header.AnswerResourceRecordCount == 1, m, true, ReferenceType.Message, "NBTNS", "Header.AnswerResourceRecordCount", "NameService", 1, m.Header.AnswerResourceRecordCount);
             ValidationCheckZero(m.Header.AuthorityResourceRecordCount == 0, m, true, ReferenceType.Message, "NBTNS", "Header.AuthorityResourceRecordCount", "NameService", m.Header.AuthorityResourceRecordCount);
@@ -176,9 +176,9 @@ endpoint Server over UDP.Host| over VirtualTransport.Server accepts NameService 
         }
         
         // 4.2.14.  NEGATIVE NAME QUERY RESPONSE
-        if(m.Header.Flags.R && m.Header.Flags.Opcode == 0 && m.Header.Flags.Rcode != 0 && m.Header.Flags.AA )
+        if(m.Header.Flags.R && m.Header.Flags.Opcode == 0 && m.Header.Flags.Rcode != 0 && m.Header.Flags.AA)
         {
-            ErrorCodeIf(m.Header.Flags.Rcode != 0, m, DiagnosisLevel.Warning, "NBTNS: The Rcode of the message is "+ RcodeToString(m.Header.Flags.Rcode) + "(" + m.Header.Flags.Rcode.ToString() + "). Please refer to " + RcodeToString(m.Header.Flags.Rcode) + " in Technical Document RFC 1002.");
+            ErrorCodeIf(m.Header.Flags.Rcode != 0, m, DiagnosisLevel.Warning, "NBTNS: The Rcode of the message is " + RcodeToString(m.Header.Flags.Rcode) + "(" + m.Header.Flags.Rcode.ToString() + "). Please refer to " + RcodeToString(m.Header.Flags.Rcode) + " in Technical Document RFC 1002.");
             ValidationCheckZero(m.Header.QuestionCount == 0, m, true, ReferenceType.Message, "NBTNS", "Header.QuestionCount", "NameService", m.Header.QuestionCount);
             ValidationCheckZero(m.Header.AnswerResourceRecordCount == 0, m, true, ReferenceType.Message, "NBTNS", "Header.AnswerResourceRecordCount", "NameService", m.Header.AnswerResourceRecordCount);
             ValidationCheckZero(m.Header.AuthorityResourceRecordCount == 0, m, true, ReferenceType.Message, "NBTNS", "Header.AuthorityResourceRecordCount", "NameService", m.Header.AuthorityResourceRecordCount);
@@ -219,7 +219,7 @@ endpoint Server over UDP.Host| over VirtualTransport.Server accepts NameService 
             {
                 ValidationCheckValue(answerResourceRecord.Type == 32, m, true, ReferenceType.Message, "NBTNS", "AnswerResourceRecord[0].Type", "NameService", "0x0020", answerResourceRecord.Type);
                 ValidationCheckValue(answerResourceRecord.Class == 1, m, true, ReferenceType.Message, "NBTNS", "AnswerResourceRecord[0].Class", "NameService", "0x0001", answerResourceRecord.Class);
-                ValidationCheckValue(answerResourceRecord.RDLength == 2, m, true, ReferenceType.Message, "NBTNS", "AnswerResourceRecord[0].RDLength", "NameService", "0x0002",  answerResourceRecord.RDLength);
+                ValidationCheckValue(answerResourceRecord.RDLength == 2, m, true, ReferenceType.Message, "NBTNS", "AnswerResourceRecord[0].RDLength", "NameService", "0x0002", answerResourceRecord.RDLength);
             }
         }
         
@@ -256,6 +256,32 @@ endpoint Server over UDP.Host| over VirtualTransport.Server accepts NameService 
 
 client endpoint Client connected to Server;
 
+endpoint SocketServer over TCP.Server accepts MessageOverTCP issues MessageOverTCP
+{
+    process this accepts msg:NBTNS.MessageOverTCP
+    {
+        switch (msg.Payload)
+        {
+            case m:NameService from BinaryDecoder<NameService> =>
+                dispatch (endpoint NBTNS.Server over this) accepts m;
+            default =>
+                ThrowDecodingException("NBTNS", "NameService");
+        }
+    }
+    process this issues msg:NBTNS.MessageOverTCP
+    {
+        switch (msg.Payload)
+        {
+            case m:NameService from BinaryDecoder<NameService> =>
+                dispatch (endpoint NBTNS.Server over this) issues m;
+            default =>
+                ThrowDecodingException("NBTNS", "NameService");
+        }
+    }
+}
+
+client endpoint SocketClient connected to SocketServer;
+
 autostart actor NBTNSOverUDP(UDP.Host host)
 {
     process host accepts d:UDP.Datagram{DestinationPort is Port.NBTNS}
@@ -263,8 +289,7 @@ autostart actor NBTNSOverUDP(UDP.Host host)
         switch (d.Payload)
         {
             case m:NameService from BinaryDecoder<NameService> =>
-                NbtNameToSring(ref m);
-                dispatch (endpoint NBTNS.Server) accepts m;
+                dispatch (endpoint NBTNS.Server over host) accepts m;
             default =>
                 ThrowDecodingException("NBTNS", "NameService");
         }
@@ -275,49 +300,99 @@ autostart actor NBTNSOverUDP(UDP.Host host)
         switch (d.Payload)
         {
             case m:NameService from BinaryDecoder<NameService> =>
-                NbtNameToSring(ref m);
-                dispatch (endpoint NBTNS.Server) issues m;
+                dispatch (endpoint NBTNS.Server over host) issues m;
             default =>
                 ThrowDecodingException("NBTNS", "NameService");
         }
     }
 }
 
-autostart actor NBTNSOverTCP(VirtualTransport.Server server)
+autostart actor SocketOverTCP(TCP.Server server)
 {
-    process server accepts d:VirtualTransport.VirtualDataSegment{DestinationPort is Port.NBTNS}
+    TCPDecodingHelper decodingHelper = null;
+    process server accepts s:TCP.Segment where s.DestinationPort == Port.NBTNS
     {
-        switch (d.Payload)
+        if (decodingHelper == null)
         {
-            case m:NameService from BinaryDecoder<NameService> =>
-                NbtNameToSring(ref m);
-                dispatch (endpoint NBTNS.Server over server) accepts m;
-            default =>
-                ThrowDecodingExceptionForTCP("NBTNS", "NameService", d#IsIncomplete, d#SegmentLost);
+            decodingHelper = new TCPDecodingHelper();
+            decodingHelper.Initialize(new TCPDecodingCache(), new TCPDecodingCache(),
+                                    "NBTNS", endpoint SocketServer over server, 
+                                    IsNBTNS, IsCompleteNBTNS, 
+                                    (stream s) => BinaryDecoder<MessageOverTCP>(s) as optional any message, 
+                                    (binary b) => BinaryDecoder<MessageOverTCP>(b) as optional any message);
         }
+        decodingHelper.TryDecode(s, MessageDirection.Accepts);
     }
     
-    process server issues d:VirtualTransport.VirtualDataSegment{SourcePort is Port.NBTNS}
+    process server issues s:TCP.Segment where s.SourcePort == Port.NBTNS
     {
-        switch (d.Payload)
+        if (decodingHelper == null)
         {
-            case m:NameService from BinaryDecoder<NameService> =>
-                NbtNameToSring(ref m);
-                dispatch (endpoint NBTNS.Server over server) issues m;
-            default =>
-                ThrowDecodingExceptionForTCP("NBTNS", "NameService", d#IsIncomplete, d#SegmentLost);
+            decodingHelper = new TCPDecodingHelper();
+            decodingHelper.Initialize(new TCPDecodingCache(), new TCPDecodingCache(),
+                                    "NBTNS", endpoint SocketServer over server, 
+                                    IsNBTNS, IsCompleteNBTNS, 
+                                    (stream s) => BinaryDecoder<MessageOverTCP>(s) as optional any message, 
+                                    (binary b) => BinaryDecoder<MessageOverTCP>(b) as optional any message);
         }
+        decodingHelper.TryDecode(s, MessageDirection.Issues);
+    }
+    ~endpoint(TCP.Server server)
+    {
+        if (decodingHelper != null)
+        {
+            decodingHelper.ClearInDestructor();
+            decodingHelper = null;
+        }
+    }
+}
+
+bool? IsNBTNS(binary b)
+{
+    if (b.Count < 5)
+    {
+        return null;
+    }
+    if ((((b[4] & 0x7F) >> 3) as byte) is NBTNS.OperationCode)
+    {
+        return true;
+    }
+    else
+    {
+        return false;
+    }
+}
+
+uint? IsCompleteNBTNS(binary b)
+{
+    if (b.Count < 2)
+    {
+        return null; // never hit because IsNBTNS has checked whether b.Count >= 5 
+    }
+    var len = ((b[0] as ushort) << 8) + b[1] + 2;
+    return len <= b.Count ? 0 : len as uint;
+}
+
+// RFC 1002 4.2.1: If Name Service packets are sent over a TCP connection they are preceded by 
+// a 16 bit unsigned integer representing the length of the Name Service packet.
+message MessageOverTCP
+{
+    ushort TCPLength;
+    binary Payload with BinaryEncoding{MaxLength = TCPLength};
+    
+    override string ToString()
+    {
+        return "Message Over TCP, " + "Length: " + (TCPLength as string);
     }
 }
 
 message NameService
 {
     Header Header;
-
-    array<QuestionSection> Questions with BinaryEncoding{Length = Header.QuestionCount as uint};
-    array<ResourceRecord> AnswerResourceRecord with BinaryEncoding{Length = Header.AnswerResourceRecordCount as uint};
-    array<ResourceRecord> AuthorityResourceRecord with BinaryEncoding{Length = Header.AuthorityResourceRecordCount as uint};
-    array<ResourceRecord> AdditionalResourceRecord with BinaryEncoding{Length = Header.AdditionalResourceRecordCount as uint};
+    array<QuestionSection> Questions with BinaryEncoding{Length = Header.QuestionCount};
+    array<ResourceRecord> AnswerResourceRecord with BinaryEncoding{Length = Header.AnswerResourceRecordCount};
+    array<ResourceRecord> AuthorityResourceRecord with BinaryEncoding{Length = Header.AuthorityResourceRecordCount};
+    array<ResourceRecord> AdditionalResourceRecord with BinaryEncoding{Length = Header.AdditionalResourceRecordCount};
     // Future Reference: check 4.2.14  NEGATIVE NAME QUERY RESPONSE
     optional [|Header.Flags.R == true && Header.QuestionCount == 0 && Header.AnswerResourceRecordCount == 0 && Header.AuthorityResourceRecordCount == 0 && Header.AdditionalResourceRecordCount == 0|] ResourceRecord NegativeNameQueryResponse;
     
@@ -327,11 +402,11 @@ message NameService
         if (Header.Flags.R == true)
         {
             summary = OperationCodeToSting(Header.Flags.Opcode) + " Response, Rcode: " + RcodeToString(Header.Flags.Rcode);
-            foreach(ResourceRecord arr in AnswerResourceRecord)
+            foreach (ResourceRecord arr in AnswerResourceRecord)
             {
-                if (arr.RRName is NbtString)
+                if (arr.RRName is nbtStr:NbtString)
                 {
-                    summary += ", RRName: " + (arr.RRName as NbtString).GetName();
+                    summary += ", RRName: " + nbtStr.Chars;
                 }
                 if (arr.Type == ResourceRecordType.NB && arr.RDLength >= 6)
                 {
@@ -344,12 +419,12 @@ message NameService
             if (Header.QuestionCount != 0)
             {
                 summary += OperationCodeToSting(Header.Flags.Opcode) + " Request, QuestionName: ";
-                foreach(QuestionSection qs in Questions)
+                foreach (QuestionSection qs in Questions)
                 {
-                    summary += qs.QuestionName.GetName();
+                    summary += qs.QuestionName.Chars;
                 }
             }
-            foreach(ResourceRecord rr in AdditionalResourceRecord)
+            foreach (ResourceRecord rr in AdditionalResourceRecord)
             {
                 if (rr.Type == ResourceRecordType.NB && rr.RDLength >= 6)
                 {
@@ -368,13 +443,13 @@ type Header
     ushort QuestionCount;
     ushort AnswerResourceRecordCount;
     ushort AuthorityResourceRecordCount;
-    ushort AdditionalResourceRecordCount; 
+    ushort AdditionalResourceRecordCount;
 }
 
 type Flags
 {
     bool R with BinaryEncoding{Width = 1};
-    OperationCode Opcode where ValidationCheckEnumValue(InRange<OperationCode>(value), null, false, ReferenceType.Type, "NBTNS", "Opcode", "Flags", COMMON_STR_ZERO + ", 5, 6, 7, 8", value) with BinaryEncoding{Width = 4};
+    OperationCode Opcode where ValidationCheckEnumValue(InRange<OperationCode>(value), null, false, ReferenceType.Type, "NBTNS", "Opcode", "Flags", INFRASTRUCTURE_STR_ZERO + ", 5, 6, 7, 8", value) with BinaryEncoding{Width = 4};
     bool AA with BinaryEncoding{Width = 1};
     bool TC with BinaryEncoding{Width = 1};
     bool RD with BinaryEncoding{Width = 1};
@@ -391,12 +466,12 @@ pattern OperationCode = enum byte
     Release         = 6,
     WACK            = 7,
     Refresh         = 8,
-	...
+    ...
 };
 
-string OperationCodeToSting(byte Opcode)
+string OperationCodeToSting(byte opcode)
 {
-    switch (Opcode)
+    switch (opcode)
     {
         case 0 => return "Query";
         case 5 => return "Registration";
@@ -486,17 +561,17 @@ type ResourceRecord
      [|Type == ResourceRecordType.NB && RDLength == 2|] Flags                                                       |
      [|Type == ResourceRecordType.NBSTAT|] NetBIOSNodeStatusResourceRecord) RData;
      
-     string GetNBAddrString()
-     {
-         if (Type == ResourceRecordType.NB && RDLength >= 6)
-         {
-             return (RData as NetBIOSGeneralNameServiceResourceRecord).ToString();
-         }
-         else 
-         {
-             return "";
-         }
-     }
+    string GetNBAddrString()
+    {
+        if (Type == ResourceRecordType.NB && RDLength >= 6)
+        {
+            return (RData as NetBIOSGeneralNameServiceResourceRecord).ToString();
+        }
+        else 
+        {
+            return "";
+        }
+    }
 }
 
 type NBFlags
@@ -508,7 +583,7 @@ type NBFlags
 
 type IPAddressResourceRecord
 {
-      IPv4Address NSDIPAddr;
+    IPv4Address NSDIPAddr;
 }
 
 type NameServerResourceRecord
@@ -516,9 +591,9 @@ type NameServerResourceRecord
     NetBiosNameString NSDName;
 }
 
-type NetBIOSGeneralNameServiceResourceRecord[uint length]
+type NetBIOSGeneralNameServiceResourceRecord[uint Length]
 {
-    array<Addr> AddrEnty with BinaryEncoding{Length = length/6};
+    array<Addr> AddrEnty with BinaryEncoding{Length = Length / 6};
     override string ToString()
     {
         string ipAddrs = "";
@@ -536,7 +611,6 @@ type NetBIOSGeneralNameServiceResourceRecord[uint length]
         }
         return ipAddrs;
     }
-    
 }
 
 type Addr
@@ -563,7 +637,7 @@ type NodeName
     NameFlags NameFlags;
 }
 
- type NameFlags
+type NameFlags
 {
     bool G with BinaryEncoding{Width = 1};
     byte ONT with BinaryEncoding{Width = 2};
@@ -608,94 +682,116 @@ type NetBiosNameCompressed
 
 type NbtString
 {
-    string Chars with BinaryEncoding{TextEncoding = TextEncoding.ASCII};
+    string Chars with Encoding{Decoder = NbtStringDecoder, SourceConverter = NbtStringConverter, SourcePattern = TypeOf<ASCIIString>()};
     
-    // Each byte is divided into two nibbles (4 bits each, unsigned).
-    // The ASCII value of the letter 'A' (65, or 0x41) is added to each nibble and the result is taken as a character.
-    string GetName()
+    optional binary NbtStringConverter(ASCIIString ascStrType)
     {
-        array<char> bytes = Chars as array<char>;
-        string name;
-        int data = 0;
-    
-        if (bytes[0] != 0x20)
+        string ascStr = ascStrType.Value;
+        if (ascStr[0] != 0x20)
         {
-            return Chars;
+            return nothing;
         }
-    
-        for (int i=1; i<bytes.Count-1;)
+        array<byte> binBytes = [];
+        // Each byte is divided into two nibbles (4 bits each, unsigned).
+        // The ASCII value of the letter 'A' (65, or 0x41) is added to each nibble and the result is taken as a character.
+        for (int i = 1; i < ascStr.Count - 1; i++)
         {        
-            data = (bytes[i] - 0x41) << 4; 
-            i++;
-            data = data + bytes[i] - 0x41;
-            i++;
+            var data = ((ascStr[i] - 0x41) << 4);
+            i++; // Furture Reference: Cannot apply ++ inscope of [ ]
+            data += (ascStr[i] - 0x41);
         
-            if (data != 0x20 && i<bytes.Count)
+            if (data != 0x20 || i == ascStr.Count - 1) // We should always save the last byte
             {
-                binary b = ConvertLongToBinary(data, 8);
-                var NbtStr = BinaryDecoder<NbtString>(b) as NbtString;
-                name = name + NbtStr.Chars;
+                binBytes += [data as byte];
             }
         }
-    
-        switch (data)
-        {
-            case 0x00 =>
-                name = name + "   <0x00> Workstation Service";
-            case 0x01 =>
-                name = name + "   <0x01> Messenger Service/Master Browser";
-            case 0x03 =>
-                name = name + "   <0x03> Messenger Service";
-            case 0x1B =>
-                name = name + "   <0x1B> Domain Master Browser";
-            case 0x1C =>
-                name = name + "   <0x1C> Domain Controllers";
-            case 0x1D =>
-                name = name + "   <0x1D> Master Browser";
-            case 0x1E =>
-                name = name + "   <0x1E> Browser Service Elections";
-            case 0x20 =>
-                name = name + "   <0x20> File Server Service";
-            default   =>
-                ;
-        }
-    
-        return name;
+        return binBytes as binary;
     }
-}
+    
+    optional string NbtStringDecoder(binary bin)
+    {
+        if (bin != null && bin.Count > 0)
+        {
+            // in RFCs, there is no rule for name but in MS-NBTE 2.2.1 2.2.3 LMHOSTS File Syntax
+            // ServiceName entries consist of an IPv4 address and a NetBIOS service name that specifies a 16-byte name where the last byte 
+            // indicates the type of the service and bytes 1 to 15 specify ComputerName, padded at the end with blanks to the 15th byte:
+            // 131.107.7.30 "ComputerName \0x03" where the last byte is specified in hex.
+            // http://technet.microsoft.com/en-us/library/cc779578.aspx
+            byte lastByte = bin[bin.Count - 1];
+            var res = BinaryDecoder<ASCIIString>(bin);
 
-void NbtNameToSring(ref NameService m)
-{
-    foreach(var q in m.Questions)
-    {
-        if(q.QuestionName is NbtString)
-        {
-            var s = q.QuestionName as NbtString;
-            s.Chars = (q.QuestionName as NbtString).GetName();
+            if (res is ascStr:ASCIIString)
+            {
+                string name = ascStr.Value;
+                switch (lastByte)
+                {
+                    case 0x00 =>
+                        name += "   <0x00> Workstation Service";
+                    case 0x01 =>
+                        name += "   <0x01> Messenger Service/Master Browser";
+                    case 0x03 =>
+                        name += "   <0x03> Messenger Service";
+                    case 0x05 =>
+                        name += "   <0x05> Forwarded name";
+                    case 0x06 =>
+                        name += "   <0x06> RAS Server Service";
+                    case 0x1B =>
+                        name += "   <0x1B> Domain Master Browser";
+                    case 0x1C =>
+                        name += "   <0x1C> Domain Controllers";
+                    case 0x1D =>
+                        name += "   <0x1D> Master Browser";
+                    case 0x1E =>
+                        name += "   <0x1E> Browser Service Elections";
+                    case 0x1F =>
+                        name += "   <0x1F> NetDDE Service";
+                    case 0x20 =>
+                        name += "   <0x20> File Server Service";
+                    case 0x21 =>
+                        name += "   <0x21> RAS Client Service";
+                    case 0x22 =>
+                        name += "   <0x22> Microsoft Exchange Interchange(MSMail Connector)";
+                    case 0x23 =>
+                        name += "   <0x23> Microsoft Exchange Store";
+                    case 0x24 =>
+                        name += "   <0x24> Microsoft Exchange Directory";
+                    case 0x2B =>
+                        name += "   <0x2B> Lotus Notes Server Service";
+                    case 0x2F =>
+                        name += "   <0x2F> Lotus Notes";
+                    case 0x30 =>
+                        name += "   <0x30> Modem Sharing Server Service";
+                    case 0x31 =>
+                        name += "   <0x31> Modem Sharing Client Service";
+                    case 0x33 =>
+                        name += "   <0x33> Lotus Notes";
+                    case 0x42 =>
+                        name += "   <0x42> Mccaffee Anti-virus";
+                    case 0x43 =>
+                        name += "   <0x43> SMS Clients Remote Control";
+                    case 0x44 =>
+                        name += "   <0x44> SMS Administrators Remote Control Tool";
+                    case 0x45 =>
+                        name += "   <0x45> SMS Clients Remote Chat";
+                    case 0x46 =>
+                        name += "   <0x46> SMS Clients Remote Transfer";
+                    case 0x4C =>
+                        name += "   <0x4C> DEC Pathworks TCPIP service on Windows NT";
+                    case 0x52 =>
+                        name += "   <0x52> DEC Pathworks TCPIP service on Windows NT";
+                    case 0x6A =>
+                        name += "   <0x6A> Microsoft Exchange IMC";
+                    case 0x87 =>
+                        name += "   <0x87> Microsoft Exchange MTA";
+                    case 0xBE =>
+                        name += "   <0xBE> Network Monitor Agent";
+                    case 0xBF =>
+                        name += "   <0xBF> Network Monitor Application";
+                    default   =>;
+                }
+                return name;
+            }
         }
-    }
-    foreach(var q in m.AnswerResourceRecord)
-    {
-        if(q.RRName is NbtString)
-        {
-            var s = q.RRName as NbtString;
-            s.Chars = (q.RRName as NbtString).GetName();
-        }
-    }
-    foreach(var q in m.AuthorityResourceRecord)
-    {
-        if(q.RRName is NbtString)
-        {
-            var s = q.RRName as NbtString;
-            s.Chars = (q.RRName as NbtString).GetName();
-        }
-    }
-    foreach(var q in m.AdditionalResourceRecord)
-    {
-        if(q.RRName is NbtString)
-        {
-            var s = q.RRName as NbtString;
-            s.Chars = (q.RRName as NbtString).GetName();
-        }
+        return nothing;
     }
 }

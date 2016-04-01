@@ -35,19 +35,18 @@ OPNAuthoring
         ],
     RevisionSummary =
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "01/18/2012"}
+            new Revision{Class = RevisionClass.Major, Version = "384029", Date = "02/03/2016"}
         ]
 };
 
 using Standard;
 using Utility;
-using ASN1;
+using Technologies.ASN1;
 using SMI;
 using UDP;
-using TCP;
 using Ethernet;
 using IANA;
-using VirtualTransport;
+using TCP;
 
 /*
  * RFC 1157     Version 1
@@ -56,15 +55,15 @@ using VirtualTransport;
  */
 
 endpoint Node
-    over UDP.Host | over VirtualTransport.Server | over Ethernet.Node
-    accepts Message;
+    over UDP.Host | over TCP.Server | over Ethernet.Node
+    accepts Message issues Message;
 
 const set<Port> SNMPPort = {Port.SNMP, Port.SNMPTrap};
 
 // RFC 1157
 autostart actor SNMPOverUDP(UDP.Host host)
 {    
-    process host accepts d:UDP.Datagram where (SNMPPort[d.SourcePort] || SNMPPort[d.DestinationPort])
+    process host accepts d:UDP.Datagram where d.Payload.Count > 0 && (SNMPPort[d.SourcePort] || SNMPPort[d.DestinationPort])
     {
         switch (d.Payload)
         {
@@ -77,17 +76,67 @@ autostart actor SNMPOverUDP(UDP.Host host)
 } 
 
 // RFC 1157
-autostart actor SNMPOverTCP(VirtualTransport.Server host)
+autostart actor SNMPOverTCP(TCP.Server server)
 {
-    process host accepts s:VirtualTransport.VirtualDataSegment where (SNMPPort[s.SourcePort] || SNMPPort[s.DestinationPort])
+    TCPDecodingHelper decodingHelper = null;
+
+    process server accepts s:TCP.Segment where SNMPPort[s.DestinationPort]
     {
-        switch(s.Payload)
+        if (decodingHelper == null)
         {
-            case m:Message from Asn1BerDecoder<Message> =>
-                dispatch (endpoint Node over host) accepts m;
-            default =>
-                ThrowDecodingExceptionForTCP("SNMP", "Message", s#IsIncomplete, s#SegmentLost);
+            decodingHelper = new TCPDecodingHelper();
+            decodingHelper.Initialize(new TCPDecodingCache(), new TCPDecodingCache(),
+                                    "SNMP", endpoint Node over server, 
+                                    IsSNMP,
+                                    IsSufficientForSNMP,
+                                    (stream s) => Asn1BerDecoder<Message>(s) as optional any message, 
+                                    (binary b) => nothing);
         }
+        decodingHelper.TryDecode(s, MessageDirection.Accepts);
+    }
+
+    process server issues s:TCP.Segment where SNMPPort[s.SourcePort]
+    {
+        if (decodingHelper == null)
+        {
+            decodingHelper = new TCPDecodingHelper();
+            decodingHelper.Initialize(new TCPDecodingCache(), new TCPDecodingCache(),
+                                    "SNMP", endpoint Node over server, 
+                                    IsSNMP,
+                                    IsSufficientForSNMP,
+                                    (stream s) => Asn1BerDecoder<Message>(s) as optional any message, 
+                                    (binary b) => nothing);
+        }
+        decodingHelper.TryDecode(s, MessageDirection.Issues);
+    }
+
+    ~endpoint(TCP.Server server)
+    {
+        if (decodingHelper != null)
+        {
+            decodingHelper.ClearInDestructor();
+            decodingHelper = null;
+        }
+    }
+}
+
+bool? IsSNMP(binary b)
+{
+    return b[0] == 0x30;
+}
+
+uint? IsSufficientForSNMP(binary b)
+{
+    if (CalculateAsn1BerLength(b) is snmpLength:uint)
+    {
+        if (snmpLength <= b.Count)
+            return 0;
+        else
+            return snmpLength;
+    }
+    else
+    {
+        return null;
     }
 }
 
@@ -108,7 +157,7 @@ autostart actor SNMPOverEthernet(Ethernet.Node node)
 
 message Message
 {
-    enum Integer { Version1 = 0, Version2 = 1, Version3 = 3 } Version;  
+    enum Integer { Version1 = 0, Version2 = 1, Version3 = 3 } Version;
     optional OctetString Community with Asn1Encoding{ Flags = Asn1EncodingFlags.OctetStringIsString }; // Version 1, 2
     optional HeaderData GlobalData; // Version 3
     optional OctetString SecurityParameters with Asn1Encoding{ Flags = Asn1EncodingFlags.OctetStringIsString }; // Version 3
@@ -120,7 +169,7 @@ message Message
         if (Version == 0)
         {
             PdusV1 p = Data as PdusV1;
-            summary = "Version1, Community: " + (Community as string) + ", Data Type: ";
+            summary = "Version: 1, Community: " + (Community as string) + ", Data Type: ";
             switch (Data)
             {
                 case GetRequestPduV1 =>
@@ -133,14 +182,13 @@ message Message
                     summary += SNMPPdusType(3);
                 case TrapPduV1 =>
                     summary += SNMPPdusType(4);
-                default =>
-                    summary += "Unknown Type";
+                default =>;
             }
         }
         else if (Version == 1)
         {
             PdusV2 p = Data as PdusV2;
-            summary = "Version2, Community: " + (Community as string) + ", Data Type: ";
+            summary = "Version: 2, Community: " + (Community as string) + ", Data Type: ";
             switch (Data)
             {
                 case GetRequestPduV2 =>
@@ -159,8 +207,7 @@ message Message
                     summary += SNMPPdusType(7);
                 case ReportPduV2 =>
                     summary += SNMPPdusType(8);
-                default =>
-                    summary += "Unknown Type";
+                default =>;
             }
         }
         else if (Version == 3)
@@ -169,7 +216,7 @@ message Message
             {
                 Plaintext p = Data as Plaintext;
             
-                summary = "Version3, Message Type: ";
+                summary = "Version: 3, Message Type: ";
                 switch (p.Data)
                 {
                      case GetRequestPduV2 =>
@@ -188,18 +235,17 @@ message Message
                         summary += SNMPPdusType(7);
                     case ReportPduV2 =>
                         summary += SNMPPdusType(8);
-                    default =>
-                        summary += "Unknown Type";
+                    default =>;
                 }
             }
             else
             {
-                summary = "Version3, Encrypted PDU";
+                summary = "Version: 3, Encrypted PDU";
             }
         }
         else
         {
-            summary = "Unknown Message Data Type: "+ (Version as string);
+            summary = "Unknown Message Data Type(" + (Version as string) + ")";
         }
         return summary;
     }
@@ -256,7 +302,7 @@ pattern VarBindListV1 = array<VarBindV1>;
 type TrapPduV1
 {
     ObjectIdentifier Enterprise;
-    NetworkAddress AgentAddr; // NetworkAddress is defined in SMI (RFC 1155).
+    IpAddress AgentAddr; // IpAddress is defined in SMI (RFC 1155).
     GenericTrapType GenericTrap;
     Integer SpecificTrap;
     TimeTicks TimeStamp; // TimeTicks is defined in SMI (RFC 1155).
@@ -280,7 +326,7 @@ pattern GenericTrapType = enum Integer
 pattern PdusV2 = GetRequestPduV2 
                | GetNextRequestPduV2
                | GetBulkRequestPduV2
-//               | ResponsePduV2
+               | ResponsePduV2
                | SetRequestPduV2
                | InformRequestPduV2
                | SNMPv2TrapPduV2

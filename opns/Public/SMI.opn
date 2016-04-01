@@ -15,12 +15,11 @@ OPNAuthoring
         ],
     RevisionSummary =
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "09/02/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "384029", Date = "02/03/2016"}
         ]
 };
 
-using Standard;
-using ASN1;
+using Technologies.ASN1;
 
 // ObjectName
 pattern ObjectName = ObjectIdentifier;
@@ -51,38 +50,15 @@ pattern SimpleSyntax = SimpleSyntaxNumber
     ;
 
 // ApplicationSyntax
-
-pattern ApplicationSyntaxAddress = NetworkAddress
-    with Asn1Encoding { TagNumber = 0 };
-
-pattern ApplicationSyntaxCounter = Counter
-    with Asn1Encoding { TagNumber = 1 };
-
-pattern ApplicationSyntaxGauge = Gauge
-    with Asn1Encoding { TagNumber = 2 };
-
-pattern ApplicationSyntaxTicks = TimeTicks
-    with Asn1Encoding { TagNumber = 3 };
-
-pattern ApplicationSyntaxTicksArbitrary = Opaque
-    with Asn1Encoding { TagNumber = 4 };
-
-pattern ApplicationSyntax = ApplicationSyntaxAddress
-    | ApplicationSyntaxCounter
-    | ApplicationSyntaxGauge
-    | ApplicationSyntaxTicks
-    | ApplicationSyntaxTicksArbitrary
+pattern ApplicationSyntax = IpAddress
+    | Counter
+    | Gauge
+    | TimeTicks
+    | Opaque
+    | Counter64
     ;
 
-// NetworkAddress
-
-pattern NetworkAddressInternet = IpAddress
-    with Asn1Encoding { TagNumber = 0 };
-
-pattern NetworkAddress = NetworkAddressInternet;
-
 // IpAddress
-
 pattern IpAddress = OctetString with Asn1Encoding {
     TagClass = Asn1TagClass.Application,
     TagNumber = 0,
@@ -122,4 +98,13 @@ pattern Opaque = OctetString with Asn1Encoding {
     TagClass = Asn1TagClass.Application,
     TagNumber = 4,
     Tagging = Asn1Tagging.Implicit
+    };
+
+// Counter64
+pattern Counter64 = Integer with Asn1Encoding {
+    TagClass = Asn1TagClass.Application,
+    TagNumber = 6,
+    Tagging = Asn1Tagging.Implicit,
+    LowerEndValue = 0,
+    // UpperEndValue = 18446744073709551615 // PEF bug 6413376: [ASN1] Asn1Encoding don't support ulong and 'UpperEndValue = 18446744073709551615'
     };

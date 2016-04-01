@@ -2,7 +2,7 @@ protocol SMBD with
 BinaryEncodingDefaults{Endian = Endian.Little},
 Documentation
 {
-    ProtocolName = "SMB2 RDMA Transport Protocol",
+    ProtocolName = "SMB2 Remote Direct Memory Access (RDMA) Transport Protocol",
     ShortName = "SMBD",
     Description = ""
 },
@@ -11,15 +11,14 @@ OPNAuthoring
     Copyright = "(c) Microsoft Corporation",
     References = 
         [
-            new Reference{Name = "MS-SMBD", Version = "2.0", ProgramName = ProgramName.WSPP},
+            new Reference{Name = "MS-SMBD", Version = "4.0", Date = "08/08/2013", ProgramName = ProgramName.WSPP},
         ],
     RevisionSummary =
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0", Date = "04/18/2012"}
+            new Revision{Class = RevisionClass.Major, Version = "356548", Date = "11/16/2013"}
         ]
 };
 
-using Etw;
 using EtwEvent;
 using Utility;
 using RDMAP;

@@ -1,4 +1,4 @@
-﻿protocol DTLS with 
+protocol DTLS with 
 BinaryEncodingDefaults{Endian = Endian.Big},
 Documentation
 {
@@ -16,237 +16,103 @@ OPNAuthoring
         ],
     RevisionSummary = 
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "11/26/2012"}
+            new Revision{Class = RevisionClass.Major, Version = "365107", Date = "06/26/2014"}
         ]
 };
 
 using Utility;
 using Standard;
 using TLS;
-using X509;
+using IANA;
 
-const set<binary> DTLSMinorVersions = {$[FF], $[FD]};
+const set<byte> DTLSMinorVersions = {0xFF, 0xFD};
 
 endpoint Server accepts RecordLayers issues RecordLayers;
     
 client endpoint Client connected to Server;
 
-array<RecordLayer> DTLSDecoder(stream s, ref bool isEncrypted)
+optional RecordLayers DTLSDecoder(stream s, TLS.SessionContext context)
 {
-    array<RecordLayer> records = [];
-    while (s.BytePosition < s.ByteLength)
+    array<RecordLayer> recordArray = [];
+    int prePos = s.BitPosition;
+    int startPos = prePos;
+    array<DataChunks> chunks = [];
+    while (s.RemainingByteLength >= 13 && GetTLSRecordLength(s.PeekBytes(s.BitPosition, 13)) <= s.RemainingByteLength)
     {
-        // All handshake messages after ChangeCipherSpec are encrypted in the same conversation.
-        if (isEncrypted && s.CurrentByte == 0x16)
-        {
-            optional EncryptedHandshake encryptedHandshake = BinaryDecoder<EncryptedHandshake>(s);
-            if (encryptedHandshake == nothing)
-            {
-                break;
-            }
-            else
-            {
-                records += [new RecordLayer{$"protocol" = encryptedHandshake as EncryptedHandshake}];
-                continue;
-            }
-        }
-        
-        optional RecordLayer r = BinaryDecoder<RecordLayer>(s);
-        if (r == nothing)
+        var res = BinaryDecoder<RecordLayer[context.IsEncrypted(s.CurrentByte), context.GetMacLength()]>(s);
+        if (res == nothing)
         {
             break;
         }
-            
-        RecordLayer r1 = r as RecordLayer;
-        // This indicates the subsequent records will be protected under the newly negotiated CipherSpec and keys
-        if (r1.$"protocol" is ChangeCipherSpec)
+        
+        RecordLayer msg = res as RecordLayer;
+        if (msg.$"type" is ContentType.handshake &&
+            msg.fragment is hsArray:array<Handshake>)
         {
-            isEncrypted = true;
-        }
-        else if (r1.$"protocol" is Handshake)
-        {
-            Handshake handshake = r1.$"protocol" as Handshake;
-            handshake.bodies = [];
-            int handshakeOffset = s.BytePosition;
-            while (s.BytePosition - handshakeOffset < handshake.length)
+            foreach (Handshake hs in hsArray)
             {
-                optional HandshakeBody hc = BinaryDecoder<HandshakeBody>(s);
-                if (hc == nothing)
+                if (hs.msg_type is HandshakeType.server_hello &&
+                    hs.body is sh:ServerHello)
                 {
-                    ValidationCheck(false, null, DiagnosisLevel.Warning, "DTLS: Handshake is not completely parsed, probably due to invalid data.");
-                    break;
-                }
-                    
-                HandshakeBody hc1 = hc as HandshakeBody;
-                    
-                // Parse extensions
-                if (hc1.body is ClientHello)
-                {
-                    // Parser ClientHello extensions
-                    ClientHello clientHello = hc1.body as ClientHello;
-                    uint extDataLength = clientHello.length - 38 - clientHello.session_id_length 
-                                        - clientHello.compression_methods_length - clientHello.cipher_suites_length;
-                    if (extDataLength > 0)
+                    context.IsEncryptedCipher = !(sh.cipher_suite in UnencryptedCipher);
+                    context.mac_length = GetMACLength(sh.cipher_suite);
+                    context.HasChangeCipherSent = false;
+                    if (context.ContextChanged != null)
                     {
-                        ushort extensionsLength = (BinaryDecoder<CipherSuite>(s) as CipherSuite).cipher_suite;
-                        ClientHelloExtensions clientHelloExtensions = 
-                            new ClientHelloExtensions{extensions_length = extensionsLength, extensions = []};
-                        int startOffset = s.BytePosition;
-                        while (s.BytePosition - startOffset < extensionsLength)
-                        {
-                            optional ClientHelloExtension clientHelloExtension = BinaryDecoder<ClientHelloExtension>(s);
-                            if (clientHelloExtension == nothing)
-                            {
-                                ValidationCheck(false, null, DiagnosisLevel.Warning, "DTLS: Failed to parse the extensions in type ClientHello due to invalid data.");
-                                break;
-                            }
-                                
-                            ClientHelloExtension clientHelloExtension1 = clientHelloExtension as ClientHelloExtension;
-                            if (clientHelloExtension1.extension is ServerNameList)
-                            {
-                                ServerNameList serverNameList = clientHelloExtension1.extension as ServerNameList;
-                                ParseServerNameList(ref serverNameList);
-                            }
-                                
-                            clientHelloExtensions.extensions += [clientHelloExtension1];
-                        }
-                    
-                        clientHello.extensions = clientHelloExtensions;
-                        hc1.body = clientHello;
+                        context.ContextChanged(context);
                     }
                 }
-                else if (hc1.body is ServerHello)
+                else if(hs.msg_type is HandshakeType.client_hello)
                 {
-                    // Parse ServerHello extensions
-                    ServerHello serverHello = hc1.body as ServerHello;
-                    uint extDataLength = serverHello.length - 38 - serverHello.session_id_length;
-                    if (extDataLength > 0)
-                    {
-                        ushort extensionsLength = (BinaryDecoder<CipherSuite>(s) as CipherSuite).cipher_suite;
-                        ServerHelloExtensions serverHelloExtensions = 
-                            new ServerHelloExtensions{extensions_length = extensionsLength, extensions = []};
-                        int startOffset = s.BytePosition;
-                        while (s.BytePosition - startOffset < extensionsLength)
-                        {
-                            optional ServerHelloExtension serverHelloExtension = BinaryDecoder<ServerHelloExtension>(s);
-                            if (serverHelloExtension == nothing)
-                            {
-                                ValidationCheck(false, null, DiagnosisLevel.Warning, "DTLS: Failed to parse the extensions in type ServerHello due to invalid data.");
-                                break;
-                            }
-                        
-                            ServerHelloExtension serverHelloExtension1 = serverHelloExtension as ServerHelloExtension;
-                            if (serverHelloExtension1.extension is ServerNameList)
-                            {
-                                ServerNameList serverNameList = serverHelloExtension1.extension as ServerNameList;
-                                ParseServerNameList(ref serverNameList);
-                            }
-                        
-                            serverHelloExtensions.extensions += [serverHelloExtension1];
-                        }
-                        
-                        serverHello.extensions = serverHelloExtensions;
-                        hc1.body = serverHello;
-                    }
+                    context.HasChangeCipherSent = false;
                 }
-                else if (hc1.body is CertificateUrl && (hc1.body as CertificateUrl).url_and_hash_list_length > 0)
-                {
-                    // Manually parse CertificateUrl.url_and_hash_list.
-                    CertificateUrl certificateUrl = hc1.body as CertificateUrl;
-                    array<URLAndHash> urlAndHashs = [];
-                    int startOffset = s.BytePosition;
-                    while (s.BytePosition - startOffset < certificateUrl.url_and_hash_list_length)
-                    {
-                        optional URLAndHash urlAndHash = BinaryDecoder<URLAndHash>(s);
-                        if (urlAndHash == nothing)
-                        {
-                            ValidationCheck(false, null, DiagnosisLevel.Warning, "DTLS: Failed to parse the url_and_hash_list in type CertificateUrl due to invalid data.");
-                            break;
-                        }
-                        
-                        urlAndHashs += [urlAndHash as URLAndHash];
-                    }
-                    
-                    if (urlAndHashs.Count > 0)
-                    {
-                        certificateUrl.url_and_hash_list = urlAndHashs;
-                    }
-                }
-                else if (hc1.body is Certificate)
-                {
-                    // Manually parse CertificateUrl.url_and_hash_list.
-                    Certificate certificate = hc1.body as Certificate;
-                    if (certificate.certificate_list_length <= handshakeOffset + handshake.length - s.BytePosition)
-                    {
-                        int certificateEnd = s.BytePosition + certificate.certificate_list_length as int;
-                        certificate.certificate_list = [];
-                        // decode certificate
-                        while (s.BytePosition < certificateEnd)
-                        {
-                            optional Cert cert1 = BinaryDecoder<Cert>(s);
-                            if (cert1 == nothing)
-                            {
-                                certificate.certificate_list += [(BinaryDecoder<Blob[(certificateEnd - s.BytePosition) as uint]>(s) as Blob).Data];
-                            }
-                            else
-                            {
-                                Cert cert = cert1 as Cert;
-                                optional X509.Certificate x509Cert1 = Asn1BerDecoder<X509.Certificate>(cert.cert as binary);
-                                if (x509Cert1 != nothing)
-                                {
-                                    cert.x509_cert = x509Cert1 as X509.Certificate;
-                                    cert.cert = nothing;
-                                }
-                                certificate.certificate_list += [cert];
-                            }
-                        }
-                    }
-                    else
-                    {
-                        // certificate length is larger than handshake body length, it is encrypted data
-                        certificate.certificate_list += [(BinaryDecoder<Blob[(handshakeOffset + handshake.length - s.BytePosition) as uint]>(s) as Blob).Data];
-                    }
-                }
-                handshake.bodies += [hc1];
             }
-            r1.$"protocol" = handshake;
-        }   
-        else if (r1.$"protocol" is ApplicationData)
-        {
-            ApplicationData appData = r1.$"protocol" as ApplicationData;            
-            r1.$"protocol" = appData;
         }
-        records += [r1];
+        else if (msg.$"type" is ContentType.change_cipher_spec)
+        {
+            context.HasChangeCipherSent = true;
+        }
+        
+        recordArray += [msg];
+        chunks += [new DataChunks{DataSource = s, Chunks = [new BinaryChunk{BitPosition = prePos, BitLength = s.BitPosition - prePos}]}];
+        prePos = s.BitPosition;
     }
-    return records;
+    
+    if (recordArray.Count == 0)
+    {
+        return nothing;
+    }
+    
+    RecordLayers recordLayers = new RecordLayers{records = recordArray};
+    recordLayers.SourceData = s.PeekBytes(startPos, (s.BytePosition - startPos / 8) as int);
+    DataChunks payloadChunk = new DataChunks{DataSource = s, Chunks = [new BinaryChunk{BitPosition = startPos, BitLength = s.BitPosition - startPos}]};
+    recordLayers.AssociateArrayField("records", chunks);
+    recordLayers.AssociateField("records", payloadChunk);
+    
+    return recordLayers;
 }
 
-bool IsCompleteDtls(binary data)
+bool IsDtlsHeader(binary data)
 {
-    if (data.Count < 13)
+    return data.Count >= 3 && data[1] == 0xFE && (data[2] in DTLSMinorVersions);
+}
+
+bool IsCompleteDtls(binary bin)
+{    
+    int curBytePos = 0;
+    int length = 0;
+    while (curBytePos < bin.Count - 13)
     {
-        return false;
-    }   
-    if (data.Segment(1, 1) == $[FE] && data.Segment(2, 1) in DTLSMinorVersions)
-    {
-        int len = 13 + (data[12] + ((data[11] as int) << 8)) as int;
-        while (len + 13 < data.Count)
-        {
-            len += ((data[len + 12] + ((data[len + 11] as int) << 8)) as int) + 13;
-        }
-        if (len == data.Count)
-        {
-            return true;
-        }
-        else
-        {
-            return false;
-        }
+        length = GetDTLSRecordLength(bin.Segment(curBytePos, 13));
+        curBytePos += length;
     }
-    else
-    {
-        return false;
-    }
+        
+    return ((curBytePos == bin.Count - 13) && (length == 13) ) || curBytePos == bin.Count;
+}
+
+ushort GetDTLSRecordLength(binary bin)
+{
+    return bin.Count >= 13 ? ((MakeWord(bin[11], bin[12]) + 13) as ushort) : 0;
 }
 
 message RecordLayers
@@ -255,329 +121,130 @@ message RecordLayers
     
     override string ToString()
     {
-        string summary = "DTLS.RecordLayers";
-        if (records.Count > 0)
+        string summary = "Records: [";
+        
+        string sep = "";
+        foreach (RecordLayer record in records)
         {
-            summary = "";
-            int layerCount = 0;
-            foreach (RecordLayer r in records)
-            {
-                if (r.$"protocol" is ClientHelloV2)
-                {
-                    summary += "DTLS RecordLayer, ClientHello(0x01)";
-                }
-                else
-                {
-                    layerCount++;
-                    summary += "DTLS RecordLayer-" + (layerCount as string);
-                    if (r.$"protocol" is ChangeCipherSpec)
-                    {
-                        summary += " ChangeCipherSpec";
-                    }
-                    else if (r.$"protocol" is Alert)
-                    {
-                        summary += " Alert";
-                    }
-                    else if (r.$"protocol" is ApplicationData)
-                    {
-                        summary += " DTLS Application Data";
-                    }
-                    else if (r.$"protocol" is EncryptedHandshake)
-                    {
-                        summary += " Encrypted Handshake";
-                    }
-                    else if (r.$"protocol" is EncryptedRecordLayer)
-                    {
-                        summary += " Encrypted RecordLayer";
-                    }
-                    else if (r.$"protocol" is Handshake)
-                    {
-                        summary += " Handshake:";
-                        Handshake h = r.$"protocol" as Handshake;
-                        if (h.bodies.Count > 0)
-                        {
-                            foreach (HandshakeBody hc in h.bodies)
-                            {
-                                if (hc.body is HelloRequest)
-                                {
-                                    summary += " HelloRequest";
-                                }
-                                else if (hc.body is ClientHello)
-                                {
-                                    summary += " ClientHello";
-                                }
-                                else if (hc.body is HelloVerifyRequest)
-                                {
-                                    summary += " HelloVerifyRequest";
-                                }
-                                else if (hc.body is ServerHello)
-                                {
-                                    summary += " ServerHello";
-                                }
-                                else if (hc.body is Certificate)
-                                {
-                                    summary += " Certificate";
-                                }
-                                else if (hc.body is ServerKeyExchange)
-                                {
-                                    summary += " ServerKeyExchange";
-                                }
-                                else if (hc.body is CertificateRequestV11)
-                                {
-                                    summary += " CertificateRequest";
-                                }
-                                else if (hc.body is ServerHelloDone)
-                                {
-                                    summary += " ServerHelloDone";
-                                }
-                                else if (hc.body is CertificateVerify)
-                                {
-                                    summary += " CertificateVerify";
-                                }
-                                else if (hc.body is ClientKeyExchange)
-                                {
-                                    summary += " ClientKeyExchange";
-                                }
-                                else if (hc.body is Finished)
-                                {
-                                    summary += " Finished";
-                                }
-                                else if (hc.body is CertificateUrl)
-                                {
-                                    summary += " CertificateUrl";
-                                }
-                                else if (hc.body is CertificateStatus)
-                                {
-                                    summary += " CertificateStatus";
-                                }
-                                else
-                                {
-                                    summary += " Encrypted or Compressed Data";
-                                }
-                            }
-                        }
-                    }
-                    summary += "; ";
-                }
-            }
+            summary += sep + record.ToString();
+            sep = ", ";
         }
+        
+        summary += "]";
+        
         return summary;
     }
 }
 
-type RecordLayer
+type ProtocolVersion
 {
-    (ChangeCipherSpec
-     | Alert
-     | Handshake
-     | ApplicationData
-     | ClientHelloV2  // Section E.1, RFC 2246.
-     | EncryptedHandshake
-     | EncryptedRecordLayer) $"protocol";
-     
+    byte major;
+    byte minor;
+    
     override string ToString()
     {
-        return "Record Layer{Protocol=" + ($"protocol" as string) + "}";
+        ushort version = ((major << 8) + minor) as ushort;
+        switch (version)
+        {
+            case 0xFEFF => return "DTLS 1.0";
+            case 0xFEFD => return "DTLS 1.2";
+            default => return base.ToString();
+        }
     }
 }
 
-// Section 4.3.1, RFC 6347
-type RecordLayerHeader
+type RecordLayer[bool IsEncrypted, uint MACLength]
 {
-    ContentType $"type";
+    TLS.ContentType $"type";
     ProtocolVersion version;
     ushort epoch;
     ulong sequence_number with BinaryEncoding{Width = 48};
     ushort length;
-}
-
-pattern ContentType = enum byte
-{
-    change_cipher_spec = 20,
-    alert = 21,
-    handshake = 22,
-    application_data = 23,
-};
-
-type ChangeCipherSpec: RecordLayerHeader
-{
-    invariant $"type" == ContentType.change_cipher_spec;
+    optional [|(IsEncrypted ? length : ((length as long) - MACLength)) > 0|] 
+        ([|$"type" is ContentType.change_cipher_spec|] TLS.ChangeCipherSpec
+        | [|!IsEncrypted && $"type" is ContentType.alert|] TLS.Alert
+        | [|!IsEncrypted && $"type" is ContentType.handshake|] array<Handshake>
+        | binary) fragment with BinaryEncoding{WidthForComposedType = ((IsEncrypted ? length : (length - MACLength)) * 8) as int};
+    optional [|!IsEncrypted && MACLength > 0|] binary MAC with BinaryEncoding{Length = MACLength};
     
-    byte change_cipher_spec; 
-}
-
-type Alert: RecordLayerHeader
-{
-    invariant $"type" == ContentType.alert;
+    bool GetIsEncrypted()
+    {
+        return IsEncrypted;
+    }
     
-    binary encrypted_alert with BinaryEncoding{Length = length as uint};
-}
-
-type Handshake: RecordLayerHeader
-{
-    invariant $"type" == ContentType.handshake;
+    override string ToString()
+    {
+        string summary = GetMessageNameFromContentType($"type");
+        if (IsEncrypted)
+        {
+            summary += "(Encryted)";
+        }
+        else if ($"type" is ContentType.handshake)
+        {
+            summary += ": " + GetAllHandshakeType();
+        }
+        return summary;
+    }
     
-    array<HandshakeBody> bodies with Encoding{Ignore = true};
+    string GetAllHandshakeType()
+    {
+        string str = "";
+        
+        if (fragment is hsArray:array<Handshake>)
+        {
+            string sep = "[";
+            foreach (Handshake hs in hsArray)
+            {
+                str += sep + GetHandshakeNameFromHandshakeType(hs.msg_type);
+                sep = ", ";
+            }
+            str += "]";
+        }
+        
+        return str;
+    }
 }
 
-// Used to manually parse handshake messages after ChangeCipherSpec message.
-type EncryptedHandshake: RecordLayerHeader
+type Handshake
 {
-    invariant $"type" == ContentType.handshake;
-    
-    binary encrypted_message with BinaryEncoding{Length = length as uint};
-}
-
-type ApplicationData: RecordLayerHeader
-{
-    invariant $"type" == ContentType.application_data;
-    
-    binary data with BinaryEncoding{Length = length as uint};
-}
-
-type EncryptedRecordLayer: RecordLayerHeader
-{
-    binary data with BinaryEncoding{Length = length as uint};
-}
-
-type HandshakeBody
-{
-    (HelloRequest
-     | ClientHello
-     | ServerHello
-     | HelloVerifyRequest
-     | Certificate
-     | ServerKeyExchange
-     | CertificateRequestV11 // V1.0 and V1.1
-     | ServerHelloDone
-     | CertificateVerify
-     | ClientKeyExchange
-     | Finished
-     | CertificateUrl
-     | CertificateStatus) body;
-}
-
-pattern HandshakeType = enum byte
-{
-    hello_request = 0,
-    client_hello = 1,
-    server_hello = 2,
-    hello_verify_request = 3, // Section 4.3.2, RFC 6347.
-    certificate = 11,
-    server_key_exchange = 12,
-    certificate_request = 13,
-    server_hello_done = 14,
-    certificate_verify = 15,
-    client_key_exchange = 16,
-    finished = 20,
-};
-
-type HandshakeHeader
-{
-    HandshakeType msg_type;
+    TLS.HandshakeType msg_type;
     uint length with BinaryEncoding{Width = 24};
     ushort message_seq;
     uint fragment_offset with BinaryEncoding{Width = 24};
     uint fragment_length with BinaryEncoding{Width = 24};
+    optional [|length > 0|] 
+        ([|msg_type is HandshakeType.client_hello|] ClientHello[length]
+        | [|msg_type is HandshakeType.server_hello|] TLS.ServerHello[length]
+        | [|msg_type is HandshakeType.hello_verify_request|] HelloVerifyRequest
+        | [|msg_type is HandshakeType.session_ticket|] TLS.NewSessionTicket
+        | [|msg_type is HandshakeType.certificate|] TLS.Certificate
+        | [|msg_type is HandshakeType.certificate_request|] TLS.CertificateRequest
+        | [|msg_type is HandshakeType.finished|] TLS.Finished
+        | [|msg_type is HandshakeType.certificate_url|] TLS.CertificateURL
+        | [|msg_type is HandshakeType.certificate_status|] TLS.CertificateStatus
+        | [|msg_type is HandshakeType.supplemental_data|] TLS.SupplementalData
+        | binary) body with BinaryEncoding{WidthForComposedType = (length * 8) as int};
 }
 
-// A.4.1 RFC 5246.
-type HelloRequest: HandshakeHeader
+type ClientHello[uint Length]
 {
-    invariant msg_type == HandshakeType.hello_request;
-}
-
-type ClientHello: HandshakeHeader
-{
-    invariant msg_type == HandshakeType.client_hello;
-    
     ProtocolVersion client_version;
-    Random random;
-    byte session_id_length;
-    binary session_id with BinaryEncoding{Length = session_id_length as uint};
-    byte cookie_length;
-    binary cookie with BinaryEncoding{Length = cookie_length as uint}; // Section 4.3.2, RFC 6347.
-    ushort cipher_suites_length;
-    optional [|cipher_suites_length > 0|] binary cipher_suites with BinaryEncoding{Length = cipher_suites_length as uint};
-    byte compression_methods_length;
-    optional [|compression_methods_length > 0|] binary compression_methods with BinaryEncoding{Length = compression_methods_length as uint};
-    ClientHelloExtensions extensions with Encoding{Ignore = true};
+    TLS.Random random;
+    TLS.SessionID session_id;
+    byte cookie_length_in_bytes;
+    binary cookie with BinaryEncoding{Length = cookie_length_in_bytes};
+    ushort cipher_suites_length_in_bytes;
+    array<CipherSuite> cipher_suites with BinaryEncoding{WidthForComposedType = (cipher_suites_length_in_bytes * 8) as int};
+    byte compression_methods_length_in_bytes;
+    array<TLS.CompressionMethod> compression_methods with BinaryEncoding{WidthForComposedType = (compression_methods_length_in_bytes * 8) as int};
+    optional [|Length - 38 - session_id.length_in_bytes - cipher_suites_length_in_bytes - compression_methods_length_in_bytes > 0|] ushort extensions_length_in_bytes;
+    optional [|extensions_length_in_bytes != nothing && extensions_length_in_bytes > 0|] 
+        array<TLS.Extension[false]> extensions with BinaryEncoding{WidthForComposedType = (extensions_length_in_bytes != nothing ? (extensions_length_in_bytes * 8) : 0) as int};
 }
 
-type HelloVerifyRequest: HandshakeHeader
+type HelloVerifyRequest
 {
-    invariant msg_type == HandshakeType.hello_verify_request;
-    
     ProtocolVersion server_version;
-    byte cookie_length;
-    binary cookie with BinaryEncoding{Length = cookie_length as uint}; // Section 4.3.2, RFC 6347.
-}
-
-type ServerHello: HandshakeHeader
-{
-    invariant msg_type == HandshakeType.server_hello;
-    
-    ProtocolVersion server_version;
-    Random random;
-    byte session_id_length;
-    binary session_id with BinaryEncoding{Length = session_id_length as uint};
-    CipherSuite cipher_suite;
-    CompressionMethod compression_method;
-    ServerHelloExtensions extensions with Encoding{Ignore = true};
-}
-
-type Certificate: HandshakeHeader
-{
-    invariant msg_type == HandshakeType.certificate;
-
-    uint certificate_list_length with BinaryEncoding{Width = 24};
-    array<Cert | binary> certificate_list with Encoding{Ignore = true};
-}
-
-type ServerKeyExchange: HandshakeHeader
-{
-    invariant msg_type == HandshakeType.server_key_exchange;
-    
-    binary server_key_exchange with BinaryEncoding{Length = length};
-}
-
-// Section 7.4.4, RFC 2246. Note: RFC 5746 has updated version of this type.
-type CertificateRequestV11: HandshakeHeader
-{
-    invariant msg_type == HandshakeType.certificate_request;
-    
-    byte certificate_types_length;
-    array<ClientCertificateType> certificate_types with BinaryEncoding{Length = certificate_types_length as uint};
-    ushort certificate_authorities_length;
-    binary certificate_authorities with BinaryEncoding{Length = (certificate_authorities_length / 2) as uint};
-}
-
-// Section 7.4.5, RFC 5246
-type ServerHelloDone: HandshakeHeader
-{
-    invariant msg_type == HandshakeType.server_hello_done;
-}
-
-// Section 7.4.8, RFC 5246
-type CertificateVerify: HandshakeHeader
-{
-    invariant msg_type == HandshakeType.certificate_verify;
-    
-    Blob[length] data;
-}
-
-// Section 7.4.7, RFC 5246
-type ClientKeyExchange: HandshakeHeader
-{
-    invariant msg_type == HandshakeType.client_key_exchange;
-    
-    Blob[length] data;
-}
-
-// Section 7.4.9, RFC 5246
-type Finished: HandshakeHeader
-{
-    invariant msg_type == HandshakeType.finished;
-    
-    Blob[length] data;
+    byte cookie_length_in_bytes;
+    binary cookie with BinaryEncoding{Length = cookie_length_in_bytes};
 }

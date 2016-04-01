@@ -16,246 +16,83 @@ OPNAuthoring
         ],
     RevisionSummary = 
         [
-             new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "12/6/2011"}
+             new Revision{Class = RevisionClass.Major, Version = "380827", Date = "09/22/2015"}
         ]
 };
 
 using Standard;
-using TCP;
-using Utility;
 using IANA;
-using TLS;
-using VirtualTransport;
-using Reassembly;
+using TCP;
+using DecodingUtility; // WORKAROUND: compiler bug#3131164, When type A inherit from type B, module C use tye A, and A, B, C is in different module file, compiler will give a compilation error
+using Utility;
 
-// According to TCPLayout defined in DecryptedPayloadHeader.opn, Port number in TLS type is uLong.
-// So must declare Port as ulong type
-annotation ulong TPKT#SourcePort;
-annotation ulong TPKT#DestinationPort;
+annotation ushort TPKT#SourcePort;
+annotation ushort TPKT#DestinationPort;
 
 endpoint Server 
-    over VirtualTransport.Server | over TLS.Server 
+    over TCP.Server
     accepts TPKT issues TPKT;
 
 client endpoint Client connected to Server;
 
-const set<ushort> UnencryptedCipher = {0, 1, 2, 44, 45, 46, 59, 176, 177, 180, 181, 184, 185, 49153, 49158, 49163, 49168, 49173, 49209, 49210, 49211};
 const set<ulong> ValidPorts = {Port.Netmeeting, Port.Q931};
 
-autostart actor ISOTSOverTLS(TLS.Server server)
+// Future Reference: After ASN codec finished, need add negotiate dynamic port
+autostart actor ISOTSOverTCP(TCP.Server server)
 {
-    DecodingCache inboundCache = null;
-    DecodingCache outboundCache = null;
-    
-    // Indicate if it is unencrypted TLS conversation, 
-    // set true once detect "Null encrypted" in "Server Hello" message.
-    bool isUnencryptedTLS = false;
-    
-    observe server accepts recordLayers:TLS.RecordLayers 
-        where IsValidPortNumber(recordLayers) && recordLayers#IsDecrypted == nothing
-    {
-        UpdateVariables(recordLayers);
-    }
-    
-    observe server issues recordLayers:TLS.RecordLayers 
-        where IsValidPortNumber(recordLayers) && recordLayers#IsDecrypted == nothing
-    {
-        UpdateVariables(recordLayers);
-    }
-    
-    process server accepts recordLayers:TLS.RecordLayers 
-        where IsValidPortNumber(recordLayers) && 
-            (isUnencryptedTLS || recordLayers#IsDecrypted != nothing && recordLayers#IsDecrypted as bool)
-    {
-        // Initialize cache if not yet.
-        // WORKAROUND: Bug#48947: [O2C] Report CS error when assign function-type field when initialize its wrapping type in OPN
-        if (inboundCache == null)
-        {
-            inboundCache = new DecodingCache{ Dispatcher = AcceptDispatcher };
-        }
+    TCPDecodingHelper decodingHelper = null;
 
-        binary data;
-        if (!IsISOTSOverTLS(inboundCache, recordLayers, out data))
-        {
-            reject;
-            return;
-        }
-        inboundCache.AddTLS(recordLayers, data);
-        inboundCache.TryDecodeMsgAndDispatch();
+    process server accepts s:TCP.Segment where ValidPorts[s.DestinationPort]
+    {
+        InitializeDecodingHelperIfNot();
+        decodingHelper.TryDecode(s, MessageDirection.Accepts);
     }
 
-    process server issues recordLayers:TLS.RecordLayers
-        where IsValidPortNumber(recordLayers) && (isUnencryptedTLS || recordLayers#IsDecrypted != nothing && recordLayers#IsDecrypted as bool)
+    process server issues s:TCP.Segment where ValidPorts[s.SourcePort]
     {
-        // Initialize cache if not yet.
-        if (outboundCache == null)
-        {
-            outboundCache = new DecodingCache{ Dispatcher = IssueDispatcher };
-        }
-        
-        binary data;
-        if (!IsISOTSOverTLS(outboundCache, recordLayers, out data))
-        {
-            reject;
-            return;
-        }
-        outboundCache.AddTLS(recordLayers, data);
-        outboundCache.TryDecodeMsgAndDispatch();
+        InitializeDecodingHelperIfNot();
+        decodingHelper.TryDecode(s, MessageDirection.Issues);
     }
-    
-    ~endpoint(TLS.Server server)
+
+    process server issues s:TCP.Segment where server.isMissingThreeWayHandshake && ValidPorts[s.DestinationPort]
     {
-        if (inboundCache != null)
-        {
-            inboundCache.Clear();
-        }
-        if (outboundCache != null)
-        {
-            outboundCache.Clear();
-        }
+        InitializeDecodingHelperIfNot();
+        decodingHelper.TryDecode(s, MessageDirection.Accepts);
     }
-    
-    bool IsValidPortNumber(TLS.RecordLayers recordLayers)
+
+    process server accepts s:TCP.Segment where server.isMissingThreeWayHandshake && ValidPorts[s.SourcePort]
     {
-        return recordLayers#DestinationPort != nothing && ValidPorts[recordLayers#DestinationPort as ulong]
-            || recordLayers#SourcePort != nothing && ValidPorts[recordLayers#SourcePort as ulong];
+        InitializeDecodingHelperIfNot();
+        decodingHelper.TryDecode(s, MessageDirection.Issues);
     }
-    
-    void UpdateVariables(TLS.RecordLayers recordLayers)
+
+    void InitializeDecodingHelperIfNot()
     {
-        foreach (var r in recordLayers.records)
+        if (decodingHelper == null)
         {
-            if (r.$"protocol" is Handshake)
-            {
-                Handshake handshake = r.$"protocol" as Handshake;
-                foreach (var c in handshake.bodies)
-                {
-                    if (c.body is ServerHello)
-                    {
-                        ServerHello serverhello = c.body as ServerHello;
-                        // Set true if contains current value, or false if not.
-                        isUnencryptedTLS = UnencryptedCipher[serverhello.cipher_suite.cipher_suite];
-                    }
-                }
-            }
+            decodingHelper = new TCPDecodingHelper();
+            decodingHelper.Initialize(new ISOTSDecodingCache(), new ISOTSDecodingCache(), 
+                    "ISOTS", endpoint Server over server, IsTPKT, IsCompleteISOTS, 
+                    (stream s) => BinaryDecoder<TPKT>(s) as optional any message, 
+                    (binary b) => BinaryDecoder<IncompleteTPKT>(b) as optional any message);
         }
     }
-    
-    bool IsISOTSOverTLS(DecodingCache cache, TLS.RecordLayers recordLayers, out binary data)
+
+    ~endpoint(TCP.Server server)
     {
-        bool hasFirstRecordChecked = false;
-        foreach (var record in recordLayers.records)
+        if (decodingHelper != null)
         {
-            if (record.$"protocol" is ApplicationData)
-            {
-                ApplicationData app = record.$"protocol" as ApplicationData;
-                if (!hasFirstRecordChecked)
-                {
-                    if(
-                        // There's no any bytes left in buffer by previous message
-                        (cache == null || cache.BufferCount() == 0) && 
-                        // Current message starts with invalid data.
-                        !(app.data.Count >= 2 && app.data.Segment(0, 2)  == $[0300]))
-                    {
-                        return false;
-                    }
-                    data = app.data;
-                    hasFirstRecordChecked = true;
-                }
-                else
-                {
-                    data += app.data;
-                }
-            }
+            decodingHelper.ClearInDestructor();
+            decodingHelper = null;
         }
-        if (data == null || data.Count == 0)
-        {
-            return false;
-        }
-        return true;
-    }
-    
-    void AcceptDispatcher(TPKT tpkt)
-    {
-        dispatch endpoint Server over server accepts tpkt;
-    }
-    
-    void IssueDispatcher(TPKT tpkt)
-    {
-        dispatch endpoint Server over server issues tpkt;
     }
 }
 
-// Future Reference: After ASN codec finished, need add negotiate dynamic port
-autostart actor ISOTSOverTCP(VirtualTransport.Server server)
+bool? IsTPKT(binary data)
 {
-    DecodingCache inboundCache = null;
-    DecodingCache outboundCache = null;
-    
-    process server accepts s:VirtualTransport.VirtualDataSegment 
-        where IsISOTSOverTCP(s, inboundCache)
-    {
-        // Initialize cache if not yet.
-        if (inboundCache == null)
-        {
-            inboundCache = new DecodingCache{ Dispatcher = AcceptDispatcher };
-        }
-        
-        inboundCache.Add(s);
-        inboundCache.TryDecodeMsgAndDispatch();
-    }
-
-    process server issues s:VirtualTransport.VirtualDataSegment 
-        where IsISOTSOverTCP(s, outboundCache)
-    {
-        // Initialize cache if not yet.
-        if (outboundCache == null)
-        {
-            outboundCache = new DecodingCache{ Dispatcher = IssueDispatcher };
-        }
-        
-        outboundCache.Add(s);
-        outboundCache.TryDecodeMsgAndDispatch();
-    }
-
-    bool IsISOTSOverTCP(VirtualDataSegment s, DecodingCache cache)
-    {
-        // Valid port defined in IANA.
-        if (!(ValidPorts[s.DestinationPort] || ValidPorts[s.SourcePort]))
-        {
-            return false;
-        }
-        if (// There's no any bytes left in buffer by previous message
-            (cache == null || cache.BufferCount() == 0) && 
-            // Current message starts with invalid data.
-            !(s.Payload.Count >= 2 && s.Payload.Segment(0, 2)  == $[0300]))
-        {
-            return false;
-        }
-        return true;
-    }
-    
-    void AcceptDispatcher(TPKT tpkt)
-    {
-        dispatch endpoint Server over server accepts tpkt;
-    }
-    
-    void IssueDispatcher(TPKT tpkt)
-    {
-        dispatch endpoint Server over server issues tpkt;
-    }
-    
-    ~endpoint(VirtualTransport.Server server)
-    {
-        if (inboundCache != null)
-        {
-            inboundCache.Clear();
-        }
-        if (outboundCache != null)
-        {
-            outboundCache.Clear();
-        }
-    }
+    if (data.Count < 2)
+        return null;
+    return data.Segment(0, 2) == $[0300];
 }
 
 message TPKT
@@ -263,18 +100,18 @@ message TPKT
     byte Version where value == 3;
     byte Reserved where value == 0;
     ushort PacketLength;
-    binary TPDU with BinaryEncoding{Length = (PacketLength - 4) as uint};
+    binary TPDU with BinaryEncoding{Length = (PacketLength - 4)};
     
     override string ToString()
     {
-        string summary = "TPKT: Version: " + Version.ToString();
+        string summary = "TPKT, Version: " + Version.ToString();
         summary += ", Length: " + PacketLength.ToString();
         return summary;
     }
 };
 
 // Only define to handle partial message parsing.
-message PartialTPKT
+message IncompleteTPKT
 {
     byte Version where value == 3;
     byte Reserved where value == 0;
@@ -283,81 +120,39 @@ message PartialTPKT
     
     override string ToString()
     {
-        string summary = "TPKT: Version: " + Version.ToString();
+        string summary = "[Incomplete TPKT] Version: " + Version.ToString();
         summary += ", Length: " + PacketLength.ToString();
         return summary;
     }
 };
 
-type DecodingCache : DecodingCacheBase
+uint? IsCompleteISOTS(binary data)
 {
-    void(TPKT) Dispatcher;
-    
-    uint BufferCount()
+    if (data.Count < 4)
+        return null;
+    int length = GetTPKTLength(data);
+    return length <= data.Count ? 0 : length as uint;
+}
+
+int GetTPKTLength(binary bin)
+{
+    if (bin.Count < 4)
     {
-        if (Buffer == null)
-            return 0;
-        return Buffer.Count as uint;
+        return -1;
     }
-    
-    void AddTLS(any message recordLayers, binary data)
+    return (bin[2] << 8) + bin[3];
+}
+
+type ISOTSDecodingCache : TCPDecodingCache
+{
+    override void DispatchMessage(any message msg)
     {
-        Buffer += data;
-        Origins += [recordLayers];
-    }
-    
-    void TryDecodeMsgAndDispatch()
-    {
-        while(BufferCount() >= 4)
+        TPKT tpkt = msg as TPKT;
+        if (Origins.Count > 0 && Origins[0] is s:TCP.Segment)
         {
-            stream s = Buffer;
-            if (s.PeekBytes(0, 2) != $[0300])
-            {
-                Buffer = $[];
-                Origins = [];
-                ThrowDecodingExceptionForTCP("ISOTS", "TPKT", HasIncompleteSegments, HasSegmentLost);
-            }
-            ushort msgLength = ((Buffer[2] as ushort) << 8) + Buffer[3] as ushort;
-            if (msgLength > s.ByteLength)
-            {
-                if (HasIncompleteSegments)
-                {
-                    Clear();
-                }
-                return;
-            }
-            // Guarantee never decode failed.
-            TPKT tpkt = BinaryDecoder<TPKT>(s) as TPKT; 
-            tpkt.Origins = Origins;
-            if (Origins.Count > 0)
-            {
-                tpkt#SourcePort = Origins[0] is VirtualDataSegment ? 
-                    (Origins[0] as VirtualDataSegment).SourcePort : 
-                    (Origins[0] as TLS.RecordLayers)#SourcePort;
-                tpkt#DestinationPort = Origins[0] is VirtualDataSegment ? 
-                    (Origins[0] as VirtualDataSegment).DestinationPort : 
-                    (Origins[0] as TLS.RecordLayers)#DestinationPort;
-            }
-            Dispatcher(tpkt);
-            Reset(s);
+            tpkt#SourcePort = s.SourcePort;
+            tpkt#DestinationPort = s.DestinationPort;
         }
-    }
-    
-    override optional any message DecodePartialMessage()
-    {
-        if (BufferCount() < 4)
-        {
-            return nothing;
-        }
-        if (Buffer.Segment(0, 2) != $[0300])
-        {
-            return nothing;
-        }
-        // Guarantee partial message always decode successfuly.
-        PartialTPKT partial = BinaryDecoder<PartialTPKT>(Buffer) as PartialTPKT;
-        ReportInsufficientData(partial, DiagnosisLevel.Warning, 
-                "ISOTS: Incomplete ISOTS payload for full reassembly, missing contiguous message. Expected length: " + 
-                partial.PacketLength.ToString() + ", Acutal length: " + (partial.TPDU.Count + 4).ToString() + ".");
-        return partial;
+        base.DispatchMessage(tpkt);
     }
 }

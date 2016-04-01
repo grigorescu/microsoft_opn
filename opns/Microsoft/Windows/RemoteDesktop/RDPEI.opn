@@ -13,11 +13,11 @@ OPNAuthoring
     Copyright  = "(c) Microsoft Corporation",
     References = 
         [
-            new Reference{Name = "MS-RDPEI", Version = "3.0", ProgramName = ProgramName.MCPP}
+            new Reference{Name = "MS-RDPEI", Version = "5.0", Date = "08/19/2015", ProgramName = ProgramName.MCPP}
         ],
     RevisionSummary =
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "11/27/2012"}
+            new Revision{Class = RevisionClass.Major, Version = "383234", Date = "12/23/2015"}
         ]
 };
 
@@ -27,9 +27,10 @@ using RDPEDYC;
 
 endpoint Server over RDPEDYC.Server issues RDPINPUT_SC_READY_PDU accepts RDPINPUT_CS_READY_PDU
                                     accepts RDPINPUT_TOUCH_EVENT_PDU
-                                    issues RDPINPUT_SUSPEND_TOUCH_PDU
-                                    issues RDPINPUT_RESUME_TOUCH_PDU
-                                    accepts RDPINPUT_DISMISS_HOVERING_CONTACT_PDU;
+                                    issues RDPINPUT_SUSPEND_INPUT_PDU
+                                    issues RDPINPUT_RESUME_INPUT_PDU
+                                    accepts RDPINPUT_DISMISS_HOVERING_TOUCH_CONTACT_PDU
+                                    accepts RDPINPUT_PEN_EVENT_PDU;
 
 client endpoint Client connected to Server;
 
@@ -53,29 +54,28 @@ autostart actor RDPEIOverRDPEDYC(RDPEDYC.Server dycServer)
             case 0x0004 => 
                 switch (s.Data)
                 {
-                    case m:RDPINPUT_SUSPEND_TOUCH_PDU from BinaryDecoder<RDPINPUT_SUSPEND_TOUCH_PDU> =>
+                    case m:RDPINPUT_SUSPEND_INPUT_PDU from BinaryDecoder<RDPINPUT_SUSPEND_INPUT_PDU> =>
                         dispatch server issues m;
                     default =>
-                        ThrowDecodingException("RDPEI", "RDPINPUT_SUSPEND_TOUCH_PDU");
+                        ThrowDecodingException("RDPEI", "RDPINPUT_SUSPEND_INPUT_PDU");
                 }
             case 0x0005 => 
                 switch (s.Data)
                 {
-                    case m:RDPINPUT_RESUME_TOUCH_PDU from BinaryDecoder<RDPINPUT_RESUME_TOUCH_PDU> =>
+                    case m:RDPINPUT_RESUME_INPUT_PDU from BinaryDecoder<RDPINPUT_RESUME_INPUT_PDU> =>
                         dispatch server issues m;
                     default =>
-                        ThrowDecodingException("RDPEI", "RDPINPUT_RESUME_TOUCH_PDU");
+                        ThrowDecodingException("RDPEI", "RDPINPUT_RESUME_INPUT_PDU");
                 }
             default =>
-                ThrowDecodingException("RDPEI");     
+                ThrowDecodingException("RDPEI");
         }
-        
     }
     
     process dycServer accepts s:RDPEDYC.DVCDataPDU where (s#EDYCChannelName != nothing && ((s#EDYCChannelName as string) == "Microsoft::Windows::RDS::Input"))
     {
         ushort eventType = (s.Data[0] + ((s.Data[1] as ushort) << 8)) as ushort;
-        Server server = endpoint Server over dycServer;    
+        Server server = endpoint Server over dycServer;
             
         switch (eventType)
         {
@@ -98,18 +98,26 @@ autostart actor RDPEIOverRDPEDYC(RDPEDYC.Server dycServer)
             case 0x0006 => 
                 switch (s.Data)
                 {
-                    case m:RDPINPUT_DISMISS_HOVERING_CONTACT_PDU from BinaryDecoder<RDPINPUT_DISMISS_HOVERING_CONTACT_PDU> =>
+                    case m:RDPINPUT_DISMISS_HOVERING_TOUCH_CONTACT_PDU from BinaryDecoder<RDPINPUT_DISMISS_HOVERING_TOUCH_CONTACT_PDU> =>
                         dispatch server accepts m;
                     default => 
-                        ThrowDecodingException("RDPEI", "RDPINPUT_DISMISS_HOVERING_CONTACT_PDU");
+                        ThrowDecodingException("RDPEI", "RDPINPUT_DISMISS_HOVERING_TOUCH_CONTACT_PDU");
+                }
+            case 0x0008 => 
+                switch (s.Data)
+                {
+                    case m:RDPINPUT_PEN_EVENT_PDU from BinaryDecoder<RDPINPUT_PEN_EVENT_PDU> =>
+                        dispatch server accepts m;
+                    default => 
+                        ThrowDecodingException("RDPEI", "RDPINPUT_PEN_EVENT_PDU");
                 }
             default =>
-                ThrowDecodingException("RDPEI");   
-        }       
+                ThrowDecodingException("RDPEI");
+        }
     }
 }
 
-//--------------------------messages-----------------------------------------//
+// --------------------------messages-----------------------------------------//
 
 message RDPINPUT_SC_READY_PDU
 {
@@ -157,7 +165,7 @@ message RDPINPUT_TOUCH_EVENT_PDU
     (RDPINPUT_HEADER where value.eventId == RDPINPUT_HEADER_EVENT_EVENTID.EVENTID_TOUCH) header;
     FOUR_BYTE_UNSIGNED_INTEGER encodeTime;
     TWO_BYTE_UNSIGNED_INTEGER frameCount;
-    array<RDPINPUT_TOUCH_FRAME> frames;
+    array<RDPINPUT_TOUCH_FRAME> frames with BinaryEncoding{Length = frameCount.Value()};
         
     override string ToString()
     {
@@ -169,54 +177,71 @@ message RDPINPUT_TOUCH_EVENT_PDU
     } 
 }
 
-message RDPINPUT_SUSPEND_TOUCH_PDU
+message RDPINPUT_SUSPEND_INPUT_PDU
 {
-    (RDPINPUT_HEADER where value.eventId == RDPINPUT_HEADER_EVENT_EVENTID.EVENTID_SUSPEND_TOUCH) header
-        where ValidationCheck(value.pduLength == 6, this, "RDPEI: The pduLength in Message RDPINPUT_SUSPEND_TOUCH_PDU must be 6.");
+    (RDPINPUT_HEADER where value.eventId == RDPINPUT_HEADER_EVENT_EVENTID.EVENTID_SUSPEND_INPUT) header
+        where ValidationCheck(value.pduLength == 6, this, "RDPEI: The pduLength in Message RDPINPUT_SUSPEND_INPUT_PDU must be 6.");
         
     override string ToString()
     {
         string summary;
-        summary = "RDPINPUT_SUSPEND_TOUCH_PDU, ";
+        summary = "RDPINPUT_SUSPEND_INPUT_PDU, ";
         summary += "EventId = " + (header.eventId as string) + ", ";
         summary += "Length = " + (header.pduLength as string);
         return summary;
     } 
 }
 
-message RDPINPUT_RESUME_TOUCH_PDU
+message RDPINPUT_RESUME_INPUT_PDU
 {
-    (RDPINPUT_HEADER where value.eventId == RDPINPUT_HEADER_EVENT_EVENTID.EVENTID_RESUME_TOUCH) header
-        where ValidationCheck(value.pduLength == 6, this, "RDPEI: The pduLength in Message RDPINPUT_RESUME_TOUCH_PDU must be 6.");
+    (RDPINPUT_HEADER where value.eventId == RDPINPUT_HEADER_EVENT_EVENTID.EVENTID_RESUME_INPUT) header
+        where ValidationCheck(value.pduLength == 6, this, "RDPEI: The pduLength in Message RDPINPUT_RESUME_INPUT_PDU must be 6.");
         
     override string ToString()
     {
         string summary;
-        summary = "RDPINPUT_RESUME_TOUCH_PDU, ";
+        summary = "RDPINPUT_RESUME_INPUT_PDU, ";
         summary += "EventId = " + (header.eventId as string) + ", ";
         summary += "Length = " + (header.pduLength as string);
         return summary;
     } 
 }
 
-message RDPINPUT_DISMISS_HOVERING_CONTACT_PDU
+message RDPINPUT_DISMISS_HOVERING_TOUCH_CONTACT_PDU
 {
-    (RDPINPUT_HEADER where value.eventId == RDPINPUT_HEADER_EVENT_EVENTID.EVENTID_DISMISS_HOVERING_CONTACT) header
-        where ValidationCheck(value.pduLength == 7, this, "RDPEI: The pduLength in Message RDPINPUT_DISMISS_HOVERING_CONTACT_PDU must be 7.");
+    (RDPINPUT_HEADER where value.eventId == RDPINPUT_HEADER_EVENT_EVENTID.EVENTID_DISMISS_HOVERING_TOUCH_CONTACT) header
+        where ValidationCheck(value.pduLength == 7, this, "RDPEI: The pduLength in Message RDPINPUT_DISMISS_HOVERING_TOUCH_CONTACT_PDU must be 7.");
         
     byte contactId;
         
     override string ToString()
     {
         string summary;
-        summary = "RDPINPUT_DISMISS_HOVERING_CONTACT_PDU, ";
+        summary = "RDPINPUT_DISMISS_HOVERING_TOUCH_CONTACT_PDU, ";
         summary += "EventId = " + (header.eventId as string) + ", ";
         summary += "Length = " + (header.pduLength as string);
         return summary;
     } 
 }
 
-//--------------------------types-----------------------------------------//
+message RDPINPUT_PEN_EVENT_PDU
+{
+    (RDPINPUT_HEADER where value.eventId == RDPINPUT_HEADER_EVENT_EVENTID.EVENTID_PEN) header;
+    FOUR_BYTE_UNSIGNED_INTEGER encodeTime;
+    TWO_BYTE_UNSIGNED_INTEGER frameCount;
+    array<RDPINPUT_PEN_FRAME> frames with BinaryEncoding{Length = frameCount.Value()};
+        
+    override string ToString()
+    {
+        string summary;
+        summary = "RDPINPUT_TOUCH_EVENT_PDU, ";
+        summary += "EventId = " + (header.eventId as string) + ", ";
+        summary += "Length = " + (header.pduLength as string);
+        return summary;
+    } 
+}
+
+// --------------------------types-----------------------------------------//
 
 type TWO_BYTE_UNSIGNED_INTEGER
 {
@@ -258,8 +283,8 @@ type TWO_BYTE_UNSIGNED_INTEGER
 type TWO_BYTE_SIGNED_INTEGER
 {
     TWO_BYTE_SIGNED_INTEGER_C c with BinaryEncoding{Width = 1};
-    TWO_BYTE_SIGNED_INTEGER_S s with BinaryEncoding{Width = 1};   
-    byte val1 with BinaryEncoding{Width = 6};  
+    TWO_BYTE_SIGNED_INTEGER_S s with BinaryEncoding{Width = 1};
+    byte val1 with BinaryEncoding{Width = 6};
     optional ([|c == 1|] byte) val2;
     
     uint Length()
@@ -298,11 +323,11 @@ type TWO_BYTE_SIGNED_INTEGER
 
 type FOUR_BYTE_UNSIGNED_INTEGER
 {
-    FOUR_BYTE_UNSIGNED_INTEGER_C c with BinaryEncoding{Width = 2};   
+    FOUR_BYTE_UNSIGNED_INTEGER_C c with BinaryEncoding{Width = 2};
     byte val1 with BinaryEncoding{Width = 6};
     optional ([|c >= 1|] byte) val2;
     optional ([|c >= 2|] byte) val3;
-    optional ([|c == 3|] byte) val4; 
+    optional ([|c == 3|] byte) val4;
     
     uint Length()
     {
@@ -341,12 +366,12 @@ type FOUR_BYTE_UNSIGNED_INTEGER
 
 type FOUR_BYTE_SIGNED_INTEGER
 {
-    FOUR_BYTE_SIGNED_INTEGER_C c with BinaryEncoding{Width = 2};   
-    FOUR_BYTE_SIGNED_INTEGER_S s with BinaryEncoding{Width = 1};        
-    byte val1 with BinaryEncoding{Width = 5};   
+    FOUR_BYTE_SIGNED_INTEGER_C c with BinaryEncoding{Width = 2};
+    FOUR_BYTE_SIGNED_INTEGER_S s with BinaryEncoding{Width = 1};
+    byte val1 with BinaryEncoding{Width = 5};
     optional ([|c >= 1|] byte) val2;
     optional ([|c >= 2|] byte) val3;
-    optional ([|c == 3|] byte) val4; 
+    optional ([|c == 3|] byte) val4;
 
     uint Length()
     {
@@ -394,11 +419,11 @@ type EIGHT_BYTE_UNSIGNED_INTEGER
     byte val1 with BinaryEncoding{Width = 5};
     optional ([|c >= 1|] byte) val2;
     optional ([|c >= 2|] byte) val3;
-    optional ([|c >= 3|] byte) val4; 
-    optional ([|c >= 4|] byte) val5; 
-    optional ([|c >= 5|] byte) val6; 
-    optional ([|c >= 6|] byte) val7; 
-    optional ([|c == 7|] byte) val8; 
+    optional ([|c >= 3|] byte) val4;
+    optional ([|c >= 4|] byte) val5;
+    optional ([|c >= 5|] byte) val6;
+    optional ([|c >= 6|] byte) val7;
+    optional ([|c == 7|] byte) val8;
     
     uint Length()
     {
@@ -461,12 +486,11 @@ type RDPINPUT_HEADER
     uint pduLength;
 };
 
-
 type RDPINPUT_CONTACT_DATA
 {
     byte contactId;
     TWO_BYTE_UNSIGNED_INTEGER fieldsPresent;
-    FOUR_BYTE_SIGNED_INTEGER x; 
+    FOUR_BYTE_SIGNED_INTEGER x;
     FOUR_BYTE_SIGNED_INTEGER y;
     FOUR_BYTE_UNSIGNED_INTEGER contactFlags 
         where ValidationCheck( 
@@ -486,12 +510,12 @@ type RDPINPUT_CONTACT_DATA
             "UP, UP | CANCELED, UPDATE, UPDATE | CANCELED, DOWN | INRANGE | INCONTACT, UPDATE | INRANGE | INCONTACT, UP | INRANGE, UPDATE | INRANGE"
         );
         
-    optional ([|(fieldsPresent.Value() & 0x0001) ==  0x0001|] TWO_BYTE_SIGNED_INTEGER) contactRectLeft;
-    optional ([|(fieldsPresent.Value() & 0x0001) ==  0x0001|] TWO_BYTE_SIGNED_INTEGER) contactRectTop;
-    optional ([|(fieldsPresent.Value() & 0x0001) ==  0x0001|] TWO_BYTE_SIGNED_INTEGER) contactRectRight; 
-    optional ([|(fieldsPresent.Value() & 0x0001) ==  0x0001|] TWO_BYTE_SIGNED_INTEGER) contactRectBottom;
-    optional ([|(fieldsPresent.Value() & 0x0002) ==  0x0002|] FOUR_BYTE_UNSIGNED_INTEGER) orientation;
-    optional ([|(fieldsPresent.Value() & 0x0004) ==  0x0004|] FOUR_BYTE_UNSIGNED_INTEGER) pressure;
+    optional ([|(fieldsPresent.Value() & 0x0001) == 0x0001|] TWO_BYTE_SIGNED_INTEGER) contactRectLeft;
+    optional ([|(fieldsPresent.Value() & 0x0001) == 0x0001|] TWO_BYTE_SIGNED_INTEGER) contactRectTop;
+    optional ([|(fieldsPresent.Value() & 0x0001) == 0x0001|] TWO_BYTE_SIGNED_INTEGER) contactRectRight;
+    optional ([|(fieldsPresent.Value() & 0x0001) == 0x0001|] TWO_BYTE_SIGNED_INTEGER) contactRectBottom;
+    optional ([|(fieldsPresent.Value() & 0x0002) == 0x0002|] FOUR_BYTE_UNSIGNED_INTEGER) orientation;
+    optional ([|(fieldsPresent.Value() & 0x0004) == 0x0004|] FOUR_BYTE_UNSIGNED_INTEGER) pressure;
     
     uint Length()
     {
@@ -501,7 +525,7 @@ type RDPINPUT_CONTACT_DATA
         len += y.Length();
         len += contactFlags.Length();
         
-        if ((fieldsPresent.Value() & 0x0001) ==  0x0001)
+        if ((fieldsPresent.Value() & 0x0001) == 0x0001)
         {
             len += (contactRectLeft as TWO_BYTE_SIGNED_INTEGER).Length();
             len += (contactRectTop as TWO_BYTE_SIGNED_INTEGER).Length();
@@ -509,17 +533,22 @@ type RDPINPUT_CONTACT_DATA
             len += (contactRectBottom as TWO_BYTE_SIGNED_INTEGER).Length();
         }
         
-        if ((fieldsPresent.Value() & 0x0002) ==  0x0002)
+        if ((fieldsPresent.Value() & 0x0002) == 0x0002)
         {
             len += (orientation as FOUR_BYTE_UNSIGNED_INTEGER).Length();
         }
         
-        if ((fieldsPresent.Value() & 0x0004) ==  0x0004)
+        if ((fieldsPresent.Value() & 0x0004) == 0x0004)
         {
             len += (pressure as FOUR_BYTE_UNSIGNED_INTEGER).Length();
         }
         
         return len as uint;
+    }
+
+    override string ToString()
+    {
+        return "RDPINPUT_CONTACT_DATA, contactId: " + contactId.ToString();
     }
 };
 
@@ -527,10 +556,63 @@ type RDPINPUT_TOUCH_FRAME
 {
     TWO_BYTE_UNSIGNED_INTEGER contactCount;
     EIGHT_BYTE_UNSIGNED_INTEGER frameOffset;
-    array<RDPINPUT_CONTACT_DATA> contacts with BinaryEncoding{Length = contactCount.Value() as uint};
+    array<RDPINPUT_CONTACT_DATA> contacts with BinaryEncoding{Length = contactCount.Value()};
+
+    override string ToString()
+    {
+        return "RDPINPUT_TOUCH_FRAME, contactCount: " + contactCount.ToString() + ", frameOffset: " + frameOffset.ToString();
+    }
 };
 
-//--------------------------patterns-----------------------------------------//
+type RDPINPUT_PEN_FRAME
+{
+    TWO_BYTE_UNSIGNED_INTEGER contactCount;
+    EIGHT_BYTE_UNSIGNED_INTEGER frameOffset;
+    array<RDPINPUT_PEN_CONTACT> contacts with BinaryEncoding{Length = contactCount.Value()};
+
+    override string ToString()
+    {
+        return "RDPINPUT_PEN_FRAME, contactCount: " + contactCount.ToString() + ", frameOffset: " + frameOffset.ToString();
+    }
+};
+
+type RDPINPUT_PEN_CONTACT
+{
+    byte contactId;
+    TWO_BYTE_UNSIGNED_INTEGER fieldsPresent;
+    FOUR_BYTE_SIGNED_INTEGER x;
+    FOUR_BYTE_SIGNED_INTEGER y;
+    FOUR_BYTE_UNSIGNED_INTEGER contactFlags 
+        where ValidationCheck( 
+            value.Value() in 
+            {
+                0x0004, // UP
+                0x0024, // UP | CANCELED
+                0x0002, // UPDATE
+                0x0022, // UPDATE | CANCELED
+                0x0019, // DOWN | INRANGE | INCONTACT
+                0x001A, // UPDATE | INRANGE | INCONTACT
+                0x000C, // UP | INRANGE
+                0x000A  // UPDATE | INRANGE
+            },
+            null,
+            "RDPEI: The contactFlags in type RDPINPUT_PEN_CONTACT must contain one of the following combinations of the contact state flags and must not contain any other combination:" +
+            "UP, UP | CANCELED, UPDATE, UPDATE | CANCELED, DOWN | INRANGE | INCONTACT, UPDATE | INRANGE | INCONTACT, UP | INRANGE, UPDATE | INRANGE"
+        );
+        
+    optional ([|(fieldsPresent.Value() & 0x0001) == 0x0001|] FOUR_BYTE_UNSIGNED_INTEGER) penFlags;
+    optional ([|(fieldsPresent.Value() & 0x0002) == 0x0002|] FOUR_BYTE_UNSIGNED_INTEGER) pressure;
+    optional ([|(fieldsPresent.Value() & 0x0004) == 0x0004|] TWO_BYTE_UNSIGNED_INTEGER) rotation;
+    optional ([|(fieldsPresent.Value() & 0x0004) == 0x0008|] TWO_BYTE_UNSIGNED_INTEGER) tiltX;
+    optional ([|(fieldsPresent.Value() & 0x0004) == 0x00010|] TWO_BYTE_UNSIGNED_INTEGER) tiltY;
+
+    override string ToString()
+    {
+        return "RDPINPUT_PEN_CONTACT, contactId: " + contactId.ToString();
+    }
+};
+
+// --------------------------patterns-----------------------------------------//
 
 pattern TWO_BYTE_UNSIGNED_INTEGER_C = enum byte
 {
@@ -589,27 +671,36 @@ pattern RDPINPUT_HEADER_EVENT_EVENTID = enum ushort
     EVENTID_SC_READY = 0x0001,
     EVENTID_CS_READY = 0x0002,
     EVENTID_TOUCH = 0x0003,
-    EVENTID_SUSPEND_TOUCH = 0x0004,
-    EVENTID_RESUME_TOUCH = 0x0005,
-    EVENTID_DISMISS_HOVERING_CONTACT = 0x0006,
+    EVENTID_SUSPEND_INPUT = 0x0004,
+    EVENTID_RESUME_INPUT = 0x0005,
+    EVENTID_DISMISS_HOVERING_TOUCH_CONTACT = 0x0006,
+    EVENTID_PEN = 0x0008,
     ...
 };
 
-pattern RDPINPUT_SC_READY_PDU_PROTOCOL_VERSION = flags uint
+pattern RDPINPUT_SC_READY_PDU_PROTOCOL_VERSION = enum uint
 {
     RDPINPUT_PROTOCOL_V1 = 0x00010000,
+    RDPINPUT_PROTOCOL_V101 = 0x00010001,
+    RDPINPUT_PROTOCOL_V200 = 0x00020000,
     ...
 };
 
 pattern RDPINPUT_CS_READY_PDU_PROTOCOL_VERSION = enum uint
 {
     RDPINPUT_PROTOCOL_V1 = 0x00010000,
+    RDPINPUT_PROTOCOL_V101 = 0x00010001,
+    RDPINPUT_PROTOCOL_V200 = 0x00020000,
     ...
 };
 
 pattern RDPINPUT_CS_READY_PDU_FLAGS = flags uint 
 {
-    READY_FLAGS_SHOW_TOUCH_VISUALS = 0x00000001,
-    READY_FLAGS_DISABLE_TIMESTAMP_INJECTION = 0x00000002,
+    READY_FLAGS_SHOW_TOUCH_VISUALS = 0x00000001
+        with Documentation
+            {Description = "Touch gesture and contact visuals SHOULD be rendered by the server in the remote session."},
+    READY_FLAGS_DISABLE_TIMESTAMP_INJECTION = 0x00000002
+        with Documentation
+            {Description = "The client does not support touch frame timestamp remoting. "},
     ...
 };

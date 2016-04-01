@@ -17,37 +17,53 @@ OPNAuthoring
         ],
     RevisionSummary = 
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "11/15/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "380791", Date = "08/13/2015"}
         ]
 };
 
 using Standard;
 using Utility;
-using IANA;
 using RADIUS;
 using IKE;
 using PPP;
+using EAPOL;
+using TLS;
 
 endpoint Server over RADIUS.Node
             | over IKE.Node 
-            | over PPP.Node accepts Packet issues Packet;
+            | over PPP.Node
+            | over EAPOL.Node 
+            | over TLS.Server accepts mutable Packet issues mutable Packet;
 
 client endpoint Client connected to Server;
 
 autostart actor EAPOverRADIUS(RADIUS.Node node)
 {
-    process node accepts p:RADIUS.Packet where (p.PayloadForEap != nothing && (p.PayloadForEap as binary).Count >= 2)
+    process node accepts p:RADIUS.Packet
     {
-        var server = endpoint EAP.Server over node;
-        PacketDecoder(p.PayloadForEap as binary, server);
+        binary eapBin = Utility.EmptyBinary;
+        foreach (RADIUS.AttributeType attr in p.Attributes)
+        {
+            if (attr.Type == RADIUS.AttributeTypePatt.EAPMessageAttribute && attr.Attribute is eap:EAPMessageAttribute)
+            {
+                eapBin += eap.EAPMessage;
+            }
+        }
+        if (eapBin.Count == 0)
+        {
+            reject;
+            return;
+        }
+        PacketDecoder(eapBin, endpoint EAP.Server over node);
     }
 }
 
-autostart actor EAPOverIKE(IKE.Node node)
+autostart actor EAPOverEAPOL(EAPOL.Node node)
 {
-    process node accepts p:IKE.IKEDatagram where (HasEapInIKE(p))
+    process node accepts f:EAPOL.Frame where f.PacketType == EAPOL.PacketTypeEnum.EapPacket
     {
-        EAPOverIKEProcessing(p, node);
+        var server = endpoint EAP.Server over node;
+        PacketDecoder(f.PacketBody as binary, server);
     }
 }
 
@@ -66,75 +82,7 @@ void PacketDecoder(binary payload, EAP.Server server)
                 dispatch server accepts m;
             }
         default =>
-            ThrowDecodingException("EAP Packet");
-    }
-}
-
-void EAPOverIKEProcessing(IKE.IKEDatagram d, IKE.Node node)
-{
-    ushort offset = 0;
-    ushort curPayloadLength = (d.Data[offset + 2] * 256 + d.Data[offset + 3]) as ushort;
-    ushort totalCount = d.Data.Count as ushort;
-    while (offset < totalCount - 4)
-    {
-        if (d.NextPayload == 48) // The first segment is eap.
-        {
-            var server = endpoint EAP.Server over node;
-            PacketDecoder(d.Data.Segment(offset, curPayloadLength), server);
-            offset = (offset + curPayloadLength) as ushort;
-        }
-        
-        else if (d.Data[offset] == 48) // The second segment or later segment is eap.
-        {
-            offset = (offset + curPayloadLength) as ushort;
-            curPayloadLength = (d.Data[offset + 2] * 256 + d.Data[offset + 3]) as ushort;
-            var server = endpoint EAP.Server over node;
-            PacketDecoder(d.Data.Segment(offset, curPayloadLength), server);
-        }
-        
-        else // Otherwise, just move forward
-        {
-            offset = (offset + curPayloadLength) as ushort;
-            curPayloadLength = (d.Data[offset + 2] * 256 + d.Data[offset + 3]) as ushort;
-        }
-    }
-}
-
-// The method is used for checking if IKE has payload of eap.
-bool HasEapInIKE(IKE.IKEDatagram d)
-{
-    if (d.Data == $[])
-    {
-        return false;
-    }
-    else
-    {
-        if (d.Flags is Flagsv1) // Excluded Encryted segment.
-        {
-            if ((d.Flags as Flagsv1).Encryption == 1)
-            {
-                return false;
-            }
-        }
-        if (d.NextPayload == 48)
-        {
-            return true;
-        }
-        ushort offset = 0; // offset begins from 0, and max value is totalCount - 1
-        ushort totalCount = d.Data.Count as ushort;
-        while (offset <= totalCount - 4)
-        {
-            if (d.Data[offset] == 48)
-            {
-                return true;
-            }
-            else
-            {
-                ushort curPayloadLength = (d.Data[offset + 2] * 256 + d.Data[offset + 3]) as ushort;// Get current payload's length 
-                offset = (offset + curPayloadLength) as ushort;// Make offset move forward
-            }
-        }
-        return false;
+            ThrowDecodingException("EAP", "Packet");
     }
 }
 
@@ -153,46 +101,51 @@ message Packet
     EapCode Code;
     byte Identifier;
     ushort Length;
-    
-    optional (Identity[Length]
-     | Notification[Length]
-     | Nak[Length]
-     | MD5Challenge[Length]
-     | OTP[Length]
-     | GTC[Length]
-     | TLS[Length]
-     | ExpandedNak[Length]
-     | Experimental[Length]
-     | PEAP[Length]
-     | Blob[(Length - 4) as uint]) Data;
+    optional [|Code == EapCode.Request || Code == EapCode.Response|] MethodType Type;
+    optional ([|Type == MethodType.Identity|] Identity[Length] | 
+            [|Type == MethodType.Notification|] Notification[Length] | 
+            [|Type == MethodType.Nak|] Nak[Length] | 
+            [|Type == MethodType.MD5Challenge|] MD5Challenge[Length] | 
+            [|Type == MethodType.OTP|] OTP[Length] | 
+            [|Type == MethodType.GenericTokenCard|] GTC[Length] | 
+            [|Type == MethodType.TLS|] EAP_TLS[Length] | 
+            [|Type == MethodType.PEAP|] PEAP[Length] | 
+            [|Type == MethodType.EAP_MSCHAPv2|] EAP_MSCHAPv2[Length] | 
+            [|Type == MethodType.ExtensionsMethods|] ExtensionsMethods[Length] | 
+            [|Type == MethodType.ExpandedTypes|] ExpandedTypes[Length] | 
+            [|Type == MethodType.Experimental|] Experimental[Length] | 
+            binary) Type_Data with BinaryEncoding{Length = Length - 4 - (Type == nothing ? 0 : 1)};
     
     override string ToString()
     {
-        string summary = "";
-        summary += EnumToString(Code,"EAP.EapCode");
-        if (!(Data is nothing))
+        string summary = EnumToStringInSummary<EAP.EapCode>(Code);
+        if (Type is methodType:MethodType)
         {
-            switch (Data)
+            switch (methodType)
             {
-                case Identity =>
+                case MethodType.Identity =>
                     summary += ", Identity";
-                case Notification =>
+                case MethodType.Notification =>
                     summary += ", Notification";
-                case Nak =>
+                case MethodType.Nak =>
                     summary += ", Nak";
-                case MD5Challenge =>
+                case MethodType.MD5Challenge =>
                     summary += ", MD5Challenge";
-                case OTP =>
+                case MethodType.OTP =>
                     summary += ", OTP";
-                case GTC =>
+                case MethodType.GenericTokenCard =>
                     summary += ", GTC";
-                case TLS =>
+                case MethodType.TLS =>
                     summary += ", TLS";
-                case PEAP =>
+                case MethodType.PEAP =>
                     summary += ", PEAP";
-                case ExpandedNak =>
-                    summary += ", ExpandedNak";
-                case Experimental =>
+                case MethodType.EAP_MSCHAPv2 =>
+                    summary += ", EAP_MSCHAPv2";
+                case MethodType.ExtensionsMethods =>
+                    summary += ", ExtensionsMethods";
+                case MethodType.ExpandedTypes =>
+                    summary += ", ExpandedTypes";
+                case MethodType.Experimental =>
                     summary += ", Experimental";
                 default =>
                     summary += "";
@@ -202,13 +155,14 @@ message Packet
     }
 }
 
-//# rfc 3748 section 4
+// # rfc 3748 section 4
 pattern EapCode = enum byte
 {
     Request = 1,
     Response = 2,
     Success = 3,
-    Failure = 4
+    Failure = 4,
+    ...
 };
 
 // From Link: "http://www.iana.org/assignments/eap-numbers"
@@ -222,61 +176,60 @@ pattern MethodType = enum byte
     GenericTokenCard = 6,
     TLS = 13,
     PEAP = 25,
-    ExpandedNak = 254,
-    Experimental = 255
+    EAP_MSCHAPv2 = 26, // http://tools.ietf.org/html/draft-kamath-pppext-eap-mschapv2-02
+    ExtensionsMethods = 33,
+    ExpandedTypes = 254,
+    Experimental = 255,
+    ...
 };
 
 // 1 - Identity : rfc3748#section-5.1
 type Identity[ushort Len]
 {
-    (MethodType where value == MethodType.Identity) Type;
-    // Future Reference: Bellow type should be MBCString.
-    binary TypeData with BinaryEncoding{Length = (Len - 5) as uint};
+    string Type_Data with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = (Len - 5)};
+    override string ToString()
+    {
+        return Type_Data;
+    }
 }
 
 // 2 - Notification : rfc3748#section-5.2
 type Notification[ushort Len]
 {
-    (MethodType where value == MethodType.Notification) Type;
-    binary TypeData with BinaryEncoding{Length = (Len - 5) as uint};
+    binary TypeData with BinaryEncoding{Length = (Len - 5)};
 }
 
 // 3 - Nak : rfc3748#section-5.3
 // The legacy Nak Type is valid only in Response messages
 type Nak[ushort Len]
 {
-    (MethodType where value == MethodType.Nak) Type;
-    binary DesiredAuthType with BinaryEncoding{Length = (Len - 5) as uint};
+    binary DesiredAuthType with BinaryEncoding{Length = (Len - 5)};
 }
 
 // 4 - MD5-Challenge : rfc3748#section-5.4
 type MD5Challenge[ushort Len]
 {
-    (MethodType where value == MethodType.MD5Challenge) Type;
     byte ValueSize;
     binary Value with BinaryEncoding{Length = ValueSize};
-    string Name with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = (Len - 6 - ValueSize) as uint};
+    string Name with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = (Len - 6 - ValueSize)};
 }
 
 // 5 - One-Time Password (OTP) : rfc3748#section-5.5
 type OTP[ushort Len]
 {
-    (MethodType where value == MethodType.OTP) Type;
-    binary OTPData with BinaryEncoding{Length = (Len - 5) as uint};
+    binary OTPData with BinaryEncoding{Length = (Len - 5)};
 }
 
 // 6 - Generic Token Card (GTC) : rfc3748#section-5.6
 type GTC[ushort Len]
 {
-    (MethodType where value == MethodType.GenericTokenCard) Type;
-    binary GTCData with BinaryEncoding{Length = (Len - 5) as uint};
+    binary GTCData with BinaryEncoding{Length = (Len - 5)};
 }
 
 // 13 - PPP EAP TLS Packet Format: rfc5216
-type TLS[ushort Len]
+type EAP_TLS[ushort Len]
 {
-    (MethodType where value == MethodType.TLS) Type;
-    //Flag
+    // Flag
     bool LengthIncluded with BinaryEncoding{Width = 1};
     bool MoreFragments with BinaryEncoding{Width = 1};
     bool TLSStart with BinaryEncoding{Width = 1};
@@ -286,26 +239,41 @@ type TLS[ushort Len]
     optional [|!(TLSMessageLength is nothing)|] binary TLSData with BinaryEncoding{Length = TLSMessageLength as uint};
 }
 
-// 254 Expanded Nak : rfc3748#section-5.3.2
-type ExpandedNak[ushort Len]
+// 25 - EAP/MS-CHAPv2 : rfc2759
+type EAP_MSCHAPv2[ushort Len]
 {
-    (MethodType where value == MethodType.ExpandedNak) Type;
-    uint VendorId with BinaryEncoding{Width = 24};
-    uint VendorType;
-    optional [|VendorId == 0 && VendorType == 3|] uint EAPVendorId with BinaryEncoding{Width = 24};
-    optional [|VendorId == 0 && VendorType == 3|] uint EAPVendorType;
-    optional [|VendorId != 0 || VendorType != 3|] binary VendorData with BinaryEncoding{Length = (Len - 12) as uint};
+    binary MSCHAPv2Data with BinaryEncoding{Length = (Len - 5)};
 }
+
+// 33 - ExtensionsMethods
+type ExtensionsMethods[ushort Len]
+{
+    binary Data with BinaryEncoding{Length = (Len - 5)};
+}
+
+// 254 Expanded Types : rfc3748#section-5.7
+type ExpandedTypes[ushort Len]
+{
+    ExpandedTypesVendorId Vendor_Id with BinaryEncoding{Width = 24};
+    uint Vendor_Type;
+    binary Vendor_Data with BinaryEncoding{Length = (Len - 12)};
+}
+
+// http://www.iana.org/assignments/enterprise-numbers/enterprise-numbers
+pattern ExpandedTypesVendorId = enum uint
+{
+    Microsoft = 311, // 0x137
+    WiFiAlliance = 14122, // 0x372A
+    ...
+};
 
 // 255 Experimental : rfc3748#section-5.8
 type Experimental[ushort Len]
 {
-    (MethodType where value == MethodType.Experimental) Type;
-    binary UndefinedData with BinaryEncoding{Length = (Len - 5) as uint};
+    binary UndefinedData with BinaryEncoding{Length = (Len - 5)};
 }
 
 type PEAP[ushort Len]
 {
-    (MethodType where value == MethodType.PEAP) Type;
-    binary PEAPData with BinaryEncoding{Length = (Len - 5) as uint};
+    binary PEAPData with BinaryEncoding{Length = (Len - 5)};
 }

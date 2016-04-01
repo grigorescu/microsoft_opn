@@ -11,11 +11,11 @@ OPNAuthoring
     Copyright = "(c) Microsoft Corporation",
     References = 
         [
-            new Reference{Name = "MS-PCCRR", Version = "7.0", ProgramName = ProgramName.MCPP},
+            new Reference{Name = "MS-PCCRR", Version = "7.0", Date = "01/31/2013", ProgramName = ProgramName.MCPP},
         ],
     RevisionSummary = 
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "12/04/2012"},
+            new Revision{Class = RevisionClass.Major, Version = "362740", Date = "04/18/2014"},
         ]
 };
 
@@ -31,7 +31,7 @@ client endpoint Client connected to Server;
 
 autostart actor PCCRRServerOverHTTP(HTTP.Server server)
 {
-    process server accepts req:HttpContract.Request where GetUri(req).Contains("116B50EB-ECE2-41ac-8429-9F9E963361B7")
+    process server accepts req:HttpContract.Request where IsPCCRR(req.Uri)
     {
         switch(req.Payload)
         {
@@ -43,7 +43,7 @@ autostart actor PCCRRServerOverHTTP(HTTP.Server server)
         }
     }
     
-    process server issues res:HttpContract.Response where GetUri(res).Contains("116B50EB-ECE2-41ac-8429-9F9E963361B7")
+    process server issues res:HttpContract.Response where IsPCCRR(res#Uri)
     {
         switch(res.Payload)
         {
@@ -53,6 +53,11 @@ autostart actor PCCRRServerOverHTTP(HTTP.Server server)
             default => 
             ThrowDecodingException("PCCRR Response");
         }
+    }
+    
+    bool IsPCCRR(optional UriType uriType)
+    {
+        return (uriType is uri:UriType) && uri.AbsPath is absPath:string && absPath.Contains("116B50EB-ECE2-41ac-8429-9F9E963361B7");
     }
 }
 
@@ -181,7 +186,7 @@ type MSG_GETBLKLIST
 {
     uint SizeOfSegmentID;
     binary SegmentID with BinaryEncoding{Length = SizeOfSegmentID}; // MS-PCCRC v20120427, 2.2   Segment Identifiers (HoHoDk) and Keys
-    optional [|(SizeOfSegmentID % 4) != 0|] array<byte> ZeroPad with BinaryEncoding{Length = (4 - (SizeOfSegmentID % 4)) as uint};
+    optional [|(SizeOfSegmentID % 4) != 0|] array<byte> ZeroPad with BinaryEncoding{Length = (4 - (SizeOfSegmentID % 4))};
     uint NeededBlocksRangeCount where ValidationCheck((value >= 1 && value <= 256), null, DiagnosisLevel.Error, "PCCRR: NeededBlocksRangeCount in type MessageGetBlockList must be between 1 and 256.");
     optional [|NeededBlocksRangeCount > 0|] BLOCK_RANGE_ARRAY[NeededBlocksRangeCount] NeededBlockRanges;
     
@@ -196,7 +201,7 @@ type MSG_GETBLKS
 {
     uint SizeOfSegmentID;
     binary SegmentID with BinaryEncoding{Length = SizeOfSegmentID}; // MS-PCCRC v20120427, 2.2   Segment Identifiers (HoHoDk) and Keys
-    optional [|(SizeOfSegmentID % 4) != 0|] array<byte> ZeroPad with BinaryEncoding{Length = (4 - (SizeOfSegmentID % 4)) as uint};
+    optional [|(SizeOfSegmentID % 4) != 0|] array<byte> ZeroPad with BinaryEncoding{Length = (4 - (SizeOfSegmentID % 4))};
     uint ReqBlockRangeCount where ValidationCheck((value >= 1 && value <= 256), null, DiagnosisLevel.Error, "PCCRR: ReqBlockRangeCount in type MessageGetBlocks must be between 1 and 256 inclusive.");
     array<BLOCK_RANGE> ReqBlockRanges with BinaryEncoding{Length = ReqBlockRangeCount};
     uint SizeOfDataForVrfBlock where ValidationCheck(value == 0, null, DiagnosisLevel.Warning, "PCCRR: SizeOfDataForVrfBlock in type MessageGetBlocks should be zero.");
@@ -228,7 +233,7 @@ type SegmentID
 {
     uint SizeOfSegmentID;
     binary SegmentID with BinaryEncoding{Length = SizeOfSegmentID}; // MS-PCCRC v20120427, 2.2   Segment Identifiers (HoHoDk) and Keys
-    optional [|(SizeOfSegmentID % 4) != 0|] array<byte> ZeroPad with BinaryEncoding{Length = ((4 -SegmentID.Count % 4) % 4) as uint};
+    optional [|(SizeOfSegmentID % 4) != 0|] array<byte> ZeroPad with BinaryEncoding{Length = ((4 -SegmentID.Count % 4) % 4)};
 }
 
 // 2.2.5.1   MSG_NEGO_RESP
@@ -248,7 +253,7 @@ type MSG_BLKLIST
 {
     uint SizeOfSegmentId;
     binary SegmentID with BinaryEncoding{Length = SizeOfSegmentId}; // MS-PCCRC v20120427, 2.2   Segment Identifiers (HoHoDk) and Keys
-    optional [|(SizeOfSegmentId % 4) != 0|] array<byte> ZeroPad with BinaryEncoding{Length = (4 - (SizeOfSegmentId % 4)) as uint};
+    optional [|(SizeOfSegmentId % 4) != 0|] array<byte> ZeroPad with BinaryEncoding{Length = (4 - (SizeOfSegmentId % 4))};
     uint BlockRangeCount;
     optional [|BlockRangeCount > 0|] BLOCK_RANGE_ARRAY[BlockRangeCount] BlockRanges;
     uint NextBlockIndex;
@@ -264,15 +269,15 @@ type MSG_BLK
 {
     uint SizeOfSegmentId;
     binary SegmentID with BinaryEncoding{Length = SizeOfSegmentId}; // MS-PCCRC v20120427, 2.2   Segment Identifiers (HoHoDk) and Keys
-    optional (array<byte> where (SizeOfSegmentId % 4) != 0) ZeroPad with BinaryEncoding{Length = (4 - (SizeOfSegmentId % 4)) as uint};
+    optional (array<byte> where (SizeOfSegmentId % 4) != 0) ZeroPad with BinaryEncoding{Length = (4 - (SizeOfSegmentId % 4))};
     uint BlockIndex;
     uint NextBlockIndex;
     uint SizeOfBlock;
     binary Block with BinaryEncoding{Length = SizeOfBlock};
-    optional [|(SizeOfSegmentId % 4) != 0|] array<byte> ZeroPad2 with BinaryEncoding{Length = (4 - (SizeOfSegmentId % 4)) as uint};
+    optional [|(SizeOfSegmentId % 4) != 0|] array<byte> ZeroPad2 with BinaryEncoding{Length = (4 - (SizeOfSegmentId % 4))};
     uint SizeOfVrfBlock;
     binary VrfBlock with BinaryEncoding{Length = SizeOfVrfBlock};
-    optional [|(SizeOfSegmentId % 4) != 0|] array<byte> ZeroPad3 with BinaryEncoding{Length = (4 - (SizeOfSegmentId % 4)) as uint};
+    optional [|(SizeOfSegmentId % 4) != 0|] array<byte> ZeroPad3 with BinaryEncoding{Length = (4 - (SizeOfSegmentId % 4))};
     uint SizeOfIVBlock;
     binary IVBlock with BinaryEncoding{Length = SizeOfIVBlock};
     

@@ -1,4 +1,4 @@
-﻿protocol LCP with
+protocol LCP with
 BinaryEncodingDefaults{Endian = Endian.Big},
 Documentation
 {
@@ -27,15 +27,13 @@ OPNAuthoring
         ],
     RevisionSummary =
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "11/28/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "362740", Date = "04/18/2014"}
         ]
 };
 
 using Standard;
 using PPP;
 using Utility;
-using IPv4;
-using Ethernet;
 
 endpoint Node[byte Id]
     over PPP.Node
@@ -159,7 +157,7 @@ void DecodeForOptions(ref Datagram datagram, stream optionPayload)
 
 message Datagram
 {
-    byte Code;
+    Code Code;
     byte Identifier;
     ushort Length;
     optional ((VendorSpecific [Length - 12 as ushort])             // RFC 2153  Code:0
@@ -177,29 +175,29 @@ message Datagram
 
     override string ToString()
     {
-        string displayStr = "LCP: ";
-        switch (Code)
-        {
-            case 0 => displayStr += "Vendor Specific, ";
-            case 1 => displayStr += "Configure-Request, ";
-            case 2 => displayStr += "Configure-Ack, ";
-            case 3 => displayStr += "Configure-Nak, ";
-            case 4 => displayStr += "Configure-Reject, ";
-            case 5 => displayStr += "Terminate-Request, ";
-            case 6 => displayStr += "Terminate-Ack, ";
-            case 7 => displayStr += "Code-Reject, ";
-            case 8 => displayStr += "Protocol-Reject, ";
-            case 9 => displayStr += "Echo-Request, ";
-            case 10 => displayStr += "Echo-Reply, ";
-            case 11 => displayStr += "Discard-Request, ";
-            case 12 => displayStr += "Identification, ";
-            case 13 => displayStr += "Time-Remaining, ";
-            default => displayStr += "Unknown Type (" + (Code as string) + ") ";
-        }
-        displayStr += "ID = " + (Identifier as string) + ", Length = " + (Length as string);
-        return displayStr;
+        return (InRange<Code>(Code) ? "" : "Unknown Type Code: ") + EnumToString<LCP.Code>(Code, false) 
+               + ", Identifier: " + (Utility.DecToHexFormat(Identifier)) + ", Length: " + Length.ToString();
     }
 }
+
+pattern Code = enum byte
+{
+    $"Vendor Specific" = 0,
+    $"Configure-Request" = 1,
+    $"Configure-Ack" = 2,
+    $"Configure-Nak" = 3,
+    $"Configure-Reject" = 4,
+    $"Terminate-Request" = 5,
+    $"Terminate-Ack" = 6,
+    $"Code-Reject" = 7,
+    $"Protocol-Reject" = 8,
+    $"Echo-Request" = 9,
+    $"Echo-Reply" = 10, 
+    $"Discard-Request" = 11,
+    $"Identification" = 12,
+    $"Time-Remaining" = 13,
+    ...
+};
 
 type OptionList
 {
@@ -288,7 +286,7 @@ type VendorSpecificOption[byte len]
 {
     uint OUI with BinaryEncoding{Width = 24};
     byte Kind;
-    optional [|len > 0|] string Value with BinaryEncoding{Length = len - 6 as uint, TextEncoding = TextEncoding.ASCII};
+    optional [|len > 0|] string Value with BinaryEncoding{Length = len - 6, TextEncoding = TextEncoding.ASCII};
 }
 
 type MaximumReceiveUnit
@@ -342,13 +340,13 @@ type HDLCAddress [byte len]
     byte EA with BinaryEncoding{Width = 1};
     byte CR with BinaryEncoding{Width = 1};
     byte SAP with BinaryEncoding{Width = 6};
-    optional [|len > 4|] string ExtendedAddress with BinaryEncoding{Length = len - 4 as uint, TextEncoding = TextEncoding.ASCII};
+    optional [|len > 4|] string ExtendedAddress with BinaryEncoding{Length = len - 4, TextEncoding = TextEncoding.ASCII};
 }
 
 type Callback[byte len]
 {
     byte Operation;
-    optional [|len > 3|] string Message with BinaryEncoding{Length = len - 3 as uint, TextEncoding = TextEncoding.ASCII};
+    optional [|len > 3|] string Message with BinaryEncoding{Length = len - 3, TextEncoding = TextEncoding.ASCII};
 }
 
 pattern CompoundFrames = Empty;
@@ -384,7 +382,7 @@ type PublicSwitchedNetworkDirectoryNumber[byte len]
 
 type  MagicNumberInMultilinkEndpointDiscriminator[byte len]
 {
-    array<uint> MagicNumber with BinaryEncoding{Length = (len - 3) / 4 as uint};
+    array<uint> MagicNumber with BinaryEncoding{Length = (len - 3) / 4};
 }
 
 type MPProcedureOption
@@ -400,7 +398,7 @@ type LinkDiscriminatorForBACP
 // Decode By Hand
 type PrefixElision[byte len]
 {
-    optional binary PrefixPayload with BinaryEncoding{Length = len - 2 as uint};
+    optional binary PrefixPayload with BinaryEncoding{Length = len - 2};
     optional array<Prefix> Prefixs with Encoding{Ignore = true};
 }
 
@@ -420,7 +418,7 @@ type MultilinkHeaderFormat
 type Internationalization[byte len]
 {
     uint MIBenum;
-    string LanguageTag with BinaryEncoding{Length = len - 6 as uint, TextEncoding = TextEncoding.ASCII};
+    string LanguageTag with BinaryEncoding{Length = len - 6, TextEncoding = TextEncoding.ASCII};
 }
 
 pattern SimpleDataLinkOnSonetOrSdh = Empty;

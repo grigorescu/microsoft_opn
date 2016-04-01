@@ -1,4 +1,4 @@
-module FCIADS with 
+protocol FCIADS with 
 BinaryEncodingDefaults{Endian = Endian.Little},
 Documentation
 {
@@ -11,100 +11,119 @@ OPNAuthoring
     Copyright = "(c) Microsoft Corporation",
     References = 
         [
-            new Reference{Name = "MS-FCIADS", Version = "1.0", ProgramName = ProgramName.MCPP},
-            new Reference{Name = "MS-FSRM", Version = "26.0", ProgramName = ProgramName.MCPP},
+            new Reference{Name = "MS-FCIADS", Version = "1.0", Date = "07/12/2012", ProgramName = ProgramName.MCPP},
+            new Reference{Name = "MS-FSRM", Version = "26.0", Date = "07/12/2012", ProgramName = ProgramName.MCPP},
         ],
     RevisionSummary =
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "25/06/2012"}
+            new Revision{Class = RevisionClass.Major, Version = "378365", Date = "06/03/2015"}
         ]
 };
 
 using Standard;
 using DTYP;
-using SMB2;
 using Utility;
+using FAS;
+using Diagnostics;
 
-autostart actor FCIADSOverSMB2(SMB2.Server server)
+autostart actor FCIADSOverFAS(FAS.Server server)
 {
-    observe server issues msg:Messages.ReadResponse where msg#SMBFileName !=nothing && (msg#SMBFileName as string).Contains(".") && (msg#SMBFileName as string).Contains(":FSRM{ef88c031-5950-4164-ab92-eec5f16005a5}")
+    FASReassemblyHelper reassemblyHelper = null;
+    process server issues m:(any message) where server.FileName is fileName:string && IsFCIADA(fileName)  // read response
     {
-        switch(msg.Response.Buffer)
+        if (reassemblyHelper == null)
         {
-            case adsStreamHeader:ADSStreamHeader from FCIADSDecoder =>
-                msg#Embedded = {"FCIADS"-> adsStreamHeader};
+            reassemblyHelper = new FASReassemblyHelper().
+                Initialize(server.MessageOffsetGetter, server.MessageDataGetter);
+        }
+        reassemblyHelper.AddDataMessage(m, server);
+        server.ReadResponseOffset = null;
+    }
+    
+    process server accepts m:(any message) where server.FileName is fileName:string && IsFCIADA(fileName) && !server.HasCloseRequestAccepted // write request
+    {
+        if (reassemblyHelper == null)
+        {
+            reassemblyHelper = new FASReassemblyHelper().
+                Initialize(server.MessageOffsetGetter, server.MessageDataGetter);
+        }
+        reassemblyHelper.AddDataMessage(m, server);
+    }
+
+    observe server accepts m:(any message) 
+            where server.FileName is fileName:string && IsFCIADA(fileName) && server.HasCloseRequestAccepted &&
+                reassemblyHelper != null && reassemblyHelper.FileBuffer.Count > 0
+    {
+        bool isAccepts = server.Command == CommandType.Write ? true : false;
+        server.FileName = "";
+        server.HasCloseRequestAccepted = false;
+
+        DecodeAndDispatchMessage(isAccepts, reassemblyHelper.FileBuffer, reassemblyHelper.Origins);
+    }
+
+    void DecodeAndDispatchMessage(bool isAccepts, binary data, array<any message> origins)
+    {
+        switch (data)
+        {
+            case m:ADSStreamHeader from BinaryDecoder<ADSStreamHeader> =>
+                m.Origins = origins;
+                if (isAccepts)
+                {
+                    dispatch endpoint Server over server accepts m;
+                }
+                else
+                {
+                    dispatch endpoint Server over server issues m;
+                }
+                if (reassemblyHelper != null)
+                {
+                    reassemblyHelper.ResetAfterSucceed();
+                }
             default =>
-                ThrowDecodingException("FCIADS");
+                ThrowDecodingException("FCIADS", "ADSStreamHeader");
         }
     }
-}
-
-optional ADSStreamHeader FCIADSDecoder(binary buffer)
-{
-    stream str = buffer;
-    var adsStreamHeader = BinaryDecoder<ADSStreamHeader>(str);
-    optional ADSExtensionHeader eh = nothing;
-    if (str.RemainingLength > 0 && adsStreamHeader != nothing && (adsStreamHeader as ADSStreamHeader).FirstFieldExtensionOffset != 0)
+    ~endpoint(FAS.Server server)
     {
-        // Look ahead 16 bytes data to check if the ExtensionId is {35c8acd4-a0db-426d-85fc-7911cb780e4e}. If yes, decode to ADSSecurePropertiesExtensionHeader type.
-        if (str.PeekBytes(str.BitPosition, 16) == $[D4ACC835DBA06D4285FC7911CB780E4E])
+        if (reassemblyHelper != null)
         {
-            eh =  ExtensionHeaderDecoder<ADSSecurePropertiesExtensionHeader>(str);
-        }
-        else
-        {
-            eh = ExtensionHeaderDecoder<ADSFieldExtensionHeader>(str);
-        }
-        var streamHeader = adsStreamHeader as ADSStreamHeader;
-        streamHeader.FieldExtensionHeaders = eh;
-        
-        return streamHeader;
-    }
-    return nothing;
-
-}
-
-array<T> ExtensionHeaderDecoder<T>(stream str)
-{
-    array<T> adsArray = [];
-    
-    while (str.BytePosition < str.ByteLength)
-    {
-        var adsSP = BinaryDecoder<T>(str);
-        if (adsSP != nothing)
-        {
-            adsArray += [(adsSP as T)];
-        }
-        else
-        {
-            break;
+            reassemblyHelper.ReleaseCache();
         }
     }
-    
-    return adsArray;
 }
+
+endpoint Server 
+    over FAS.Server
+    accepts ADSStreamHeader issues ADSStreamHeader;
 
 // 2.1   ADSStreamHeader
-type ADSStreamHeader
+message ADSStreamHeader
 {
-    GUID VersionId where ValidationCheck(value == {43ee0c5f-e038-421c-8a3e-ab4eb1166124}, null, "VersionId must be set to 43ee0c5f-e038-421c-8a3e-ab4eb1166124.");
+    guid VersionId where ValidationCheckValue(value == {43ee0c5f-e038-421c-8a3e-ab4eb1166124}, this, true, ReferenceType.Message, "FCIADS", "VersionId", "ADSStreamHeader", "43ee0c5f-e038-421c-8a3e-ab4eb1166124", value);
     ulong Crc;
     FILETIME TimeStamp;
     uint StreamLength;
     uint FirstFieldExtensionOffset;
-    AdsCacheFlags Flags;
+    AdsCacheFlags Flags where ValidationCheckCombinationValueIncludeZero(InRange<AdsCacheFlags>(value), this, true, ReferenceType.Message, "FCIADS", "Flags", "ADSStreamHeader","0x00000001, 0x00000002", value);
     uint NonSecurePropertyCount;
     ulong FileHash;
-    array<ADSNonSecurePropertyHeader> NonSecureProperties with BinaryEncoding{Length = NonSecurePropertyCount};
-    optional ADSExtensionHeader FieldExtensionHeaders with Encoding{Ignore = true};
+    optional [|NonSecurePropertyCount > 0|] array<ADSNonSecurePropertyHeader> NonSecureProperties with BinaryEncoding{Length = NonSecurePropertyCount};
+    optional array<ADSExtensionHeader> FieldExtensionHeaders with Encoding{Offset = FirstFieldExtensionOffset};
+
+    override string ToString()
+    {
+        return "ADSStreamHeader, Flags: " + EnumToStringInSummary<AdsCacheFlags>(Flags);
+    }
 }
 
-pattern ADSExtensionHeader =  array<ADSFieldExtensionHeader> | array<ADSSecurePropertiesExtensionHeader>;
+pattern ADSExtensionHeader = [|RemainingByteLength(stream) >= 16|]
+        ([|PeekBytes(stream, stream.BitPosition, 16) == $[D4ACC835DBA06D4285FC7911CB780E4E]|] ADSSecurePropertiesExtensionHeader | // {35c8acd4-a0db-426d-85fc-7911cb780e4e}
+        ADSFieldExtensionHeader);
 
 // 2.2   ADSFieldExtensionHeader
 type ADSFieldExtensionHeader
 {
-    GUID ExtensionId;
+    guid ExtensionId;
     uint BlockLength;
     binary Data with BinaryEncoding{Length = BlockLength - 20};
 }
@@ -112,61 +131,93 @@ type ADSFieldExtensionHeader
 // 2.3   ADSSecurePropertiesExtensionHeader
 type ADSSecurePropertiesExtensionHeader
 {
-    GUID ExtensionId where ValidationCheck(value == {35c8acd4-a0db-426d-85fc-7911cb780e4e}, null, "ExtensionId must be set to 35c8acd4-a0db-426d-85fc-7911cb780e4e.");
+    guid ExtensionId 
+        where ValidationCheckValue(value == {35c8acd4-a0db-426d-85fc-7911cb780e4e}, null, true, ReferenceType.Type, "FCIADS", "ExtensionId", "ADSSecurePropertiesExtensionHeader", "35c8acd4-a0db-426d-85fc-7911cb780e4e", value);
     uint BlockLength;
     uint PropertyCount;
     array<ADSSecurePropertyHeader> Properties with BinaryEncoding{Length = PropertyCount};
-}
+
+    override string ToString()
+    {
+        if (PropertyCount == 0)
+        {
+            return "";
+        }
+        string str = "";
+        foreach (var p in Properties)
+        {
+            str += ", " + p.ToString();
+        }
+        return str.Segment(2); 
+    }
+} 
 
 // 2.4   ADSSecurePropertyHeader
 type ADSSecurePropertyHeader
 {
-    FciAdsSecurePropertyType SecureType;
-    AdsCachePropertyFlags Flags;
+    FciAdsSecurePropertyType SecureType 
+        where ValidationCheckCombinationValue(InRange<FciAdsSecurePropertyType>(value), null, true, ReferenceType.Type, "FCIADS", "SecureType", "ADSSecurePropertyHeader", "0x00000001, 0x00000002", value);
+    AdsCachePropertyFlags Flags
+        where ValidationCheckCombinationValueIncludeZero(InRange<AdsCachePropertyFlags>(value), null, true, ReferenceType.Type, "FCIADS", "Flags", "ADSSecurePropertyHeader", "0x00000001, 0x00000002, 0x00000004, 0x00000008", value);
     uint Length;
     uint ValueOffset;
     string Name;
     string Value;
-}
+
+    override string ToString()
+    {
+        return Format("{0}: {1}", Name, Value);
+    }
+} 
 
 // 2.5   ADSNonSecurePropertyHeader
 type ADSNonSecurePropertyHeader
 {
-    FciAdsSecurePropertyType Type;
-    FsrmPropertyFlags Flags;
+    FciAdsSecurePropertyType Type
+        where ValidationCheckCombinationValue(InRange<FciAdsSecurePropertyType>(value), null, true, ReferenceType.Type, "FCIADS", "Type", "ADSNonSecurePropertyHeader", "0x00000001, 0x00000002", value);
+    FsrmPropertyFlags Flags
+        where ValidationCheckCombinationValue(InRange<FsrmPropertyFlags>(value), null, true, ReferenceType.Type, "FCIADS", "Flags", "ADSNonSecurePropertyHeader", "0x00000001, 0x00000002, 0x00000004, 0x00000008", value);
     uint Length;
     uint ValueOffset;
     string Name;
     string Value;
-}
+
+    override string ToString()
+    {
+        return Format("{0}: {1}", Name, Value);
+    }
+} 
 
 // MS-FRSM section 2.2.1.2.18   AdsCacheFlags
-pattern AdsCacheFlags = enum uint
+pattern AdsCacheFlags = flags uint
 {
     None = 0x00000000,
     Dirty = 0x00000001,
-    PropertyFlagsValid = 0x00000002
+    PropertyFlagsValid = 0x00000002,
+    ...
 };
 
 // MS-FRSM section 2.2.1.2.20   FCI_ADS_SECURE_PROPERTY_TYPE
-pattern FciAdsSecurePropertyType = enum uint
+pattern FciAdsSecurePropertyType = flags uint
 {
     INT64 = 1,
-    STRING = 2
+    STRING = 2,
+    ...
 };
 
 // MS-FRSM section 2.2.1.2.19   AdsCachePropertyFlags
-pattern AdsCachePropertyFlags = enum uint
+pattern AdsCachePropertyFlags = flags uint
 {
     None = 0x00000000,
     Manual = 0x00000001,
     Deleted = 0x00000002,
     PolicyDerived = 0x00000004,
-    Inherited = 0x00000008
+    Inherited = 0x00000008,
+    ...
 };
 
 // MS-FRSM section 2.2.2.6.1.1   FsrmPropertyFlags
-pattern FsrmPropertyFlags = enum uint
+pattern FsrmPropertyFlags = flags uint
 {
     Orphaned = 0x001,
     RetrievedFromCache = 0x002,
@@ -183,8 +234,6 @@ pattern FsrmPropertyFlags = enum uint
     PolicyDerived = 0x00001000,
     Inherited = 0x00002000,
     Manual = 0x00004000,
-    PropertySourceMask = 0x0E
+    PropertySourceMask = 0x0E,
+    ...
 };
-
-// WORKAROUND: for minimum set of DTYP, remove all types only used for parsing from DTYP. TASK ID: 47115
-pattern GUID = guid;

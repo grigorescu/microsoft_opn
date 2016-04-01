@@ -45,15 +45,14 @@ OPNAuthoring
         ],
     RevisionSummary =
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "12/14/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "380827", Date = "09/22/2015"}
         ]
 };
 
-using IPv4;
 using Utility;
-using TCP;
 using IANA;
-using VirtualTransport;
+using TCP;
+using DecodingUtility; // WORKAROUND: compiler bug#3131164, When type A inherit from type B, module C use tye A, and A, B, C is in different module file, compiler will give a compilation error
 using NLMP;
 
 annotation bool TELNET.Message#IsRequest;
@@ -62,96 +61,85 @@ annotation ushort TELNET.Message#DstPort;
 annotation string TELNET.Message#TerminalType;
 
 endpoint Server 
-    over VirtualTransport.Server
+    over TELNET.ReassemblyServer | over TCP.Server
     accepts TELNET.Message issues TELNET.Message;
 
 client endpoint Client connected to Server;
 
-autostart actor TELNETOverTCP(VirtualTransport.Server server)
+// For SOCKS.opn to relay TELNET messages
+endpoint ReassemblyServer over TCP.Server
+    accepts TCP.Segment issues TCP.Segment
 {
-    optional string terminalType = nothing;
-    process server accepts s:VirtualTransport.VirtualDataSegment where s.DestinationPort == Port.TELNET
+    TelnetDecodingHelper telnetDecodingHelper;
+    
+    process this accepts s:TCP.Segment where s.DestinationPort == Port.TELNET
     {
-        switch (s.Payload)
+        if (telnetDecodingHelper == null)
         {
-            case m:Message from TelnetDecoder =>
-                m#IsRequest = true;
-                m#SrcPort = s.SourcePort;
-                
-                if (m#TerminalType != nothing)
-                {
-                    terminalType = m#TerminalType;
-                }
-                else if (m#TerminalType == nothing && terminalType != nothing)
-                {
-                    m#TerminalType = terminalType;
-                }
-                
-                dispatch (endpoint TELNET.Server over server) accepts m;
-            default =>
-                ThrowDecodingExceptionForTCP("TELNET", "Message", s#IsIncomplete, s#SegmentLost);
+            telnetDecodingHelper = new TelnetDecodingHelper();
+            telnetDecodingHelper.InitializeTelnetDecodingHelper(this, s.SourcePort);
         }
+        telnetDecodingHelper.TryDecode(s, MessageDirection.Accepts);
     }
-    process server issues s:VirtualTransport.VirtualDataSegment where s.SourcePort == Port.TELNET
+    
+    process this issues s:TCP.Segment where s.SourcePort == Port.TELNET
     {
-        switch (s.Payload)
+        if (telnetDecodingHelper == null)
         {
-            case m:Message from TelnetDecoder =>
-                m#IsRequest = false;
-                m#DstPort = s.DestinationPort;
-                
-                if (m#TerminalType != nothing)
-                {
-                    terminalType = m#TerminalType;
-                }
-                else if (m#TerminalType == nothing && terminalType != nothing)
-                {
-                    m#TerminalType = terminalType;
-                }
-                
-                dispatch (endpoint TELNET.Server over server) issues m;
-            default =>
-                ThrowDecodingExceptionForTCP("TELNET", "Message", s#IsIncomplete, s#SegmentLost);
+            telnetDecodingHelper = new TelnetDecodingHelper();
+            telnetDecodingHelper.InitializeTelnetDecodingHelper(this, s.DestinationPort);
+        }
+        telnetDecodingHelper.TryDecode(s, MessageDirection.Issues);
+    }
+    
+    ~endpoint(ReassemblyServer server)
+    {
+        if (telnetDecodingHelper != null)
+        {
+            telnetDecodingHelper.ClearInDestructor();
         }
     }
 }
 
-autostart actor NLMPOverTELNET(TELNET.Server server)
+// For TELNET to decode TELNET message from TCP segments
+autostart actor TELNETOverTCP(TCP.Server server)
 {
-    bool micPresent = false;
-    observe server issues s:TELNET.Message where (s.TelCmd != nothing && (s.TelCmd as TelCmd).NLMPPayload != nothing && ((s.TelCmd as TelCmd).NLMPPayload as binary).Segment(0,8) == $[4E544C4D53535000])
+    TelnetDecodingHelper telnetDecodingHelper;
+    
+    process server accepts s:TCP.Segment where s.DestinationPort == Port.TELNET
     {
-        binary payload = (s.TelCmd as TelCmd).NLMPPayload as binary;
-        var nlmpMessage = NlmpDecoder(payload, ref micPresent);
-        if (nlmpMessage != nothing)
+        if (telnetDecodingHelper == null)
         {
-            TelCmd cmd = s.TelCmd as TelCmd;
-            cmd.NLMPPayload = nlmpMessage;
-            any message nlmp = nlmpMessage as any message;
-            s#Embedded = {"NLMP" -> nlmp};
+            telnetDecodingHelper = new TelnetDecodingHelper();
+            telnetDecodingHelper.InitializeTelnetDecodingHelper(server, s.SourcePort);
         }
-
+        telnetDecodingHelper.TryDecode(s, MessageDirection.Accepts);
     }
     
-    observe server accepts s:TELNET.Message where (s.TelCmd != nothing && (s.TelCmd as TelCmd).NLMPPayload != nothing && ((s.TelCmd as TelCmd).NLMPPayload as binary).Segment(0,8) == $[4E544C4D53535000])
+    process server issues s:TCP.Segment where s.SourcePort == Port.TELNET
     {
-        binary payload = (s.TelCmd as TelCmd).NLMPPayload as binary;
-        var nlmpMessage = NlmpDecoder(payload, ref micPresent);
-        if (nlmpMessage != nothing)
+        if (telnetDecodingHelper == null)
         {
-            TelCmd cmd = s.TelCmd as TelCmd;
-            cmd.NLMPPayload = nlmpMessage;
-            any message nlmp = nlmpMessage as any message;
-            s#Embedded = {"NLMP" -> nlmp};
+            telnetDecodingHelper = new TelnetDecodingHelper();
+            telnetDecodingHelper.InitializeTelnetDecodingHelper(server, s.DestinationPort);
         }
-
+        telnetDecodingHelper.TryDecode(s, MessageDirection.Issues);
+    }
+    
+    ~endpoint(TCP.Server server)
+    {
+        if (telnetDecodingHelper != null)
+        {
+            telnetDecodingHelper.ClearInDestructor();
+        }
     }
 }
 
 message Message
 {
-    optional TelCmd TelCmd;
-    optional (binary | string) TelnetData;
+    optional [|stream.RemainingByteLength() >= 2 && stream.CurrentByte == 0xFF|] TelCmd TelCmd;
+    optional [|stream.RemainingByteLength() > 0|] (binary | string) TelnetData with
+        Encoding{Decoder = TelnetDataDecoder, SourcePattern = TypeOf<binary>()};
     
     override string ToString()
     {
@@ -159,20 +147,12 @@ message Message
         
         if (this#IsRequest != nothing && this#IsRequest as bool)
         {
-            strSummary += "To Server, ";
+            strSummary = "To Server, SrcPort:" + Utility.DecToHexFormat(this#SrcPort as ushort);
             // Bug#30229, Incorrect C# code  generated when compair ushort-type annotation with nothing.
-            //if (m#DstPort != nothing)
-            {
-                strSummary += ("" + Utility.DecToHexFormat(this#SrcPort as uint));
-            }
         }
-        else if(this#IsRequest != nothing && !(this#IsRequest as bool))
+        else if (this#IsRequest != nothing && !(this#IsRequest as bool))
         {
-            strSummary += "To Client, ";
-            //if (m#SrcPort != nothing)
-            {
-                strSummary += (Utility.DecToHexFormat(this#DstPort as uint));
-            }
+            strSummary = "To Client, DstPort: " + Utility.DecToHexFormat(this#DstPort as ushort);
         }
         if (this#TerminalType != nothing)
         {
@@ -181,156 +161,60 @@ message Message
         
         return strSummary;
     }
+    
+    // Besides decode the Telnet Data, it also assign annotation and embedded information
+    optional (binary | string) TelnetDataDecoder(binary data)
+    {
+        // if it is string, assign the value as string.
+        if (LiteralString(data) is str:string)
+        {
+            return str;
+        }
+        
+        return data;
+    }
 }
 
 type TelCmd
 {
-    optional array<TelnetCommand> TelCmds;
-    optional (binary | any) NLMPPayload;
+    array<TelnetCommand> TelCmds;
+    optional [|stream.RemainingByteLength() >= 2 && stream.PeekUShort(stream.BitPosition, Endian.Big) == 0xFFF0|] ushort EndCommand;
 }
 
 type TelnetCommand
 {
-    ushort Command;
-    optional byte OptionCode;
-    optional Options Option;
-    optional ushort EndCommand;
+    byte IACEscapeCharacter where value == 0xFF;
+    TelnetCommandEnum Command where value != 0xF0 && ValidationCheckEnumValueTooManyItems(InRange<TelnetCommandEnum>(value), null, true, ReferenceType.Message,
+        "TELNET", "Command", "TelnetCommand", "Command", "TELNET");
+    optional [|Command in {251, 252, 253, 254}|] byte OptionCode;
+    optional [|Command == TelnetCommandEnum.SB|] Options Option;
 }
 
-optional Message TelnetDecoder(binary binVal)
+pattern TelnetCommandEnum = enum byte
 {
-    string strTerminalType = "";
-    binary nlmpPaylaod = null;
-    
-    stream s = binVal;
-    
-    TELNET.Message m;
-    int binCount = s.ByteLength;
-    int nlmpPayloadOffset;
-    array<TelnetCommand> telnetCommands = [];
-    while(s.BytePosition < binCount)
-    {
-        if (s.CurrentByte == 255)   // TelnetCommand
-        {
-            TelnetCommand telnetCommand = new TelnetCommand{};
-            //telnetCommand.AssignFieldEncodingInfo("Command", s.BitPosition, 16);
-            UShort command = BinaryDecoder<UShort>(s) as UShort;         // Command
-            telnetCommand.Command = command.Value;
-            
-            byte priorByte = s.PeekByte((s.BytePosition - 1) * 8);
-            if (priorByte in {251, 252, 253, 254})
-            {
-                //telnetCommand.AssignFieldEncodingInfo("OptionCode", s.BitPosition, 8);
-                byte optionCode = BinaryDecoder<byte>(s) as byte;   // Move BytePosition, so get value via decoder not PeekByte
-                telnetCommand.OptionCode = optionCode;
-            }
-            else if (priorByte == 250)
-            {
-                optional Options ooption = BinaryDecoder<Options>(s);
-                if (ooption != nothing)
-                {
-                    Options option = ooption as Options;
-                    telnetCommand.Option = option;
-                    
-                    // Aassign TerminalType annotation
-                    if (option.Option is SBTerminalTypeOption)
-                    {
-                        SBTerminalTypeOption terType = option.Option as SBTerminalTypeOption;
-                        if (terType.SubCode == 0)
-                        {
-                            Terminal ter = terType.Value as Terminal;
-                            strTerminalType = ConvertArrayByteToString(ter.Data);
-                        }
-                    }
-                    // Assign payload of NLMP
-                    if (option.Option is SBAuthenticationOption)
-                    {
-                        SBAuthenticationOption authOption = option.Option as SBAuthenticationOption;
-                        if (authOption.SubCode in {0, 2})
-                        {
-                            AuthenTypePair auth = authOption.Data as AuthenTypePair;
-                            if (auth.AuthType == 15)
-                            {
-                                NTLMType NTLM = auth.AuthData as NTLMType;
-                                if (NTLM.NTLMCommandCode in {0, 1, 2})
-                                {
-                                    NTLMSizeAndType sizeAndType = NTLM.NTLMValue as NTLMSizeAndType;
-                                    nlmpPaylaod = sizeAndType.NTLMData;
-                                    nlmpPayloadOffset = s.BytePosition;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            
-            if (s.BytePosition <= binCount -1  && s.PeekBytes(s.BitPosition, 2) == $[FFF0])
-            {
-                //telnetCommand.AssignFieldEncodingInfo("EndCommand", s.BitPosition, 16);
-                UShort endCommand = BinaryDecoder<UShort>(s) as UShort;
-                telnetCommand.EndCommand = endCommand.Value;
-            }
-            telnetCommands += [telnetCommand];
-        }
-        else    // TelnetData
-        {
-            break;
-        }
-    }
-    if (s.BytePosition >= binCount)
-    {
-        TelCmd cmd = new TelCmd
-                        { 
-                            TelCmds = telnetCommands, 
-                            NLMPPayload = (nlmpPaylaod == null ? nothing : nlmpPaylaod) 
-                        };
-        if (!(cmd.NLMPPayload is nothing))
-        {
-            cmd.AssignFieldEncodingInfo("NLMPPayload", (nlmpPayloadOffset - nlmpPaylaod.Count) * 8, nlmpPaylaod.Count * 8);
-        }
-        
-        m = new Message
-                    {
-                        TelnetData = nothing, 
-                        TelCmd = cmd
-                    };
-        m.AssignFieldEncodingInfo("TelCmd", 0, binVal.Count * 8);
-    }
-    else // s.BytePosition < binCount, indicates remaining data are TelnetData.
-    {
-        optional string literal = LiteralString(binVal);
-        if (literal == nothing)
-        {
-            m = new Message
-                    {
-                        TelnetData = binVal, 
-                        TelCmd = nothing
-                    };
-            m.AssignFieldEncodingInfo("TelnetData", 0, binVal.Count * 8);
-        }
-        else
-        {
-            m = new Message
-                    {
-                        TelnetData = (literal as string), 
-                        TelCmd = nothing
-                    };
-            m.AssignFieldEncodingInfo("TelnetData", 0, (literal as string).Count * 8);
-        }
-    }
-    m.SourceData = binVal;
-    if (strTerminalType == "")
-    {
-        m#TerminalType = nothing;
-    }
-    else
-    {
-        m#TerminalType = strTerminalType;
-    }
-    return m;
-}
+    EOF = 236,
+    SUSP  = 237,
+    ABORT = 238,
+    EOR = 239,
+    SE = 240,
+    NOP = 241,
+    DM = 242,
+    BRK = 243,
+    IP = 244,
+    AO = 245,
+    AYT = 246,
+    EC = 247,
+    EL = 248,
+    GA = 249,
+    SB = 250,
+    WILL = 251,
+    WONT = 252,
+    DO = 253,
+    DONT = 254,
+    IAC = 255,
+    ...
+};
 
-syntax decoder = TextDecoder;
 syntax LiteralString = s:regex{[\x00-\x7F]*} => s with StreamEncoding{Encoding = TextEncoding.ASCII};
 
 type UShort
@@ -338,64 +222,62 @@ type UShort
     ushort Value;
 }
 
-type Options
-{
-    (SBStatusOption             |           // 5
-    SBRCTEOption                |           // 7
-    SBNAOCRDOption              |           // 10
-    SBNAOHTSOption              |           // 11 
-    SBNAOHTDOption              |           // 12
-    SBNAOFFDOption              |           // 13
-    SBNAOVTSOption              |           // 14
-    SBNAOVTDOption              |           // 15
-    SBNAOLFDOption              |           // 16
-    SBEXTASCOption              |           // 17
-    SBBMOption                  |           // 19
-    SBDETOption                 |           // 20
-    SBSUPDUPOUTPUTOption        |           // 22
-    SBSendLocationOption        |           // 23
-    SBTerminalTypeOption        |           // 24
-    SBTUIDOption                |           // 26
-    SBOUTMRKOption              |           // 27
-    SBTTYLOCOption              |           // 28
-    SBRegimeOption              |           // 29
-    SBX3PADOption               |           // 30
-    SBNAWSOption                |           // 31
-    SBTerminalSpeedOption       |           // 32
-    SBToggleFlowControlOption   |           // 33
-    SBLINEMODEOption            |           // 34
-    SBXDisplayLocationOption    |           // 35
-    SBEnvironmentOption         |           // 36
-    SBAuthenticationOption      |           // 37
-    SBEncryptOption             |           // 38
-    SBNewEvironmentOption       |           // 39
-    SBTN3270EOption             |           // 40
-    SBCharestRequestOption      |           // 42
-    SBCOMPORTOption             |           // 44
-    SBKERMITOption              |           // 47
-    SBEXOPLOption ) Option;                 // 255
-}
+pattern Options =
+    [|stream.RemainingByteLength() >= 1|]
+    ([|stream.CurrentByte == 5|] SBStatusOption              |           // 5
+    [|stream.CurrentByte == 7|] SBRCTEOption                 |           // 7
+    [|stream.CurrentByte == 10|] SBNAOCRDOption              |           // 10
+    [|stream.CurrentByte == 11|] SBNAOHTSOption              |           // 11 
+    [|stream.CurrentByte == 12|] SBNAOHTDOption              |           // 12
+    [|stream.CurrentByte == 13|] SBNAOFFDOption              |           // 13
+    [|stream.CurrentByte == 14|] SBNAOVTSOption              |           // 14
+    [|stream.CurrentByte == 15|] SBNAOVTDOption              |           // 15
+    [|stream.CurrentByte == 16|] SBNAOLFDOption              |           // 16
+    [|stream.CurrentByte == 17|] SBEXTASCOption              |           // 17
+    [|stream.CurrentByte == 19|] SBBMOption                  |           // 19
+    [|stream.CurrentByte == 20|] SBDETOption                 |           // 20
+    [|stream.CurrentByte == 22|] SBSUPDUPOUTPUTOption        |           // 22
+    [|stream.CurrentByte == 23|] SBSendLocationOption        |           // 23
+    [|stream.CurrentByte == 24|] SBTerminalTypeOption        |           // 24
+    [|stream.CurrentByte == 26|] SBTUIDOption                |           // 26
+    [|stream.CurrentByte == 27|] SBOUTMRKOption              |           // 27
+    [|stream.CurrentByte == 28|] SBTTYLOCOption              |           // 28
+    [|stream.CurrentByte == 29|] SBRegimeOption              |           // 29
+    [|stream.CurrentByte == 30|] SBX3PADOption               |           // 30
+    [|stream.CurrentByte == 31|] SBNAWSOption                |           // 31
+    [|stream.CurrentByte == 32|] SBTerminalSpeedOption       |           // 32
+    [|stream.CurrentByte == 33|] SBToggleFlowControlOption   |           // 33
+    [|stream.CurrentByte == 34|] SBLINEMODEOption            |           // 34
+    [|stream.CurrentByte == 35|] SBXDisplayLocationOption    |           // 35
+    [|stream.CurrentByte == 36|] SBEnvironmentOption         |           // 36
+    [|stream.CurrentByte == 37|] SBAuthenticationOption      |           // 37
+    [|stream.CurrentByte == 38|] SBEncryptOption             |           // 38
+    [|stream.CurrentByte == 39|] SBNewEvironmentOption       |           // 39
+    [|stream.CurrentByte == 40|] SBTN3270EOption             |           // 40
+    [|stream.CurrentByte == 42|] SBCharestRequestOption      |           // 42
+    [|stream.CurrentByte == 44|] SBCOMPORTOption             |           // 44
+    [|stream.CurrentByte == 47|] SBKERMITOption              |           // 47
+    [|stream.CurrentByte == 255|] SBEXOPLOption);                        // 255
 
-//rfc 859   5
-//IAC SB STATUS SEND IAC SE
-//IAC SB STATUS IS ... IAC SE
+// rfc 859   5
+// IAC SB STATUS SEND IAC SE
+// IAC SB STATUS IS ... IAC SE
 type SBStatusOption
 {
-    (byte where value == 5) OptionCode;    // 5
+    byte OptionCode;    // 5
     byte CurrentStatus;
     optional [|CurrentStatus == 0|] array<Options> Data;
 }
 
-//rfc 726   7
-//IAC SB RCTE <cmd> [BC1 BC2] [TC1 TC2] IAC SE
+// rfc 726   7
+// IAC SB RCTE <cmd> [BC1 BC2] [TC1 TC2] IAC SE
 type SBRCTEOption
 {
-    (byte where value == 7) OptionCode;
+    byte OptionCode;
     byte Command;
     optional ([|Command == 8|] BreakClass
     | [|Command == 16|] TransmissionClass
     | [|Command == 24|] BreakAndTransmissionClass) Class;
-    
 }
 
 type BreakClass
@@ -418,46 +300,43 @@ type BreakAndTransmissionClass
     byte TC2;
 }
 
-//rfc 652   10
-//IAC SB NAOCRD DS <8-bit value> IAC SE
+// rfc 652   10
+// IAC SB NAOCRD DS <8-bit value> IAC SE
 type SBNAOCRDOption
 {
-    (byte where value == 10) OptionCode;
+    byte OptionCode;
     byte DataStatus;
     byte Value;
 }
 
-//rfc 653   11
-//IAC SB NAOHTS DS <8-bit value> ... <8-bit value> IAC SE
-//IAC SB NAOHTS DR <8-bit value> ... <8-bit value> IAC SE
+// rfc 653   11
+// IAC SB NAOHTS DS <8-bit value> ... <8-bit value> IAC SE
+// IAC SB NAOHTS DR <8-bit value> ... <8-bit value> IAC SE
 type SBNAOHTSOption
 {
-    (byte where value == 11) OptionCode;
+    byte OptionCode;
     byte DataStatus;
     array<SingleByte> Value;
 }
 
-type SingleByte
-{
-    (byte where value > 0 && value < 251) Byte;
-}
+pattern SingleByte = byte where value > 0 && value < 251;
 
-//rfc 654   12
-//IAC SB NAOHTD DS <8-bit value> IAC SE
-//IAC SB NAOHTD DR <8-bit value> IAC SE
+// rfc 654   12
+// IAC SB NAOHTD DS <8-bit value> IAC SE
+// IAC SB NAOHTD DR <8-bit value> IAC SE
 type SBNAOHTDOption
 {
-    (byte where value == 12) OptionCode;
+    byte OptionCode;
     byte DataStatus;
     byte Value;
 }
 
-//rfc 655   13
-//IAC SB NAOFFD DS <8-bit value> IAC SE
-//IAC SB NAOFFD DR <8-bit value> IAC SE
+// rfc 655   13
+// IAC SB NAOFFD DS <8-bit value> IAC SE
+// IAC SB NAOFFD DR <8-bit value> IAC SE
 type SBNAOFFDOption
 {
-    (byte where value == 13) OptionCode;
+    byte OptionCode;
     byte DataStatus;
     byte Value;
 }
@@ -467,7 +346,7 @@ type SBNAOFFDOption
 //IAC SB NAOVTS DR <8-bit value> ... <8-bit value> IAC SE
 type  SBNAOVTSOption
 {
-    (byte where value == 14) OptionCode;
+    byte OptionCode;
     byte Status;
     array<SingleByte> Value;
 }
@@ -477,33 +356,33 @@ type  SBNAOVTSOption
 //IAC SB NAOVTD DR <8-bit value> IAC SE
 type SBNAOVTDOption
 {
-    (byte where value == 15) OptionCode;
+    byte OptionCode;
     byte Status;
     byte Value;
 }
 
-//rfc 658   16
-//IAC SB NAOLFD DS <8-bit value> IAC SE
-//IAC SB NAOLFD DR <8-bit value> IAC SE
+// rfc 658   16
+// IAC SB NAOLFD DS <8-bit value> IAC SE
+// IAC SB NAOLFD DR <8-bit value> IAC SE
 type SBNAOLFDOption
 {
-    (byte where value == 16) OptionCode;
+    byte OptionCode;
     byte Status;
     byte Value;
 }
 
-//rfc 5198   17
-/*IAC SB EXTASC
-<high order bits (bits 15-8)><low order bits (bits 7-0)> IAC SE
-*/
+// rfc 5198   17
+/* IAC SB EXTASC
+ * <high order bits (bits 15-8)><low order bits (bits 7-0)> IAC SE
+ */
 type SBEXTASCOption
 {
-    (byte where value == 17) OptionCode;
+    byte OptionCode;
     byte HighBitsValue;
     byte LowBitsValue;
 }
 
-//rfc 735   19
+// rfc 735   19
 /*
 IAC SB BM <DEFINE> <macro UINT8> <count>
     <replacement string> IAC SE
@@ -514,7 +393,7 @@ IAC SB BM <PLEASE CANCEL> <macro UINT8> <REASON> IAC SE
 */
 type SBBMOption
 {
-    (byte where value == 19) OptionCode;
+    byte OptionCode;
     byte DataStatus;
     optional ([|DataStatus == 1|] Define 
     | [|DataStatus in {2, 4}|] Literal
@@ -530,7 +409,7 @@ type Define
 
 type Literal
 {
-    byte Macro;   
+    byte Macro;
 }
 
 type PleaseCancel
@@ -539,10 +418,10 @@ type PleaseCancel
     byte Reason;
 }
 
-//rfc 732   20
+// rfc 732   20
 type SBDETOption
 {
-    (byte where value == 20) OptionCode;
+    byte OptionCode;
     byte SubCode;
     ([|SubCode == 1|] EditFacilityMap                   |
      [|SubCode == 2|] EraseFacilityMap                  |
@@ -556,7 +435,7 @@ type SBDETOption
      [|SubCode == 38|] Negotiation                      |
      [|SubCode == 40|] Code                             |
      [|SubCode == 41|] Error                            |
-     //[|SubCode == 44|] Data                           | // rfc 1044
+     // [|SubCode == 44|] Data                           | // rfc 1044
      array<SingleByte>) Value;
 }
 
@@ -668,14 +547,14 @@ type Error
     byte ErrorCode;
 }
 
-//rfc 749   22
+// rfc 749   22
 /*
 IAC SB SUPDUP-OUTPUT 1 byte1 byte2 ... byten IAC SE
 IAC SB SUPDUP-OUTPUT 2 N TD1 TD2 TD3 ... TDn SCx SCy IAC SE
 */
 type SBSUPDUPOUTPUTOption
 {
-    (byte where value == 22) OptionCode;
+    byte OptionCode;
     byte SubCode;
     ([|SubCode == 2|] SubCode2 | SubCode1) Value;
 }
@@ -693,24 +572,24 @@ type SubCode2
     byte ScreenY;
 }
 
-//rfc 779   23
+// rfc 779   23
 /*
 IAC SB SEND-LOCATION <location> IAC SE
 */
 type SBSendLocationOption
 {
-    (byte where value == 23) OptionCode;
+    byte OptionCode;
     array<SingleByte> Location;
 }
 
-//rfc 1091  24
+// rfc 1091  24
 /*
 IAC SB TERMINAL-TYPE SEND IAC SE
 IAC SB TERMINAL-TYPE IS ... IAC SE
 */
 type SBTerminalTypeOption
 {
-    (byte where value == 24) OptionCode;
+    byte OptionCode;
     byte SubCode;
     optional [|SubCode == 0|] Terminal Value;
 }
@@ -720,17 +599,17 @@ type Terminal
     array<SingleByte> Data;
 }
 
-//rfc 927   26
+// rfc 927   26
 /*
 IAC SB TUID <uuid> IAC SE
 */
 type SBTUIDOption
 {
-    (byte where value == 26) OptionCode;
+    byte OptionCode;
     uint UUID;
 }
 
-//rfc 933   27
+// rfc 933   27
 /*
 IAC SB OUTMRK CNTL data IAC SE
 IAC SB OUTMRK ACK IAC SE
@@ -738,18 +617,21 @@ IAC SB OUTMRK NAK IAC SE
 */
 type SBOUTMRKOption
 {
-    (byte where value == 27) OptionCode;
-    (ACK | NAKType | CNTLData) Value;
+    byte OptionCode;
+    ([|stream.RemainingByteLength() >= 1|]
+        ([|stream.CurrentByte == 6|] ACK |
+        [|stream.CurrentByte == 21|] NAKType |
+        CNTLData)) Value;
 }
 
 type ACK
 {
-    (byte where value == 6) ACKValue;
+    byte ACKValue;
 }
 
 type NAKType
 {
-    (byte where value == 21) NAKValue;
+    byte NAKValue;
 }
 
 type CNTLData
@@ -774,17 +656,15 @@ type ByteExclude1D
     (byte where value != 29 && value != 255) Byte;
 }
 
-
-//rfc 946   28
+// rfc 946   28
 /*
 IAC SB TTYLOC <format> <TTYLOC number with IAC doubling> IAC SE
 */
 type SBTTYLOCOption
 {
-    (byte where value == 28) OptionCode;
+    byte OptionCode;
     byte Format;
     optional [|Format == 0|] FormatType FormatValue;
-    
 }
 
 type FormatType
@@ -793,16 +673,15 @@ type FormatType
     IPv4Address HostAddress;
 }
 
-//rfc 1041  29
+// rfc 1041  29
 /*
 IAC SB 3270-REGIME ARE REGIME-LIST IAC SE
 IAC SB 3270-REGIME IS REGIME IAC SE
 */
 type SBRegimeOption
 {
-    (byte where value == 29) OptionCode;
+    byte OptionCode;
     byte Subcode where ValidationCheck(value in {0, 1}, null, "TELNET: The SubCode in type SBRegimeOption should be zero or 1.");
-    
 }
 
 type SubCodeIs
@@ -826,7 +705,7 @@ type ByteExcludeFF20
     (byte where value != 255 && value != 32) Byte;
 }
 
-//rfc 1053  30
+// rfc 1053  30
 /*
 Optioncode = 30
     IAC SB  X.3-PAD  SET           <param1> <value1> ...  IAC SE
@@ -837,7 +716,7 @@ Optioncode = 30
 */
 type SBX3PADOption
 {
-    (byte where value == 30) OptionCode;
+    byte OptionCode;
     byte SubCode;
     array<SBX3PADType> Value;
 }
@@ -848,30 +727,30 @@ type SBX3PADType
     byte Value where value != 240;
 }
 
-//rfc 1073  31
+// rfc 1073  31
 /*
 IAC SB NAWS <16-bit value> <16-bit value> IAC SE
 */
 type SBNAWSOption
 {
-    (byte where value == 31) OptionCode;
+    byte OptionCode;
     ushort Width;
     ushort Height;
 }
 
-//rfc 1079  32
+// rfc 1079  32
 /*
 IAC SB TERMINAL-SPEED SEND IAC SE
 IAC SB TERMINAL-SPEED IS ... IAC SE
 */
 type SBTerminalSpeedOption
 {
-    (byte where value == 32) OptionCode;
+    byte OptionCode;
     byte SubCode where ValidationCheck(value in {0, 1}, null, "TELNET: The SubCode in type SBTerminalSpeedOption should be zero or 1.");
     array<SubCodeIs> Value;
 }
 
-//rfc 1372  33
+// rfc 1372  33
 /*
 IAC SB TOGGLE-FLOW-CONTROL OFF IAC SE
 IAC SB TOGGLE-FLOW-CONTROL ON IAC SE
@@ -880,11 +759,11 @@ IAC SB TOGGLE-FLOW-CONTROL RESTART-XON IAC SE
 */
 type SBToggleFlowControlOption
 {
-    (byte where value == 33) OptionCode;
+    byte OptionCode;
     byte SubCode;
 }
 
-//rfc 1184  34
+// rfc 1184  34
 /*
 IAC SB LINEMODE MODE mask IAC SE
 IAC SB LINEMODE DO FORWARDMASK mask0 mask1 ... mask31 IAC SE
@@ -896,20 +775,22 @@ Optioncode = 34
 */
 type SBLINEMODEOption
 {
-    (byte where value == 34) OptionCode;
-    (OptionMode | OptionSlc | OptionForwordMask) Data;
-    
+    byte OptionCode;
+    ([|stream.RemainingByteLength() >= 1|]
+        ([|stream.CurrentByte == 1|] OptionMode |
+        [|stream.CurrentByte == 3|] OptionSlc |
+        OptionForwordMask)) Data;
 }
 
 type OptionMode
 {
-    (byte where value == 1) SubCode;
+    byte SubCode;
     byte Mask;
 }
 
 type OptionSlc
 {
-    (byte where value == 3) SubCode;
+    byte SubCode;
     array<Triplet> Triplets;
 }
 
@@ -932,19 +813,19 @@ type OptionForwordMask
 
 pattern ByteExcludeFD = byte where value != 253;
 
-//rfc 1096  35
+// rfc 1096  35
 /*
 IAC SB X-DISPLAY-LOCATION SEND IAC SE
 IAC SB X-DISPLAY-LOCATION IS ... IAC SE
 */
 type SBXDisplayLocationOption
 {
-    (byte where value == 35) OptionCode;
+    byte OptionCode;
     byte SubCode where ValidationCheck(value in {0, 1}, null, "TELNET: The SubCode in type SBXDisplayLocationOption should be zero or 1.");
     optional [|SubCode == 0|] array<ByteExcludeFF> XDisplayLocation;
 }
 
-//rfc 1408  36
+// rfc 1408  36
 /*
 IAC SB ENVIRON SEND [ type ... [ type ... [ ... ] ] ] IAC SE
 IAC SB ENVIRON IS type ... [ VALUE ... ] [ type ... [ VALUE ... ] [
@@ -953,7 +834,7 @@ IAC SB ENVIRON INFO type ... [ VALUE ... ] [ type ... [ VALUE ... ] [
 */
 type SBEnvironmentOption
 {
-    (byte where value == 36) OptionCode;
+    byte OptionCode;
     byte SubCode;
     array<SBXDISPLAYLOCATION> Data;
 }
@@ -964,7 +845,7 @@ type SBXDISPLAYLOCATION
     array<ByteExcludeFF> Value; // Future Reference: To be revisited.
 }
 
-//rfc 2941   37
+// rfc 2941   37
 /*
 IAC SB AUTHENTICATION SEND authentication-type-pair-list IAC SE
 IAC SB AUTHENTICATION IS authentication-type-pair <auth data> IAC SE
@@ -973,11 +854,11 @@ IAC SB AUTHENTICATION NAME remote-user IAC SE
 */
 type SBAuthenticationOption
 {
-    (byte where value == 37) OptionCode;
+    byte OptionCode;
     byte SubCode;
-    ([|SubCode in {0, 2}|] AuthenTypePair          |
-    [|SubCode == 1|] IsAuthenTypePair                       |
-    [|SubCode == 3|] Name) Data;
+    ([|SubCode in {0, 2}|] AuthenTypePair |
+        [|SubCode == 1|] IsAuthenTypePair |
+        [|SubCode == 3|] Name) Data;
 }
 
 type AuthenTypePair     // 0, 2
@@ -991,11 +872,11 @@ type AuthenTypePair     // 0, 2
     byte Unused where ValidationCheck(value == 0, null, "TELNET: The Reserved in type AuthenTypePair must be zero.") with BinaryEncoding{Width = 3};
     
     ([|AuthType == 1|] SubCommandKERBEROSV4Type     |
-    [|AuthType == 2|] SubCommandKERBEROSV5Type      |
-    [|AuthType == 5|]SubCommandSRPType              |
-    [|AuthType in {12, 13, 14}|] byte               |
-    [|AuthType == 15|] NTLMType                     |
-    array<ByteExcludeFF>) AuthData;
+        [|AuthType == 2|] SubCommandKERBEROSV5Type      |
+        [|AuthType == 5|]SubCommandSRPType              |
+        [|AuthType in {12, 13, 14}|] byte               |
+        [|AuthType == 15|] NTLMType                     |
+        array<ByteExcludeFF>) AuthData;
 }
 
 type NTLMType    // 15
@@ -1008,8 +889,18 @@ type NTLMSizeAndType
 {
     uint NTLMDataSize;
     uint NTLMBufferType;
-    binary NTLMData with BinaryEncoding{Length = NTLMDataSize};
+    (NlmpMessage | binary) NTLMData with BinaryEncoding{Length = NTLMDataSize},
+        Encoding{Decoder = NlmpDataDecoder, SourcePattern = TypeOf<binary>()};
     array<ByteExcludeFF> PadData;
+    
+    optional (NlmpMessage | binary) NlmpDataDecoder(binary data)
+    {
+        if (NlmpDecoder(data) is nlmpMessage:NlmpMessage)
+        {
+            return nlmpMessage;
+        }
+        return data;
+    }
 } with BinaryEncodingDefaults{Endian = Endian.Little};
 
 // RFC 1411
@@ -1017,7 +908,7 @@ type SubCommandKERBEROSV4Type
 {
     byte SubCommandKERBEROSV4;
     optional [|SubCommandKERBEROSV4 == 1|] string RejectReason with BinaryEncoding{TextEncoding = TextEncoding.ASCII};
-    optional [|SubCommandKERBEROSV4 in {3,4}|] Blob[8] Value;
+    optional [|SubCommandKERBEROSV4 in {3, 4}|] Blob[8] Value;
 }
 
 // RFC 2942
@@ -1035,7 +926,6 @@ type SubCommandSRPType
     optional [|SubCommandSRP == 4|] binary ResponseData with BinaryEncoding{Length = 20};
     optional [|SubCommandSRP == 8|] array<ByteExcludeFF> Residues;
     optional [|SubCommandSRP == 9|] ParamsCommandType Params;
-    
 }
 
 type ParamsCommandType
@@ -1064,7 +954,7 @@ type Name
     array<ByteExcludeFF> RemoteUser;
 }
 
-//rfc 2946  38
+// rfc 2946  38
 /*
 IAC SB ENCRYPT SUPPORT encryption-type-list IAC SE
 IAC SB ENCRYPT IS encryption-type ... IAC SE
@@ -1078,7 +968,7 @@ IAC SB ENCRYPT DEC_KEYID keyid IAC SE
 */
 type SBEncryptOption
 {
-    (byte where value == 38) OptionCode;
+    byte OptionCode;
     byte SubCode;
     ([|SubCode in {0, 2}|] EncreptionType   |
     [|SubCode == 1|] EncryType              |
@@ -1089,7 +979,7 @@ type SBEncryptOption
 type EncreptionType
 {
     byte EncryType;
-    optional [|EncryType in {1, 2, 3, 4, 8, 9, 10 ,11}|] CAST128OFB64Type EncryptedData; 
+    optional [|EncryType in {1, 2, 3, 4, 8, 9, 10 , 11}|] CAST128OFB64Type EncryptedData;
     array<ByteExcludeFF> Data;
 }
 
@@ -1102,14 +992,14 @@ type CAST128OFB64Type
 
 type EncryType
 {
-    byte Type;    
+    byte Type;
 }
 type KeyID
 {
     array<ByteExcludeFF> KeyId;
 }
 
-//rfc 1572  39
+// rfc 1572  39
 /*
 IAC SB NEW-ENVIRON SEND [ type ... [ type ... [ ... ] ] ] IAC SE
 IAC SB NEW-ENVIRON IS type ... [ VALUE ... ] [ type ... [ VALUE ... ]
@@ -1120,7 +1010,7 @@ IAC SB NEW-ENVIRON INFO type ... [ VALUE ... ] [ type ... [ VALUE ...
 // Bug#23980, even if all data is consumed, there are redundant elements at end of array.
 type SBNewEvironmentOption
 {
-    (byte where value == 39) OptionCode;
+    byte OptionCode;
     byte SubCode;
     array<EnvironVariableType> EnvironVariable;   // Future Reference: to be revisit
 }
@@ -1137,7 +1027,7 @@ type ByteExcludeFF000102
 }
 
 //
-//rfc 2355  40
+// rfc 2355  40
 /*
 IAC SB TN3270E SEND DEVICE-TYPE IAC SE
 IAC SB TN3270E DEVICE-TYPE REQUEST <device-type> [ [CONNECT <resource-name>] | [ASSOCIATE <device-name>] ] IAC SE
@@ -1149,7 +1039,7 @@ this option is very complex , i wil enriched it in future.
 */
 type SBTN3270EOption
 {
-    (byte where value == 40) OptionCode;
+    byte OptionCode;
     byte SubCode1;
     byte SubCode2;
     optional ([|SubCode1 == 2 && SubCode2 == 6|] ReasonCode     |
@@ -1197,7 +1087,7 @@ type FunctionList
     array<ByteExcludeFF> Function;
 }
 
-//rfc 2066  42
+// rfc 2066  42
 /*
 IAC SB CHARSET REQUEST { "[TTABLE ]" <Version> } <char set
    list> IAC SE
@@ -1257,7 +1147,7 @@ type CharsetTtableIs
     string Map2 with BinaryEncoding{Length = Count2};
 }
 
-//rfc 2217  44
+// rfc 2217  44
 /*
 COM-PORT-OPTION
 */
@@ -1366,20 +1256,20 @@ type UnknownSubCode
     array<ByteExcludeFF> Value;
 }
 
-//rfc 2840  47
-//KERMIT
+// rfc 2840  47
+// KERMIT
 type SBKERMITOption
 {
-    (byte where value == 47) OptionCode;
+    byte OptionCode;
     byte SubCode;
     optional [|SubCode == 4|] byte Octet;
 }
 
-//rfc 861   255
-//EXOPL
+// rfc 861   255
+// EXOPL
 type SBEXOPLOption
 {
-    (byte where value == 255) OptionCode;
+    byte OptionCode;
     byte SubCode;
     byte SupOptCode;
     optional [|SubCode == 250|] ExoplParameters ExoplParameters;
@@ -1388,7 +1278,7 @@ type SBEXOPLOption
 type ExoplParameters
 {
     array<ByteExcludeF0> Parameter;
-    byte ParamEnd;  
+    byte ParamEnd;
 }
 
 type ByteExcludeF0 
@@ -1396,26 +1286,111 @@ type ByteExcludeF0
     (byte where value != 240) Byte;
 }
 
-string ConvertArrayByteToString (array<SingleByte> arr)
+// ---------------------------------- Utilities ---------------------------------------
+string ConvertArrayByteToString(array<SingleByte> arr)
 {
-    if (arr.Count == 0) 
+    binary bin = arr as binary;
+    if (LiteralString(bin) is str:string)
     {
-        return "";
+        return str;
     }
-    array<byte> bytes = [];
-    foreach (SingleByte e in arr)
+    return "";
+}
+
+// Decode TELNET message
+optional Message TelnetDecoder(binary buffer)
+{
+    switch (buffer)
     {
-        bytes += [e.Byte as byte];
+        case m:Message from BinaryDecoder<Message> =>
+            // assign the terminal type annotation and NLMP embedded
+            if (m.TelCmd is telCmd:TelCmd && telCmd.TelCmds.Count > 0)
+            {
+                foreach (var command in telCmd.TelCmds)
+                {
+                    if (command.Option is terminalTypeOption:SBTerminalTypeOption &&
+                        terminalTypeOption.Value is terminal:Terminal)
+                    {
+                        // update the terminal type byte message
+                        m#TerminalType = ConvertArrayByteToString(terminal.Data);
+                        break;
+                    }
+                    else if (command.Option is sbAuthenticationOption:SBAuthenticationOption &&
+                        sbAuthenticationOption.Data is authenTypePair:AuthenTypePair &&
+                        authenTypePair.AuthData is ntlmType:NTLMType &&
+                        ntlmType.NTLMValue is NTLMSizeAndType)
+                    {
+                        m#Embedded = {"NLMP" -> ""};
+                    }
+                }
+            }
+            
+            return m;
+        default =>
+            return nothing;
+    }
+}
+
+// ---------------------------------- TELNET Decoding ---------------------------------------
+type TelnetDecodingHelper: TCPDecodingHelper
+{
+    optional string terminalType = nothing;
+    
+    void InitializeTelnetDecodingHelper(any endpoint server, ushort localPort)
+    {
+        TelnetDecodingCache acceptsCache = new TelnetDecodingCache();
+        TelnetDecodingCache issuesCache = new TelnetDecodingCache();
+        
+        this.Initialize(acceptsCache, issuesCache,
+            "Telnet", (endpoint TELNET.Server over server),
+            (binary b) => true /*isCurrentProtocol*/,
+            (binary b) => 0 /*isSufficientForSingleMsg*/, 
+            (stream s) => nothing /*decodeSingleMessage*/,
+            (binary b) => nothing /*decodeIncompleteMessage*/);
+            
+        acceptsCache.telnetDecodingHelper = this;
+        acceptsCache.localPort = localPort;
+        issuesCache.telnetDecodingHelper = this;
+        issuesCache.localPort = localPort;
     }
     
-    binary bin = bytes as binary;
-    optional string s = LiteralString(bin);
-    if (s == nothing)
+    void AssignTerminalType(TELNET.Message telnetMessage)
     {
-        return ""; 
+        if (telnetMessage#TerminalType != nothing)
+        {
+            terminalType = telnetMessage#TerminalType;
+        }
+        else
+        {
+            telnetMessage#TerminalType = terminalType;
+        }
     }
-    else
+}
+
+type TelnetDecodingCache : TCPDecodingCache
+{
+    TelnetDecodingHelper telnetDecodingHelper = null;
+    ushort localPort;
+
+    override void TryDecodeAndDispatchMessage()
     {
-        return s as string;
+        assert Origins.Count > 0;
+        
+        switch (Buffer)
+        {
+            case m:Message from TelnetDecoder =>
+                m#IsRequest = Direction == MessageDirection.Accepts ? true : false;
+                m#DstPort = Direction == MessageDirection.Accepts ? Port.TELNET : localPort;
+                m#SrcPort = Direction == MessageDirection.Issues ? Port.TELNET : localPort;
+                telnetDecodingHelper.AssignTerminalType(m);
+                
+                m.Origins = Origins;
+                DispatchMessage(m);
+                CompleteMessages.Add(m, BufferStartSequenceNumber, BufferEndSequenceNumber);
+                ResetAfterSucceed(null);
+            default =>
+                // actually, TELNET Message will not decoding failed
+                return;
+        }
     }
 }

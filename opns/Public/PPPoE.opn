@@ -16,7 +16,7 @@ OPNAuthoring
         ],
     RevisionSummary = 
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "11/15/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "360482", Date = "03/21/2014"}
         ]
 };
 
@@ -125,7 +125,7 @@ message Datagram
             case 0x19 => display = "Request (PADR)";
             case 0x65 => display = "Session-confirmation (PADS)";
             case 0xa7 => display = "Terminate (PADT)";
-            default => display = "Unknown Packet (Code = " + (Code as string) + ")";
+            default => display = "Unknown Packet Code(" + Utility.DecToHexFormat(Code) + ")";
         }
         return display;
     }

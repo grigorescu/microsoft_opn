@@ -1,4 +1,4 @@
-﻿protocol EAPOL with 
+protocol EAPOL with 
 BinaryEncodingDefaults{Endian = Endian.Big},
 Documentation
 {
@@ -19,7 +19,7 @@ OPNAuthoring
         ],
     RevisionSummary = 
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "12/21/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "376689", Date = "04/10/2015"}
         ]
 };
 
@@ -58,26 +58,27 @@ autostart actor EapolOverSnap(SNAP.Node node)
     }
 }
 
+// 802.1X section 7. EAP encapsulation over LANs (EAPOL)
 // RFC 3580 4 Eapol-Key Frame
 message Frame
 {
     byte Version;
-    PacketType PacketType;
+    PacketTypeEnum PacketType;
     ushort PacketBodyLength;
-    optional [|PacketBodyLength > 0|] ([|PacketType is PacketType.EapPacket|] EapPacket[PacketBodyLength as uint] 
-        | [|PacketType is PacketType.EapolKey|] EapolKey[PacketBodyLength as uint]
-        | [|PacketType is PacketType.EapolEncapsulatedAsfAlert|] EapolEncapsulatedAsfAlert[PacketBodyLength as uint] 
-        | Blob[PacketBodyLength as uint]) Padding;
+    optional [|PacketBodyLength > 0|] ([|PacketType == PacketTypeEnum.EapPacket|] binary
+        | [|PacketType == PacketTypeEnum.EapolKey|] EapolKey[PacketBodyLength as uint]
+        | [|PacketType == PacketTypeEnum.EapolEncapsulatedAsfAlert|] EapolEncapsulatedAsfAlert
+        | binary) PacketBody with BinaryEncoding{Length = PacketBodyLength};
     
     override string ToString()
     {
         switch (PacketType)
         {
-            case PacketType.EapPacket  => return ("Eapol: EAP-Packet , Length = " + (PacketBodyLength as string));
-            case PacketType.EapolStart  => return ("Eapol: Eapol-Start , Length = " + (PacketBodyLength as string));
-            case PacketType.EapolLogoff  => return ("Eapol: Eapol-Logoff , Length = " + (PacketBodyLength as string));
-            case PacketType.EapolKey  => return ("Eapol: Eapol-Key (4-Way Handshake Message 4) , Length = " + (PacketBodyLength as string));
-            case PacketType.EapolEncapsulatedAsfAlert  => return ("Eapol: Eapol-Encapsulated-Asf-Alert , Length = " + (PacketBodyLength as string));
+            case PacketTypeEnum.EapPacket  => return ("Eapol: EAP-Packet , Length = " + (PacketBodyLength as string));
+            case PacketTypeEnum.EapolStart  => return ("Eapol: Eapol-Start , Length = " + (PacketBodyLength as string));
+            case PacketTypeEnum.EapolLogoff  => return ("Eapol: Eapol-Logoff , Length = " + (PacketBodyLength as string));
+            case PacketTypeEnum.EapolKey  => return ("Eapol: Eapol-Key (4-Way Handshake Message 4) , Length = " + (PacketBodyLength as string));
+            case PacketTypeEnum.EapolEncapsulatedAsfAlert  => return ("Eapol: Eapol-Encapsulated-Asf-Alert , Length = " + (PacketBodyLength as string));
             default => return "Unknown Message Type: "+ (PacketType as string);
         }
     }
@@ -90,19 +91,20 @@ pattern EtherType = enum ushort
 };
 
 // IEEE Std 802.1X-2001 7.5.4 Packet type
-pattern PacketType = enum byte 
-    {
-        EapPacket                   = 0x00,
-        EapolStart                  = 0x01,
-        EapolLogoff                 = 0x02,
-        EapolKey                    = 0x03,
-        EapolEncapsulatedAsfAlert   = 0x04,
-    };
+pattern PacketTypeEnum = enum byte
+{
+    EapPacket                   = 0x00,
+    EapolStart                  = 0x01,
+    EapolLogoff                 = 0x02,
+    EapolKey                    = 0x03,
+    EapolEncapsulatedAsfAlert   = 0x04,
+    ...
+};
 
 // RFC 3580 4 Eapol-Key Frame
 type RC4KeyDescriptor[uint Length]
 {
-    (byte where value == 0x01) Type; 
+    byte Type; 
     ushort KeyLength;
     binary ReplayCounter with BinaryEncoding{Length = 8};
     binary KeyIV with BinaryEncoding{Length = 16};
@@ -114,7 +116,7 @@ type RC4KeyDescriptor[uint Length]
 
 type RSNWPAKeyDescriptor
 {
-    (byte where value == 0x02) DescriptorType;
+    byte DescriptorType;
     ushort KeyInformation;
     ushort KeyLength;
     binary KeyReplayCounter with BinaryEncoding{Length = 8};
@@ -130,17 +132,13 @@ type RSNWPAKeyDescriptor
 // IEEE Std 802.11i-2004 8.5.2 Eapol-Key frames
 type EapolKey[uint Length]
 {
-    (RC4KeyDescriptor[Length]|RSNWPAKeyDescriptor|binary) RC4KeyDescriptor;
-}
-
-// IEEE Std 802.1X-2001 7.5.6 Packet Body
-type EapPacket[uint Length]
-{
-    binary Payload with BinaryEncoding{Length = Length};
+    ([|stream.RemainingByteLength() > 0 && stream.CurrentByte == 1|] RC4KeyDescriptor[Length] |
+        [|stream.RemainingByteLength() > 0 && stream.CurrentByte == 2|] RSNWPAKeyDescriptor |
+        binary) RC4KeyDescriptor;
 }
 
 // DSP0136 3.1.4.1 PET Frame Content Sources
-type EapolEncapsulatedAsfAlert[uint Length]
+type EapolEncapsulatedAsfAlert
 {
     byte Reserved;
     byte EventSensorType;

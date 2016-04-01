@@ -1,4 +1,4 @@
-﻿protocol T124 with
+protocol T124 with
 Asn1EncodingDefaults{ EncodingRule = Asn1EncodingRule.CanonicalPER },
 BinaryEncodingDefaults{Endian = Endian.Big},
 Documentation
@@ -16,17 +16,21 @@ OPNAuthoring
         ],
     RevisionSummary = 
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "9/20/2012"}
+            new Revision{Class = RevisionClass.Major, Version = "376455", Date = "04/03/2015"}
         ]
 };
 
 using Standard;
 using Utility;
-using ASN1;
+using Technologies.ASN1;
 using T125;
 
-annotation ulong T124SourcePort;
-annotation ulong T124DestinationPort;
+annotation ushort ConnectGccPdu#T124SourcePort;
+annotation ushort ConnectGccPdu#T124DestinationPort;
+annotation ushort ConnectData#T124SourcePort;
+annotation ushort ConnectData#T124DestinationPort;
+annotation ushort ConnectDataResponse#T124SourcePort;
+annotation ushort ConnectDataResponse#T124DestinationPort;
 
 endpoint Node over 
     T125.Node accepts ConnectGccPdu issues ConnectGccPdu accepts ConnectData issues ConnectDataResponse
@@ -40,7 +44,7 @@ endpoint Node over
                 pdu#T124SourcePort = req#T124SourcePort;
                 dispatch (endpoint Node over this) accepts pdu;
             default =>
-                ThrowDecodingException("T124");
+                ThrowDecodingException("T124", "ConnectGccPdu");
         }
     }
     
@@ -53,7 +57,7 @@ endpoint Node over
                 pdu#T124SourcePort = rsp#T124SourcePort;
                 dispatch (endpoint Node over this) issues pdu;
             default =>
-                ThrowDecodingException("T124");
+                ThrowDecodingException("T124", "ConnectGccPdu");
         }
     }
 }
@@ -69,7 +73,7 @@ autostart actor T124OverT125(T125.Node node)
                 data#T124SourcePort = req#T125SourcePort;
                 dispatch (endpoint Node over node) accepts data;
             default =>
-                ThrowDecodingException("T124");
+                ThrowDecodingException("T124", "ConnectData");
         }
     }
     
@@ -82,13 +86,13 @@ autostart actor T124OverT125(T125.Node node)
                 var prePosition = s.BitPosition;
                 data.Length = BinaryDecoder<AsnPerLengthDeterminant>(s);
                 data.AssignFieldEncodingInfo("Length", s.BitPosition, s.BitPosition - prePosition);
-                data.AssignFieldEncodingInfo("ConnectPDU", s.BitPosition, s.RemainingLength * 8);
+                data.AssignFieldEncodingInfo("ConnectPDU", s.BitPosition, s.RemainingBitLength);
                 data.ConnectPDU = BinaryDecoder<binary>(s);
                 data#T124DestinationPort = rsp#T125DestinationPort;
                 data#T124SourcePort = rsp#T125SourcePort;
                 dispatch (endpoint Node over node) issues data;
             default =>
-                ThrowDecodingException("T124");
+                ThrowDecodingException("T124", "ConnectDataResponse");
         }
     }
 }
@@ -98,6 +102,11 @@ message ConnectData
 {
     Key T124Identifier;
     OctetString ConnectPDU;
+    
+    override string ToString()
+    {
+        return "ConnectData, T124Identifier: " + (T124Identifier.ToString());
+    }
 }
 
 type AsnPerLengthDeterminant
@@ -134,6 +143,16 @@ message ConnectDataResponse
     Key T124Identifier;
     optional AsnPerLengthDeterminant Length with Encoding{Ignore = true};
     optional binary ConnectPDU with Encoding{Ignore = true};
+    
+    override string ToString()
+    {
+        string str = "ConnectDataResponse, T124Identifier: " + (T124Identifier as string);
+        if (Length != nothing)
+        {
+            str += ", Length: " + Length.ToString();
+        }
+        return str;
+    }
 }
 
 // Future Reference: test with capture for other messages
@@ -184,10 +203,10 @@ type NonStandardParameter
 
 pattern TextString = BMPString with Asn1Encoding {MinSize = 0, MaxSize = 255};
 pattern SimpleTextString = BMPString with Asn1Encoding {MinSize = 0, MaxSize = 255};
-pattern SimpleNumericString = NumericString with Asn1Encoding {LowerAlphabet = '0', UpperAlphabet = '9', MinSize = 0, MaxSize = 255};
+pattern SimpleNumericString = NumericString with Asn1Encoding {LowerAlphabet = '0', UpperAlphabet = '9', MinSize = 1, MaxSize = 255};
 pattern DiallingString = NumericString with Asn1Encoding {LowerAlphabet = '0', UpperAlphabet = '9', MinSize = 1, MaxSize = 16};
 pattern SubAddressString = NumericString with Asn1Encoding {LowerAlphabet = '0', UpperAlphabet = '9', MinSize = 1, MaxSize = 40};
-pattern ExtraDiallingString = NumericString with Asn1Encoding {MinSize = 0, MaxSize = 255};
+pattern ExtraDiallingString = NumericString with Asn1Encoding {MinSize = 1, MaxSize = 255};
 
 pattern UserData = set<UserDataType>;
 type UserDataType
@@ -263,13 +282,13 @@ pattern Privilege = enum
     Add = 2,
     LockUnlock = 3,
     Transfer = 4,
-};
+} with Asn1Encoding {LowerEndValue = 0, UpperEndValue = 4, IsExtensible = true};
 
 pattern TerminationMethod = enum
 {
     Automatic = 0,
     manual = 1,
-};
+} with Asn1Encoding {LowerEndValue = 0, UpperEndValue = 1, IsExtensible = true};
 
 pattern NonStandardScheme = NonStandardParameter with Asn1Encoding {TagNumber = 0};
 pattern ConferencePriorityScheme = NonStandardScheme;
@@ -354,7 +373,7 @@ pattern NodeType = enum
     Terminal = 0,
     MultiportTerminal = 1,
     Mcu = 2,
-};
+} with Asn1Encoding {LowerEndValue = 0, UpperEndValue = 2, IsExtensible = true};
 
 pattern CallingNode = Null with Asn1Encoding {TagNumber = 0};
 pattern CalledNode = Null with Asn1Encoding {TagNumber = 1};
@@ -400,7 +419,7 @@ pattern ConferenceCreateResponseResult = enum
     ResourcesNotAvailable = 2,
     RejectedForSymmetryBreaking = 3,
     LockedConferenceNotSupported = 4,
-};
+} with Asn1Encoding {LowerEndValue = 0, UpperEndValue = 4, IsExtensible = true};
 
 pattern ConferenceCreateResponsePattern = ConferenceCreateResponse with Asn1Encoding {TagNumber = 1};
 type ConferenceCreateResponse
@@ -423,7 +442,7 @@ pattern ConferenceQueryResponseResult = enum
 {
     Success = 0,
     UserRejected = 1,
-};
+} with Asn1Encoding {LowerEndValue = 0, UpperEndValue = 1, IsExtensible = true};
 
 pattern ConferenceQueryResponsePattern = ConferenceQueryResponse with Asn1Encoding {TagNumber = 3};
 type ConferenceQueryResponse
@@ -459,7 +478,7 @@ pattern ConferenceJoinResponseResult = enum
     InvalidConvenerPassword = 4,
     ChallengeResponseRequired = 5,
     InvalidChallengeResponse = 6,
-};
+} with Asn1Encoding {LowerEndValue = 0, UpperEndValue = 6, IsExtensible = true};
 
 pattern ConferenceJoinResponsePattern = ConferenceJoinResponse with Asn1Encoding {TagNumber = 5};
 type ConferenceJoinResponse
@@ -510,7 +529,7 @@ pattern ConferenceInviteResponseResult = enum
 {
     Success = 0,
     UserRejected = 1,
-};
+} with Asn1Encoding {LowerEndValue = 0, UpperEndValue = 1, IsExtensible = true};
 
 pattern ConferenceInviteResponsePattern = ConferenceInviteResponse with Asn1Encoding {TagNumber = 7};
 type ConferenceInviteResponse

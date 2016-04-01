@@ -1,4 +1,4 @@
-﻿protocol ERF with 
+protocol ERF with 
 BinaryEncodingDefaults{Endian = Endian.Big},
 Documentation
 {
@@ -15,17 +15,15 @@ OPNAuthoring
     ],
     RevisionSummary = 
     [
-        new Revision {Class = RevisionClass.Major, Version = "1.0.0", Date = "07/04/2013"}
+        new Revision {Class = RevisionClass.Major, Version = "370439", Date = "11/03/2014"}
     ]
 };
 
 using Standard;
 using Utility;
-using IANA;
 using Ethernet;
 using IPv4;
 using IPv6;
-using DTYP;
 using Diagnostics;
 
 // http://wiki.wireshark.org/ERF
@@ -70,7 +68,7 @@ endpoint Node
         switch (r.Payload)
         {
             case f:Ethernet.Frame from BinaryDecoder<Ethernet.Frame[false]> =>
-                dispatch (endpoint Ethernet.Node[f.DestinationAddress.FlatAddress]) accepts f;
+                dispatch (endpoint Ethernet.Node) accepts f;
             default =>
                 ThrowDecodingException("ERF", "IPv4.Frame");
         }
@@ -80,7 +78,7 @@ endpoint Node
         switch (r.Payload)
         {
             case d:IPv4.Datagram from BinaryDecoder<IPv4.Datagram> =>
-                dispatch endpoint IPv4.ReassemblyNode[d.DestinationAddress.FlatAddress < d.SourceAddress.FlatAddress ? d.DestinationAddress.FlatAddress : d.SourceAddress.FlatAddress] accepts d;
+                DispatchIPv4DatagramToReassemblyNode(d);
             default =>
                 ThrowDecodingException("ERF", "IPv4.Datagram");
         }
@@ -90,7 +88,7 @@ endpoint Node
         switch (r.Payload)
         {
             case d:IPv6.Datagram from IPv6Decoder =>
-                dispatch endpoint IPv6.ReassemblyNode[d.DestinationAddress.FlatAddress < d.SourceAddress.FlatAddress ? d.DestinationAddress.FlatAddress : d.SourceAddress.FlatAddress] accepts d;
+                DispatchIPv6DatagramToReassemblyNode(d);
             default =>
                 ThrowDecodingException("ERF", "IPv6.Datagram");
         }
@@ -133,67 +131,8 @@ type HeaderFlags
 // The lower 32-bits contain the binary fraction of the second allowing an ultimate resolution of approximately 233 picoseconds. 
 string POSIXTimeToString(uint dwHighDateTime, uint dwLowDateTime)
 {
-    ulong yearBase = 1970;
-    ulong monthBase = 1;
-    ulong dayBase = 1;
-    ulong second = dwHighDateTime;
-    ulong secondResult = second % 60;
-    ulong minute = second / 60;
-    ulong minuteResult = minute % 60;
-    ulong hour = minute / 60;
-    ulong hourResult = hour % 24;
-    ulong dayValue = hour / 24;
-    
-    ulong dayResult = dayBase + dayValue;
-    while (true)
-    {
-        bool isLeapYear = IsLeapYear(yearBase);
-        if (dayResult >= 365 && !isLeapYear)
-        {
-            yearBase = yearBase + 1;
-            dayResult = dayResult - 365;
-        }
-        else if (dayResult >= 366 && isLeapYear)
-        {
-            yearBase = yearBase + 1;
-            dayResult = dayResult - 366;
-        }
-        else
-        {
-            while (true)
-            {
-                if (dayResult > 31 && monthBase in {1, 3, 5, 7, 8, 10, 12})
-                {
-                    monthBase = monthBase + 1;
-                    dayResult = dayResult - 31;
-                }
-                else if (dayResult > 30 && monthBase in {4, 6, 9, 11})
-                {
-                    monthBase = monthBase + 1;
-                    dayResult = dayResult - 30;
-                }
-                else if (monthBase == 2 && dayResult > 28 && !isLeapYear)
-                {
-                    monthBase = monthBase + 1;
-                    dayResult = dayResult - 28;
-                }
-                else if (monthBase == 2 && dayResult > 29 && isLeapYear)
-                {
-                    monthBase = monthBase + 1;
-                    dayResult = dayResult - 29;
-                }
-                else
-                {
-                    break;
-                }
-            }
-            break;
-        }
-    }
-        
     ulong milliSecond = ((dwLowDateTime as ulong) * 1000000000) >> 32;
-    string milliSecondResult = Format("{0:D9}", milliSecond);
-    return (monthBase as string) + @"/" + (dayResult as string) + @"/" + (yearBase as string)  + " " + (hourResult as string) + ":" + (minuteResult as string) + ":" + (secondResult as string) + "." + milliSecondResult + " UTC";
+    return CreateDateTime(1970, 1, 1).AddSeconds(dwHighDateTime as double).AddMilliseconds(milliSecond as double).ToString("MM/dd/yyyy HH:mm:ss.fffffff K");
 }
 
 bool IsLeapYear(ulong year)

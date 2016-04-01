@@ -15,27 +15,28 @@ OPNAuthoring
         ],
     RevisionSummary = 
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "09/02/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "370484", Date = "11/06/2014"}
         ]
 };
 
 using Standard;
 using UDP;
 using DNS;
-using TCP;
 using Utility;
 using IANA;
-using VirtualTransport;
 
 endpoint Server
-    over UDP.Host | over VirtualTransport.Server
+    over UDP.Host
     accepts QueryMessage issues ResponseMessages;
     
 client endpoint Client connected to Server;
 
+// According to [MS-LLMNRP] section 2.1 Transport: An implementation of this profile MUST support UDP as a transport and MAY support TCP as a transport.
+// Accroding to [MS-LLMNRP] section 6 Appendix A: Product Behavior: Windows implementations of this profile do not listen to LLMNR queries on any TCP port, including 5355.
+
 autostart actor LLMNROverUDP(UDP.Host host)
 {
-    process host accepts d:UDP.Datagram where (d.SourcePort == Port.LLMNR && d.Payload.Segment(4,2) == $[0001])
+    process host accepts d:UDP.Datagram where d.Payload.Count >= 6 && (d.SourcePort == Port.LLMNR && d.Payload.Segment(4,2) == $[0001])
     {
         switch (d.Payload)
         {
@@ -46,7 +47,7 @@ autostart actor LLMNROverUDP(UDP.Host host)
         }
     }
     
-    process host accepts d:UDP.Datagram where (d.DestinationPort == Port.LLMNR && d.Payload.Segment(4,2) == $[0001])
+    process host accepts d:UDP.Datagram where d.Payload.Count >= 6 && (d.DestinationPort == Port.LLMNR && d.Payload.Segment(4,2) == $[0001])
     {
         switch (d.Payload)
         {
@@ -54,54 +55,6 @@ autostart actor LLMNROverUDP(UDP.Host host)
                 dispatch (endpoint Server over host) accepts m;
             default =>
                 ThrowDecodingException("LLMNR", "QueryMessage");
-        }
-    }
-}
-
-autostart actor LLMNROverTCP(VirtualTransport.Server server)
-{
-    process server issues s:VirtualTransport.VirtualDataSegment where (s.SourcePort == Port.LLMNR && s.Payload.Segment(4,2) == $[0001])
-    {
-        switch (s.Payload)
-        {
-            case m:ResponseMessages from BinaryDecoder<LLMNR.ResponseMessages> =>
-                dispatch (endpoint Server over server) issues m;
-            default =>
-                ThrowDecodingExceptionForTCP("LLMNR", "ResponseMessages", s#IsIncomplete, s#SegmentLost);
-        }
-    }
-    
-    process server accepts s:VirtualTransport.VirtualDataSegment where (s.DestinationPort == Port.LLMNR && s.Payload.Segment(4,2) == $[0001])
-    {
-        switch (s.Payload)
-        {
-            case m:QueryMessage from BinaryDecoder<LLMNR.QueryMessage> =>
-                dispatch (endpoint Server over server) accepts m;
-            default =>
-                ThrowDecodingExceptionForTCP("LLMNR", "QueryMessage", s#IsIncomplete, s#SegmentLost);
-        }
-    }
-    
-    // Below rules are added in case that TCP mistakes the Client for Server by port number for the trace without TCP 3-way handshake.
-    process server accepts s:VirtualTransport.VirtualDataSegment where server.isMissingThreeWayHandshake && (s.SourcePort == Port.LLMNR && s.Payload.Segment(4,2) == $[0001])
-    {
-        switch (s.Payload)
-        {
-            case m:ResponseMessages from BinaryDecoder<LLMNR.ResponseMessages> =>
-                dispatch (endpoint Server over server) issues m;
-            default =>
-                ThrowDecodingExceptionForTCP("LLMNR", "ResponseMessages", s#IsIncomplete, s#SegmentLost);
-        }
-    }
-    
-    process server issues s:VirtualTransport.VirtualDataSegment where server.isMissingThreeWayHandshake && (s.DestinationPort == Port.LLMNR && s.Payload.Segment(4,2) == $[0001])
-    {
-        switch (s.Payload)
-        {
-            case m:QueryMessage from BinaryDecoder<LLMNR.QueryMessage> =>
-                dispatch (endpoint Server over server) accepts m;
-            default =>
-                ThrowDecodingExceptionForTCP("LLMNR", "QueryMessage", s#IsIncomplete, s#SegmentLost);
         }
     }
 }
@@ -130,7 +83,7 @@ message QueryMessage
         string summary = "Query, Id: " + DecToHexFormat(QueryIdentifier) + ", OpCode: " + LLMNROpcodeTable(OPCode) + ", ";
         if ((QuestionCount >= 1) && (AnswerRRCount == 0) && (NameServerRRCount == 0) && (AdditionalRRCount == 0))     // query
         {
-            summary += "Query for " + (Questions.LLMNRQueryName as DNS.DomainStringNotCompressed).GetDomainStringNotCompressedFormated()
+            summary += "Query for " + Questions.LLMNRQueryName
                 + " of type " + EnumToString(Questions.Type, "DNS.RRType") + " on class " + EnumToString(Questions.Class, "DNS.RRClass") + ".";
         }
         return summary;
@@ -187,7 +140,7 @@ message ResponseMessages
 
 type LLMNRQuery
 {
-    DNS.DomainStringNotCompressed LLMNRQueryName;
+    DNSString LLMNRQueryName;
     ushort Type;
     ushort Class;
 }

@@ -21,7 +21,7 @@ OPNAuthoring
         ],
     RevisionSummary = 
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "09/02/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "382201", Date = "10/19/2015"}
         ]
 };
 
@@ -29,14 +29,17 @@ using Standard;
 using Utility;
 using IANA;
 
-endpoint Node[binary LocalAddress] accepts Frame;
+endpoint Node accepts Frame;
 
+const array<byte> IEEE8021ADMETADATA_TPID_BYTEARRAY= [0x88, 0xA8];
+const array<byte> IEEE8021QDMETADATA_TPID_BYTEARRAY = [0x81, 0x00];
 message Frame[bool IsTruncated]
 {
     MacAddress DestinationAddress with Visualization{AliasName = "Address"};
     MacAddress SourceAddress with Visualization{AliasName = "Address"};
-    optional (IEEE8021QMetaData | IEEE8021ADMetaData) MetaData;
-    (Type | Length) LengthOrType 
+    optional ([|(RemainingBitLength(stream) >= 64) && PeekByteCompare(stream, stream.BitPosition, IEEE8021ADMETADATA_TPID_BYTEARRAY) && (PeekByteCompare(stream, stream.BitPosition + 32, IEEE8021QDMETADATA_TPID_BYTEARRAY))|] IEEE8021ADMetaData |
+              [|(RemainingBitLength(stream) >= 32) && (PeekByteCompare(stream, stream.BitPosition, IEEE8021QDMETADATA_TPID_BYTEARRAY))|] IEEE8021QMetaData) MetaData;
+    ushort LengthOrType 
         where ValidationCheckValid(CheckType(value), this, false, ReferenceType.Message, "Ethernet", "LengthOrType", "Frame", "IEEE Ethernet Type") 
         with DisplayInfo{ToText = LengthOrTypeToText};
     binary MacClientData 
@@ -46,16 +49,13 @@ message Frame[bool IsTruncated]
     
     override string ToString()
     {
-        string summary = "";
-        summary += this#IsTruncated != nothing && (this#IsTruncated as bool) ? "Truncated, " : "";
-        summary += (LengthOrType is Type ? "Type: " : "Length: ") + LengthOrTypeToText(LengthOrType); 
-        return summary;
+        return ((LengthOrType <= 0x05DC)? "Length: " : "Type: ") + LengthOrTypeToText(LengthOrType); 
     }
     
     static string LengthOrTypeToText(any data)
     {
-        (Type | Length) lengthOrType = data as (Type | Length);
-        if (lengthOrType is Length)
+        ushort lengthOrType = data as ushort;
+        if (lengthOrType <= 0x05DC) // length
         {
             return (data as string);
         }
@@ -65,7 +65,7 @@ message Frame[bool IsTruncated]
         }
         else 
         {
-            string result = GetContinuousEthertype(lengthOrType as ushort);
+            string result = GetContinuousEthertype(lengthOrType);
             if (result != null)
             {
                 return result;
@@ -78,6 +78,11 @@ message Frame[bool IsTruncated]
     }
 }
 
+int get PayloadLength(this Ethernet.Frame msg)
+{
+    return msg.MacClientData.Count;
+}
+
 MacAddress get Source(this Ethernet.Frame frame)
 {
     return frame.SourceAddress;
@@ -88,16 +93,39 @@ MacAddress get Destination(this Ethernet.Frame frame)
     return frame.DestinationAddress;
 }
 
-string get Network(this Ethernet.Frame frame)
+MacAddress get SourceMACAddress(this Ethernet.Frame frame)
 {
-    return "Ethernet: " + (frame.SourceAddress.Octets > frame.DestinationAddress.Octets
-        ? frame.DestinationAddress.ToString() + " - " + frame.SourceAddress.ToString()
-        : frame.SourceAddress.ToString() + " - " + frame.DestinationAddress.ToString());
+    return frame.SourceAddress;
 }
 
-bool CheckType((Type | Length) lengthOrType)
+MacAddress get DestinationMACAddress(this Ethernet.Frame frame)
 {
-    if (lengthOrType is Length)
+    return frame.DestinationAddress;
+}
+
+string get Network(this Ethernet.Frame f)
+{
+    string src = GetAlias("Utility.MacAddress", f.SourceAddress, f) ?? f.SourceAddress.ToString();
+    string dst = GetAlias("Utility.MacAddress", f.DestinationAddress, f) ?? f.DestinationAddress.ToString();
+    return (f.SourceAddress.Octets > f.DestinationAddress.Octets ? (dst + " - " + src) : (src + " - " + dst));
+}
+
+bool CheckType(ushort lengthOrType)
+{
+    if (lengthOrType <= 0x05DC) // length
+    {
+        return true;
+    }
+    // impove performance, check IPv4, IPv6, ARP, PPP, EAPOL, EAPOL, PPPoE, PPPoE,SNMP first
+    else if (lengthOrType == 0x0800 ||
+             lengthOrType == 0x86DD ||
+             lengthOrType == 0x0806 ||
+             lengthOrType == 0x880B ||
+             lengthOrType == 0x888E ||
+             lengthOrType == 0x88C7 ||
+             lengthOrType == 0x8863 ||
+             lengthOrType == 0x8864 ||
+             lengthOrType == 0x814C)
     {
         return true;
     }
@@ -105,7 +133,7 @@ bool CheckType((Type | Length) lengthOrType)
     {
         return true;
     }
-    else if (GetContinuousEthertype(lengthOrType as ushort) != null)
+    else if (GetContinuousEthertype(lengthOrType) != null)
     {
         return true;
     }
@@ -115,9 +143,9 @@ bool CheckType((Type | Length) lengthOrType)
     }
 }
 
-bool CheckLength(binary macClientData, (Type | Length) lengthOrType)
+bool CheckLength(binary macClientData, ushort lengthOrType)
 {
-    if (lengthOrType is Length && lengthOrType > 0)
+    if (lengthOrType <= 0x05DC && lengthOrType > 0) //length
     {
         // The length of data portion is at least 46 bytes in ethernet, if actual data is less than 46 bytes, add pads in end
         if (lengthOrType >= MinMacClientDataLength)
@@ -135,23 +163,18 @@ bool CheckLength(binary macClientData, (Type | Length) lengthOrType)
     }
 }
 
-
-pattern Type = ushort where value >= 0x0600;    // 1536
-pattern Length = ushort where value <= 0x05DC;  // 1500
-
 const ushort MinMacClientDataLength = 46;
-
 
 type IEEE8021QMetaData
 {
-    (ushort where value == 0x8100) TPID;
+    ushort TPID;
     VlanTagTCI TCI;
 }
 
 type IEEE8021ADMetaData 
 {   
-    (IEEE8021QServiceVlanTag where value.TPID == 0x88A8) STAG;
-    (IEEE8021QCustomerVlanTag where value.TPID == 0x8100) CTAG;
+    IEEE8021QServiceVlanTag STAG;
+    IEEE8021QCustomerVlanTag CTAG;
 };
 
 type IEEE8021QServiceVlanTag
@@ -177,5 +200,5 @@ type VlanTagTCI
 {
     byte PCP with BinaryEncoding{Width = 3};
     bool CFI with BinaryEncoding{Width = 1};
-    ushort VID with BinaryEncoding{Width = 12};   
+    ushort VID with BinaryEncoding{Width = 12};
 }

@@ -1,4 +1,4 @@
-﻿protocol GSSAPI with Asn1EncodingDefaults{ EncodingRule = Asn1EncodingRule.BER },
+module GSSAPI with Asn1EncodingDefaults{EncodingRule = Asn1EncodingRule.BER},
 Documentation
 {
     ProtocolName = "Generic Security Service Application Program Interface",
@@ -14,720 +14,374 @@ OPNAuthoring
         ],
     RevisionSummary = 
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "1/12/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "381842", Date = "10/14/2015"}
         ]
 };
 
 using Standard;
 using Utility;
 using SPNG;
-using ASN1;
-using DNS;
-using HTTP;
-using IKE;
-using MSRPCE;
+using Technologies.ASN1;
 using NLMP;
 using GSSAPIKRB5;
-using KerberosV5;
+using DNS;
 
-//RFC 2478 3.1
-pattern MechType = ObjectIdentifier;
-//RFC 2478 3.2.1
-pattern ContextFlags = BitString;
-
-type GssapiType
+message GssapiType
 {
-    Gssapi Gssapi;
+    (NegotiationToken | InitialContextToken) Gssapi;
 } with Asn1Encoding{Flags = Asn1EncodingFlags.TagLengthSkipped};
 
-pattern Gssapi = NegotiationToken | InitialContextToken;
-
-endpoint Server
-    over DNS.Server | over IKE.Node
-    //| over HTTP.SetOriginsServer
-    //accepts HTTP.HttpContract.Request issues HTTP.HttpContract.Response;
-    //accepts HTTP.HttpContract.Request issues HTTP.HttpContract.Response;
-    accepts DNSMessage issues DNSMessage
-    accepts IKE.IKEDatagram;
-
-autostart actor GssapiOverDns(DNS.Server node) precedes DNS.Server
-{
-    bool micPresent;
-    observe node accepts s:DNSMessage where IsGssapiInDns(s.AdditionalRRs) // in the additional information section, RFC 2930 4.3 Query for GSS-API Establishment
-    {
-        bool result = DecodeGssapiInDNS(s.AdditionalRRs, ref micPresent);
-        ValidationCheck(result, s, DiagnosisLevel.Warning, "DNS: The KeyData in type TransactionKey should be decoded as GSSAPI.");
-    }
-    
-    observe node issues s:DNSMessage where IsGssapiInDns(s.AdditionalRRs) // in the additional information section, RFC 2930 4.3 Query for GSS-API Establishment
-    {
-        bool result = DecodeGssapiInDNS(s.AdditionalRRs, ref micPresent);
-        ValidationCheck(result, s, DiagnosisLevel.Warning, "DNS: The KeyData in type TransactionKey should be decoded as GSSAPI.");
-    }
-}
-
-bool IsGssapiInDns(optional array<OPTPseudoResourceRecord | ResourceRecord> additionalRRs)
-{
-    if (additionalRRs is nothing)
-    {
-        return false;
-    }
-    var itemList = additionalRRs as array<OPTPseudoResourceRecord | ResourceRecord>;
-    for (int i = 0; i < itemList.Count; i++)
-    {
-        if (itemList[i] is ResourceRecord)
-        {
-            ResourceRecord currRR = itemList[i] as ResourceRecord;
-            if (currRR.Type == DNS.RRType.TKEY)
-            {
-                TransactionKey tk = currRR.RData as TransactionKey;
-                if (tk.Mode == DNS.TKEYMode.GSSAPINegotiation && !(tk.KeyData is nothing))
-                {
-                    if ((tk.KeyData as binary)[0] in {0x60, 0xA0, 0xA1})
-                    {
-                        return true;
-                    }
-                }
-            }
-        }
-    }
-    return false;
-}
-
-bool DecodeGssapiInDNS(optional array<OPTPseudoResourceRecord | ResourceRecord> additionalRRs, ref bool micPresent)
-{
-    if (additionalRRs is nothing)
-    {
-        return false;
-    }
-    bool result = false;
-    var itemList = additionalRRs as array<OPTPseudoResourceRecord | ResourceRecord>;
-    for (int i = 0; i < itemList.Count; i++)
-    {
-        if (itemList[i] is ResourceRecord)
-        {
-            ResourceRecord currRR = itemList[i] as ResourceRecord;
-            if (currRR.Type == RRType.TKEY)
-            {
-                TransactionKey tk = currRR.RData as TransactionKey;
-                if (tk.KeyData is nothing)
-                {
-                    return false;
-                }
-                stream payload = tk.KeyData as binary;
-                var m = GssapiDecoder(payload, ref micPresent);
-                if (m != nothing)
-                {
-                    tk.Gssapi = m;
-                    tk.KeyData = nothing;
-                    result = true;
-                }
-            }
-        }
-    }
-    return result;
-}
-
-autostart actor GssapiOverIke(IKE.Node node) precedes IKE.Node
-{
-    bool micPresent;
-    observe node accepts s:IKE.IKEDatagram where IsGssapiInIke(s)
-    {
-        bool result = SetIkePayLoad(s, ref micPresent);
-        ValidationCheck(result, s, DiagnosisLevel.Warning, "IKE: The Data in type IkeGssapiTokenPayload should be decoded as GSSAPI.");
-    }
-}
-
-bool IsGssapiInIke(IKEDatagram datagram)
-{
-    bool result = false;
-    for (int i = 0; i < datagram.Payloads.Count; i++)
-    {
-        if (datagram.Payloads[i] is IkeGssapiTokenPayload)
-        {
-            if (((datagram.Payloads[i] as IkeGssapiTokenPayload).Data as array<byte>)[0] in {0x60, 0xA0, 0xA1})
-            {
-                result = true;
-            }
-        }
-    }
-    return result;
-}
-
-bool SetIkePayLoad(IKEDatagram datagram, ref bool micPresent)
-{
-    bool result = false;
-    for (int i = 0; i < datagram.Payloads.Count; i++)
-    {
-        if (datagram.Payloads[i] is IkeGssapiTokenPayload)
-        {
-            IkeGssapiTokenPayload ikeGssapiTokenPayload = datagram.Payloads[i] as IkeGssapiTokenPayload;
-            stream payload = (ikeGssapiTokenPayload.Data as array<byte>) as binary;
-            var m = GssapiDecoder(payload, ref micPresent);
-            if (m != nothing)
-            {
-                ikeGssapiTokenPayload.Gssapi = m;
-                ikeGssapiTokenPayload.Data = nothing;
-            }
-            result = true;
-        }
-    }
-    return result;
-}
-
-//pending TextEncoding support Base64
-
-//autostart actor GSSAPIOverHTTP(HTTP.Server node) precedes HTTP.Server
-//{
-    //observe node issues s:HTTP.HttpContract.Response
-    //{
-        //bool result = IsGssapiMessageOverHttpReponse(s);
-    //}
-    //
-    //observe node accepts s:HTTP.HttpContract.Request
-    //{
-        //bool result = IsGssapiMessageOverHttpRequest(s);
-    //}
-//}
-//
-//bool IsGssapiMessageOverHttpRequest(HTTP.HttpContract.Request request)
-//{
-    //return IncludeHttpAuthorization(request.Headers);
-//}
-//
-//bool IsGssapiMessageOverHttpReponse(HTTP.HttpContract.Response response)
-//{
-    //return IncludeHttpAuthorization(response.Headers);
-//}
-//
-//bool IncludeHttpAuthorization(map<string , any> headers)
-//{
-    //bool result = false;
-    //foreach (var key in headers.Keys)
-    //{
-        //if(key == "Authorization")
-        //{
-            //DispatchLog("OK");
-            //HttpAuthorization httpAuthorization = headers[key] as HttpAuthorization;
-            //if(httpAuthorization.Payload != nothing)
-            //{
-                //DispatchLog("OK1");
-                //stream pay = httpAuthorization.Payload as stream;
-                //String64 payString = BinaryDecoder<String64>(pay);
-                //DispatchLog(payString.data);
-                //switch (payString.data as stream)
-                //{
-                    //case m:InitialContextToken from Asn1BerDecoder<InitialContextToken> =>
-                    //{
-                        //httpAuthorization.Payload = nothing;
-                        //httpAuthorization.Gssapi = m;
-                    //}
-                    //case m:NegotiationToken from Asn1BerDecoder<NegotiationToken> =>
-                    //{
-                        //httpAuthorization.Payload = nothing;
-                        //httpAuthorization.Gssapi = m;
-                    //}
-                    //default =>
-                    //{
-                        //ThrowDecodingException("GSSAPI Decode error");
-                    //}
-                //}
-            //}
-            //result = true;
-        //}
-    //}
-    //return result;
-//}
-//
-//type String64
-//{
-    //string data with BinaryEncoding{TextEncoding = TextEncoding.Base64};
-//}
-
-//RFC 2743 3.1
-//SEQUENCE
+// RFC 2743 3.1
 message InitialContextToken
 {
     MechType ThisMech with DisplayInfo{ToText = MechTypeToText};
-    optional NegotiationToken InnerContextToken;    
-    optional any Payload with Encoding{Ignore = true};
-} with Asn1Encoding {TagClass = Asn1TagClass.Application,
-                   TagNumber = 0,
-                   Tagging = Asn1Tagging.Implicit};
+    any InnerContextToken with Encoding{Ignore = true};
+} with Asn1Encoding{TagClass = Asn1TagClass.Application, TagNumber = 0, Tagging = Asn1Tagging.Implicit};
 
-binary RemoveChoiceTag(binary input)
+// RFC 2478 3.1
+pattern MechType = ObjectIdentifier;
+
+// Store names of token in the GSSAPI messag, the format is "GSSAPI, Spengo, Kerberos".
+annotation string GssapiType#TokenName;
+
+// Store Authentication method and user name in GSSAPI.
+// index 0: authentication method, like "NTLM, Kerberos", required.
+// index 1: user name be authenticated, optional for kerberos. "Contoso\User"
+annotation string GssapiType#KeyInformation;
+
+// GSSAPI decoding function exposed to application protocol
+// Decode GSSAPI message, and set Embeded annotation if application protocol messsage is passed.
+// Parameter:
+//    s: stream to be decoded Gssapi.
+//    applicationProtocol: the message instance of decoded application protocol that has Gssapi embedded.
+optional GssapiType DecodeGssapiAndSetAnnotation(stream s, any message applicationProtocol)
 {
-    int lengthOfLength = 0;
-    int offset = 1;
-    if ((input.PeekByte((offset * 8) as int) & 0x80) == 0x80)
+    var length = CalculateAsn1BerLength(s);
+    if (length == nothing)
     {
-        lengthOfLength = (input.PeekByte((offset * 8) as int) & 0x7F);
-        offset = offset + (1 + lengthOfLength as int);
-    }
-    else
-    {
-        offset = offset + 1;
-    }
-    return input.Segment(offset);
-}
-
-// Decode GSSAPI and SPNG structure for MSRPC
-autostart actor GssapiOverMsrpce(MSRPCE.Server server) precedes MSRPCE.Server
-{
-    bool micPresent;
-    
-    observe server accepts s:MSRPCE.RpcconnAlterContextHdrT where (s.PTYPE is PDUType.AlterContext
-                                                                    && s.AuthVerifier != nothing
-                                                                    && (s.AuthVerifier is AuthVerifierCoT)
-                                                                    && ((s.AuthVerifier as AuthVerifierCoT).AuthValue is binary)
-                                                                    && ((s.AuthVerifier as AuthVerifierCoT).AuthValue as binary).Count > 0)
-    {
-        bool result = false;
-        result = DecodeAuthValue(s.AuthVerifier as AuthVerifierCoT);
-        ValidationCheck(result, s, DiagnosisLevel.Warning, "MSRPCE: The AuthValue of AuthVerifierCoT in type RpcconnAlterContextHdrT should be decoded as GSSAPI.");
+        return nothing;
     }
     
-    observe server issues s:MSRPCE.RpcconnAlterContextResponseHdrT where (s.PTYPE is PDUType.AlterContextResp
-                                                                            && s.AuthVerifier != nothing
-                                                                            && (s.AuthVerifier is AuthVerifierCoT)
-                                                                            && ((s.AuthVerifier as AuthVerifierCoT).AuthValue is binary)
-                                                                            && ((s.AuthVerifier as AuthVerifierCoT).AuthValue as binary).Count > 0)
+    // Create a new stream for decoding and move BytePosition of passed stream parameter.
+    var blob = BinaryDecoder<Blob[length as uint]>(s);
+    if (blob == nothing)
     {
-        bool result = false;
-        result = DecodeAuthValue(s.AuthVerifier as AuthVerifierCoT);
-        ValidationCheck(result, s, DiagnosisLevel.Warning, "MSRPCE: The AuthValue of AuthVerifierCoT in type RpcconnAlterContextResponseHdrT should be decoded as GSSAPI.");
+        return nothing;
     }
-    
-    observe server accepts s:MSRPCE.RpcconnBindHdrT where (s.PTYPE is PDUType.Bind
-                                                            && s.AuthVerifier != nothing
-                                                            && (s.AuthVerifier is AuthVerifierCoT)
-                                                            && ((s.AuthVerifier as AuthVerifierCoT).AuthValue is binary)
-                                                            && ((s.AuthVerifier as AuthVerifierCoT).AuthValue as binary).Count > 0)
-    {
-        bool result = false;
-        result = DecodeAuthValue(s.AuthVerifier as AuthVerifierCoT);
-        ValidationCheck(result, s, DiagnosisLevel.Warning, "MSRPCE: The AuthValue of AuthVerifierCoT in type RpcconnBindHdrT should be decoded as GSSAPI.");
-    }
-    
-    observe server issues s:MSRPCE.RpcconnBindAckHdrT where (s.PTYPE is PDUType.BindAck
-                                                                && s.AuthVerifier != nothing
-                                                                && (s.AuthVerifier is AuthVerifierCoT)
-                                                                && ((s.AuthVerifier as AuthVerifierCoT).AuthValue is binary)
-                                                                && ((s.AuthVerifier as AuthVerifierCoT).AuthValue as binary).Count > 0)
-    {
-        bool result = false;
-        result = DecodeAuthValue(s.AuthVerifier as AuthVerifierCoT);
-        ValidationCheck(result, s, DiagnosisLevel.Warning, "MSRPCE: The AuthValue of AuthVerifierCoT in type RpcconnBindAckHdrT should be decoded as GSSAPI.");
-    }
-    
-    observe server accepts s:MSRPCE.RpcconnCancelHdrT where (s.PTYPE is PDUType.CoCancel
-                                                                && s.AuthVerifier != nothing
-                                                                && ((s.AuthVerifier as AuthVerifierCoT).AuthValue is binary)
-                                                                && ((s.AuthVerifier as AuthVerifierCoT).AuthValue as binary).Count > 0)
-    {
-        bool result = false;
-        result = DecodeAuthValue(s.AuthVerifier as AuthVerifierCoT);
-        ValidationCheck(result, s, DiagnosisLevel.Warning, "MSRPCE: The AuthValue of AuthVerifierCoT in type RpcconnCancelHdrT should be decoded as GSSAPI.");
-    }
-    
-    observe server issues s:MSRPCE.RpcconnFaultHdrT where (s.PTYPE is PDUType.Fault
-                                                            && s.AuthVerifier != nothing
-                                                            && ((s.AuthVerifier as AuthVerifierCoT).AuthValue is binary)
-                                                            && ((s.AuthVerifier as AuthVerifierCoT).AuthValue as binary).Count > 0)
-    {
-        bool result = false;
-        result = DecodeAuthValue(s.AuthVerifier as AuthVerifierCoT);
-        ValidationCheck(result, s, DiagnosisLevel.Warning, "MSRPCE: The AuthValue of AuthVerifierCoT in type RpcconnFaultHdrT should be decoded as GSSAPI.");
-    }
-    
-    observe server accepts s:MSRPCE.RpcconnOrphanedHdrT where (s.PTYPE is PDUType.Orphaned
-                                                                && s.AuthVerifier != nothing
-                                                                && ((s.AuthVerifier as AuthVerifierCoT).AuthValue is binary)
-                                                                && ((s.AuthVerifier as AuthVerifierCoT).AuthValue as binary).Count > 0)
-    {
-        bool result = false;
-        result = DecodeAuthValue(s.AuthVerifier as AuthVerifierCoT);
-        ValidationCheck(result, s, DiagnosisLevel.Warning, "MSRPCE: The AuthValue of AuthVerifierCoT in type RpcconnOrphanedHdrT should be decoded as GSSAPI.");    }
-    
-    observe server issues s:MSRPCE.RpcconnRequestHdrT where (s.PTYPE is PDUType.Request
-                                                                && s.AuthVerifier != nothing
-                                                                && ((s.AuthVerifier as AuthVerifierCoT).AuthValue is binary)
-                                                                && ((s.AuthVerifier as AuthVerifierCoT).AuthValue as binary).Count > 0)
-    {
-        bool result = false;
-        result = DecodeAuthValue(s.AuthVerifier as AuthVerifierCoT);
-        ValidationCheck(result, s, DiagnosisLevel.Warning, "MSRPCE: The AuthValue of AuthVerifierCoT in type RpcconnRequestHdrT should be decoded as GSSAPI.");
-    }
-    
-    observe server accepts s:MSRPCE.RpcconnRequestHdrT where (s.PTYPE is PDUType.Request
-                                                                && s.AuthVerifier != nothing
-                                                                && ((s.AuthVerifier as AuthVerifierCoT).AuthValue is binary)
-                                                                && ((s.AuthVerifier as AuthVerifierCoT).AuthValue as binary).Count > 0)
-    {
-        bool result = false;
-        result = DecodeAuthValue(s.AuthVerifier as AuthVerifierCoT);
-        ValidationCheck(result, s, DiagnosisLevel.Warning, "MSRPCE: The AuthValue of AuthVerifierCoT in type RpcconnRequestHdrT should be decoded as GSSAPI.");
-    }
-    
-    observe server issues s:MSRPCE.RpcconnResponseHdrT where (s.PTYPE is PDUType.Response
-                                                                && s.AuthVerifier != nothing
-                                                                && ((s.AuthVerifier as AuthVerifierCoT).AuthValue is binary)
-                                                                && ((s.AuthVerifier as AuthVerifierCoT).AuthValue as binary).Count > 0)
-    {
-        bool result = false;
-        result = DecodeAuthValue(s.AuthVerifier as AuthVerifierCoT);
-        ValidationCheck(result, s, DiagnosisLevel.Warning, "MSRPCE: The AuthValue of AuthVerifierCoT in type RpcconnResponseHdrT should be decoded as GSSAPI.");
-    }
-    
-    observe server accepts s:MSRPCE.RpcconnResponseHdrT where (s.PTYPE is PDUType.Response
-                                                                && s.AuthVerifier != nothing
-                                                                && ((s.AuthVerifier as AuthVerifierCoT).AuthValue is binary)
-                                                                && ((s.AuthVerifier as AuthVerifierCoT).AuthValue as binary).Count > 0)
-    {
-        bool result = false;
-        result = DecodeAuthValue(s.AuthVerifier as AuthVerifierCoT);
-        ValidationCheck(result, s, DiagnosisLevel.Warning, "MSRPCE: The AuthValue of AuthVerifierCoT in type RpcconnResponseHdrT should be decoded as GSSAPI.");
-    }
-}
-
-bool DecodeAuthValue(AuthVerifierCoT authVerifier)
-{
-    bool micPresent;
-    bool result = false;
-    binary authValue = authVerifier.AuthValue as binary;
-        
-    if (authValue[0] in {0x60, 0xA0, 0xA1})
-    {
-        result = GssapiAndSpngDecoder(authVerifier, ref micPresent);
-    }
-    else if (authValue.Segment(0, 2) in {$[0100], $[0101], $[0102], $[0200], $[0201], $[0300], $[0400], $[0401], $[0404], $[0504]})
-    {
-        result = GssapiAndMsKerberosDecoder(authVerifier, ref micPresent);
-    }
-    else if ((authValue[0] & 0x60) == 0x60)
-    {
-        result = GssapiAndRawKerberosDecoder(authVerifier, ref micPresent);
-    }
-    
-    return result;
-}
-
-bool GssapiAndSpngDecoder(AuthVerifierCoT authVerifier, ref bool micPresent)
-{
-    bool result = false;
-    if (authVerifier.AuthValue is binary)
-    {
-        stream authValue = authVerifier.AuthValue as binary;
-        var m = GssapiDecoder(authValue, ref micPresent);
-        if (m != nothing)
-        {
-            authVerifier.AuthValue = m;
-            result = true;
-        }
-    }
-    return result;
-}
-
-bool GssapiAndMsKerberosDecoder(AuthVerifierCoT authVerifier, ref bool micPresent)
-{
-    bool result = false;
-    if (authVerifier.AuthValue is binary)
-    {
-        stream authValue = authVerifier.AuthValue as binary;
-        var m = GssapiKrb5Decoder(authValue);
-        if (m != nothing)
-        {
-            authVerifier.AuthValue = m;
-            result = true;
-        }
-    }
-    return result;
-}
-
-bool GssapiAndRawKerberosDecoder(AuthVerifierCoT authVerifier, ref bool micPresent)
-{
-    bool result = false;
-    if (authVerifier.AuthValue is binary)
-    {
-        stream authValue = authVerifier.AuthValue as binary;
-        var m = Asn1BerDecoder<KrbMessage>(authValue);
-        if (m != nothing)
-        {
-            authVerifier.AuthValue = m;
-            result = true;
-        }
-    }
-    return result;
-}
-
-optional GssapiType GssapiDecoder(stream s, ref bool micPresent)
-{    
-    int startOffset = s.BytePosition;
-    var gssapiLength1 = BinaryDecoder<Asn1BerLength>(s.PeekBytes(s.BitPosition));
-    Asn1BerLength gssapiLength;
-    if (gssapiLength1 != nothing)
-    {
-        gssapiLength = gssapiLength1 as Asn1BerLength;
-    }
-    switch(s)
+    stream tempStrem = (blob as Blob).Data;
+    string innerTokenName = "";
+    switch (tempStrem)
     {
         case m:GssapiType from Asn1BerDecoder<GssapiType> =>
-            if (s.RemainingLength > 0 && m.Gssapi is InitialContextToken)
+            if (m.Gssapi is InitialContextToken)
             {
-                InitialContextToken initialContextToken = m.Gssapi as InitialContextToken;
-                uint payloadLength = (startOffset + gssapiLength.GetLength() - s.BytePosition) as uint;
-                initialContextToken.AssignFieldEncodingInfo("Payload", s.BitPosition, (payloadLength * 8 as int));
-                initialContextToken.Payload = (BinaryDecoder<Blob[payloadLength]>(s) as Blob).Data;
-                binary payload = initialContextToken.Payload as binary;
-                if (payload.Segment(0, 8) == $[4E544C4D53535000]) // Decode as NLMP
+                int beginPosition = tempStrem.BitPosition;
+                var initialToken = m.Gssapi as InitialContextToken;
+                // InitialContextToken contains a SPNEGO token
+                if (Array2String<int>(initialToken.ThisMech as array<int>, ".") == "1.3.6.1.5.5.2")
                 {
-                    var nlmpMessage = NLMP.NlmpDecoder(payload, ref micPresent);
-                    if (nlmpMessage != nothing)
+                    var negTokenType = Asn1BerDecoder<NegotiationTokenType>(tempStrem);
+                    if (negTokenType != nothing)
                     {
-                        initialContextToken.Payload = nlmpMessage;
+                        initialToken.InnerContextToken = (negTokenType as NegotiationTokenType).SpnegoToken;
+                        DecodeSpnegoToken(initialToken.InnerContextToken, ref innerTokenName, m);
+                        m#TokenName = "GSSAPI, SPENGO" + (innerTokenName != null && innerTokenName != "" ? ", " + innerTokenName : "");
                     }
                 }
-                else if (payload[0] in {0x60, 0xA0, 0xA1})
+                // Decode remaining binaries to NLMP/Kerberos token if it's not Spnego token
+                else
                 {
-                    var gssapi = GssapiDecoder(payload, ref micPresent);
-                    if (gssapi != nothing)
-                    {
-                        initialContextToken.Payload = gssapi;
-                    }
+                    initialToken.InnerContextToken = DecodeConcreteToken(tempStrem, ref innerTokenName, m);
+                    m#TokenName = "GSSAPI" + (innerTokenName != null || innerTokenName != "" ? ", " + innerTokenName : "");
                 }
-                else if ((payload[0] & 0x60) == 0x60)
+                AssociateFieldPosition(initialToken, "InnerContextToken", s, beginPosition);
+            }
+            // it's SPNEGO token without GSSAPI wrapper
+            else // m.Gssapi is NegotiationToken
+            {
+                var negToken = m.Gssapi as NegotiationToken;
+                DecodeSpnegoToken(negToken, ref innerTokenName, m);
+                m#TokenName = "GSSAPI, SPENGO" + (innerTokenName != "" ? ", " + innerTokenName : "");
+            }
+            
+            // Set Embedded annotation for application protocol message.
+            if (applicationProtocol != null)
+            {
+                if (m#TokenName is tokenName:Utility.StringNotNullOrEmpty)
                 {
-                    optional Krb5Type krb5Type = Asn1BerDecoder<Krb5Type>(payload);
-                    if (krb5Type != nothing)
-                    {
-                        initialContextToken.Payload = krb5Type;
-                    }
-                }
-                else if (payload.Segment(0, 2) in {$[0100], $[0101], $[0102], $[0200], $[0201], $[0300], $[0400], $[0401], $[0404], $[0504]})
-                {
-                    var krb5 = GssapiKrb5Decoder(payload);
-                    if (krb5 != nothing)
-                    {
-                        initialContextToken.Payload = krb5;
-                    }
+                    applicationProtocol#Embedded = {tokenName -> ""};
                 }
             }
-            DecodeMechTokenInGssapi(m.Gssapi, ref micPresent);
             return m;
         default =>
             return nothing;
     }
 }
 
-void SetEmbeddedForNlmp(any message msg, GssapiType m)
+bool IsGSSAPIByCheckingTag(binary bin)
 {
-    if (m.Gssapi is InitialContextToken)
+    // 0x60: Tag of InitialContextToken
+    // 0xA0: Tag of SPNG.NegTokenInit
+    // 0xA1: Tag of SPNG.NegTokenResp
+    return bin.Count > 0 && (bin[0] in {0x60, 0xA0, 0xA1});
+}
+
+void DecodeSpnegoToken(NegotiationToken negToken, ref string innerTokenName, GssapiType gssapi)
+{
+    if (negToken is negTokenInit:NegTokenInit && negTokenInit.MechToken != nothing && negTokenInit.MechToken is data:binary)
     {
-        InitialContextToken initialContextToken = m.Gssapi as InitialContextToken;
-        if (initialContextToken.Payload != nothing)
+        stream s = data;
+        if (IsGSSAPIByCheckingTag(data))
         {
-            if (initialContextToken.Payload is optional NlmpMessage)
+            if (Asn1BerDecoder<InitialContextToken>(s) is innerToken:InitialContextToken)
             {
-                if (msg#Embedded != nothing)
-                {
-                    msg#Embedded = (msg#Embedded as map<string, any>) + {"NLMP" -> initialContextToken.Payload};
-                }
-                else
-                {
-                    msg#Embedded = {"NLMP" -> initialContextToken.Payload};
-                }
+                int beginPosition = s.BitPosition;
+                innerToken.InnerContextToken = DecodeConcreteToken(s, ref innerTokenName, gssapi);
+                AssociateFieldPosition(innerToken, "InnerContextToken", s, beginPosition);
+                negTokenInit.MechToken = innerToken;
             }
         }
-        else if (initialContextToken.InnerContextToken is NegTokenInit)
+        else
         {
-            NegTokenInit negTokenInit = initialContextToken.InnerContextToken as NegTokenInit;
-            if (negTokenInit.MechToken != nothing)
+            var innerToken = DecodeConcreteToken(data, ref innerTokenName, gssapi);
+            if (innerToken != nothing)
             {
-                if (negTokenInit.MechToken is optional NlmpMessage)
-                {
-                    if (msg#Embedded != nothing)
-                    {
-                        msg#Embedded = (msg#Embedded as map<string, any>) + {"NLMP" -> negTokenInit.MechToken};
-                    }
-                    else
-                    {
-                        msg#Embedded = {"NLMP" -> negTokenInit.MechToken};
-                    }
-                }
-            }
-        }
-        else if (initialContextToken.InnerContextToken is NegTokenResp)
-        {
-            NegTokenResp negTokenResp = initialContextToken.InnerContextToken as NegTokenResp;
-            if (negTokenResp.ResponseToken != nothing)
-            {
-                if (negTokenResp.ResponseToken is optional NlmpMessage)
-                {
-                    if (msg#Embedded != nothing)
-                    {
-                        msg#Embedded = (msg#Embedded as map<string, any>) + {"NLMP" -> negTokenResp.ResponseToken};
-                    }
-                    else
-                    {
-                        msg#Embedded = {"NLMP" -> negTokenResp.ResponseToken};
-                    }                
-                }
+                negTokenInit.MechToken = innerToken;
             }
         }
     }
-    else if (m.Gssapi is NegotiationToken)
+    else if (negToken is negTokenResp:NegTokenResp)
     {
-        NegotiationToken negotiationToken = m.Gssapi as NegotiationToken;
-        if (negotiationToken is NegTokenInit)
+        if (negTokenResp.ResponseToken != nothing && negTokenResp.ResponseToken is data2:binary)
         {
-            NegTokenInit negTokenInit = negotiationToken as NegTokenInit;
-            if (negTokenInit.MechToken is NlmpMessage)
+            stream s = data2;
+            if (IsGSSAPIByCheckingTag(data2))
             {
-                msg#Embedded = (msg#Embedded as map<string, any>) + {"NLMP" -> negTokenInit.MechToken};
+                if (Asn1BerDecoder<InitialContextToken>(s) is innerToken:InitialContextToken)
+                {
+                    int beginPosition = s.BitPosition;
+                    innerToken.InnerContextToken = DecodeConcreteToken(s, ref innerTokenName, gssapi);
+                    AssociateFieldPosition(innerToken, "InnerContextToken", s, beginPosition);
+                    negTokenResp.ResponseToken = innerToken;
+                }
+            }
+            else
+            {
+                var innerToken = DecodeConcreteToken(s, ref innerTokenName, gssapi);
+                if (innerToken != nothing)
+                {
+                    negTokenResp.ResponseToken = innerToken;
+                }
             }
         }
-        else if (negotiationToken is NegTokenResp)
+        if (negTokenResp.MechListMIC is bin:binary)
         {
-            NegTokenResp negTokenResp = negotiationToken as NegTokenResp;
-            if (negTokenResp.ResponseToken != nothing)
+            if (IsGSSAPIByCheckingTag(bin))
             {
-                if (negTokenResp.ResponseToken is optional NlmpMessage)
+                stream s = bin;
+                if (Asn1BerDecoder<InitialContextToken>(s) is innerToken:InitialContextToken)
                 {
-                    if (msg#Embedded != nothing)
-                    {
-                        msg#Embedded = (msg#Embedded as map<string, any>) + {"NLMP" -> negTokenResp.ResponseToken};
-                    }
-                    else
-                    {
-                        msg#Embedded = {"NLMP" -> negTokenResp.ResponseToken};
-                    }                
+                    int beginPosition = s.BitPosition;
+                    innerToken.InnerContextToken = DecodeConcreteToken(s, ref innerTokenName, gssapi);
+                    AssociateFieldPosition(innerToken, "InnerContextToken", s, beginPosition);
+                    negTokenResp.MechListMIC = innerToken;
+                }
+            }
+            else if (IsGssapiKrb(bin))
+            {
+                negTokenResp.MechListMIC = BinaryDecoder<KerberosToken>(bin);
+                if (negTokenResp.MechListMIC is krb5:KerberosToken)
+                {
+                    innerTokenName = "Kerberos";
+                    gssapi#KeyInformation = GetSummaryInfo(krb5);
                 }
             }
         }
     }
 }
 
-void DecodeMechTokenInGssapi(Gssapi gssapi, ref bool micPresent)
+optional any DecodeConcreteToken(stream s, ref string token, GssapiType gssapi)
 {
-    switch(gssapi)
+    binary bin = s.PeekBytes(s.BitPosition);
+    // Decode NLMP token
+    if (IsNLMP(bin))
     {
-        case m:InitialContextToken =>
-            if (m.InnerContextToken != nothing)
+        var nlmp = NLMP.NlmpDecoder(s);
+        if (nlmp != nothing)
+        {
+            gssapi#KeyInformation = GetSummaryInfo(nlmp);
+            token = "NTLM";
+            return nlmp;
+        }
+    }
+    // Decode Kerberos token
+    else if (IsGssapiKrb(bin))
+    {
+        if (BinaryDecoder<KerberosToken>(s) is krb:KerberosToken)
+        {
+            token = "Kerberos";
+            gssapi#KeyInformation = GetSummaryInfo(krb);
+            return krb;
+        }
+    }
+    // Decode unwrapped Kerberos
+    else if ((bin[0] & 0x60) == 0x60)
+    {
+        if (Asn1BerDecoder<Krb5Type>(s) is krb:Krb5Type)
+        {
+            token = "Kerberos";
+            gssapi#KeyInformation = GetSummaryInfo(krb);
+            return krb;
+        }
+    }
+    return nothing;
+}
+
+// Determine if unsealed data is encapsulated in GSSAPI message.
+bool ContainUnsealedData(GssapiType gssapi, out binary unsealedData)
+{
+    if (gssapi.Gssapi is initialContextToken:InitialContextToken)
+    {
+        string oid = Array2String<int>(initialContextToken.ThisMech as array<int>, ".");
+        var innerToken = initialContextToken.InnerContextToken as optional any;
+        if (oid == "1.2.840.48018.1.2.2" || oid == "1.2.840.113554.1.2.2")
+        {
+            return ContainUnsealedData(innerToken as KerberosToken, out unsealedData);
+        }
+        else if (oid == "1.3.6.1.5.5.2")
+        {
+            ContainUnsealedData(innerToken as NegotiationToken, out unsealedData);
+        }
+    }
+    else if (gssapi.Gssapi is NegotiationToken)
+    {
+        ContainUnsealedData(gssapi.Gssapi as NegotiationToken, out unsealedData);
+    }
+    return false;
+}
+
+// Determine if unsealed data is encapsulated in Spnego token
+bool ContainUnsealedData(NegotiationToken negToken, out binary unsealedData)
+{
+    if (negToken is init:NegTokenInit)
+    {
+        if (init.MechToken != nothing && init.MechToken is krb:KerberosToken)
+        {
+            return ContainUnsealedData(krb, out unsealedData);
+        }
+        else if (init.MechToken != nothing && init.MechToken is token:InitialContextToken)
+        {
+            string oid = Array2String<int>(token.ThisMech as array<int>, ".");
+            var innerToken = token.InnerContextToken as optional any;
+            if (oid == "1.2.840.48018.1.2.2" || oid == "1.2.840.113554.1.2.2")
             {
-                DecodeMechToken((m.InnerContextToken is NegTokenInit) ? (m.InnerContextToken as NegTokenInit) : (m.InnerContextToken as NegTokenResp), ref micPresent);
+                return ContainUnsealedData(innerToken as KerberosToken, out unsealedData);
             }
-        case m:NegTokenInit =>
-            DecodeMechToken(m, ref micPresent);
-        case m:NegTokenResp =>
-            DecodeMechToken(m, ref micPresent);
+        }
+    }
+    else if (negToken is resp:NegTokenResp)
+    {
+        if (resp.ResponseToken != nothing && resp.ResponseToken is krb:KerberosToken)
+        {
+            return ContainUnsealedData(krb, out unsealedData);
+        }
+        else if (resp.ResponseToken != nothing && resp.ResponseToken is token:InitialContextToken)
+        {
+            string oid = Array2String<int>(token.ThisMech as array<int>, ".");
+            var innerToken = token.InnerContextToken as optional any;
+            if (oid == "1.2.840.48018.1.2.2" || oid == "1.2.840.113554.1.2.2")
+            {
+                return ContainUnsealedData(innerToken as KerberosToken, out unsealedData);
+            }
+        }
+    }
+    return false;
+}
+
+// This method is only worked with the summary string generated by GetSummaryInfo in NLMP.opn and GSSAPIKRB5.opn
+string GetAuthInfoFromSummary(string summary)
+{
+    if (summary.IndexOf("NTLM") == 0)
+    {
+        return summary.Split([','], true)[0];
+    }
+    else if (summary.IndexOf("Kerberos") == 0)
+    {
+        return "Kerberos";
+    }
+    else
+    {
+        return "";
     }
 }
 
-void DecodeMechToken(NegotiationToken negotiation, ref bool micPresent)
+// Code for decoding GSSAPI in DNS are placed in GSSAPI.opn due to DNS.opn can not reference GSSAPI.opn
+// GSSAPI and its dependencies are in Common package, while DNS is in BasicNetworking package.
+autostart actor GssapiEmbeddedInDns(DNS.Server node) precedes DNS.Server
 {
-    switch(negotiation)
+    // GSSAPI can only be encapsulated in the additional information section, refer to RFC 2930 4.3 Query for GSS-API Establishment
+    observe node accepts m:DNSMessage where m.Additional != nothing && (m.Additional is array<OPTPseudoResourceRecord | ResourceRecord>)
     {
-        case m:NegTokenInit =>
-            if (m.MechToken != nothing)
-            {
-                binary payload = m.MechToken as binary;
-                if (payload.Segment(0, 8) == $[4E544C4D53535000]) // Decode as NLMP
-                {
-                    var nlmpMessage = NLMP.NlmpDecoder(payload, ref micPresent);
-                    if (nlmpMessage != nothing)
-                    {
-                        m.MechToken = nlmpMessage;
-                    }
-                }
-                else if (payload[0] in {0x60, 0xA0, 0xA1})
-                {
-                    stream s = payload;
-                    var gssapi = GssapiDecoder(s, ref micPresent);
-                    if (gssapi != nothing)
-                    {
-                        m.MechToken = gssapi;
-                    }
-                }
-                else if ((payload[0] & 0x60) == 0x60)
-                {
-                    optional Krb5Type krb5Type = Asn1BerDecoder<Krb5Type>(payload);
-                    if (krb5Type != nothing)
-                    {
-                        m.MechToken = krb5Type;
-                    }
-                }
-                else if (payload.Segment(0, 2) in {$[0100], $[0101], $[0102], $[0200], $[0201], $[0300], $[0400], $[0401], $[0404], $[0504]})
-                {
-                    var krb5 = GssapiKrb5Decoder(payload);
-                    if (krb5 != nothing)
-                    {
-                        m.MechToken = krb5;
-                    }
-                }
-            }
-        case m:NegTokenResp =>
-            if (m.ResponseToken != nothing)
-            {
-                binary payload = m.ResponseToken as binary;
-                if (payload.Segment(0, 8) == $[4E544C4D53535000]) // Decode as NLMP
-                {
-                    var nlmpMessage = NLMP.NlmpDecoder(payload, ref micPresent);
-                    if (nlmpMessage != nothing)
-                    {
-                        m.ResponseToken = nlmpMessage;
-                    }
-                }
-                else if (payload[0] in {0x60, 0xA0, 0xA1})
-                {
-                    stream s = payload;
-                    var gssapi = GssapiDecoder(s, ref micPresent);
-                    if (gssapi != nothing)
-                    {
-                        m.ResponseToken = gssapi;
-                    }
-                }
-                else if ((payload[0] & 0x60) == 0x60)
-                {
-                    optional Krb5Type krb5Type = Asn1BerDecoder<Krb5Type>(payload);
-                    if (krb5Type != nothing)
-                    {
-                        m.ResponseToken = krb5Type;
-                    }
-                }
-                else if (payload.Segment(0, 2) in {$[0100], $[0101], $[0102], $[0200], $[0201], $[0300], $[0400], $[0401], $[0404], $[0504]})
-                {
-                    var krb5 = GssapiKrb5Decoder(payload);
-                    if (krb5 != nothing)
-                    {
-                        m.ResponseToken = krb5;
-                    }
-                }
-            }
-            if (m.MechListMIC != nothing)
-            {
-                binary payload = m.MechListMIC as binary;
-                if (payload.Segment(0, 2) in {$[0100], $[0101], $[0102], $[0200], $[0201], $[0300], $[0404], $[0504]})
-                {
-                    var mic = GssapiKrb5Decoder(payload);
-                    if (mic != nothing)
-                    {
-                        m.MechListMIC = mic;
-                    }
-                }
-            }
+        var additionalRRs = m.Additional as array<OPTPseudoResourceRecord | ResourceRecord>;
+        DecodeGSSAPIInDNS(additionalRRs, m);
     }
-}
-
-type Asn1BerLength
-{
-    byte Tag;
-    bool Flag with BinaryEncoding{Width = 1};
-    // if the Flag bit is set, then the byte is length of length, otherwise the byte is Length feild.
-    byte Length with BinaryEncoding{Width = 7};
-    optional [|Flag|] uint LongLength with BinaryEncoding{Endian = Endian.Big, Width = (Length * 8) as uint};
+    // GSSAPI can only be encapsulated in the additional information section, refer to RFC 2930 4.3 Query for GSS-API Establishment
+    observe node issues m:DNSMessage where m.Additional != nothing && (m.Additional is array<OPTPseudoResourceRecord | ResourceRecord>)
+    {
+        var additionalRRs = m.Additional as array<OPTPseudoResourceRecord | ResourceRecord>;
+        DecodeGSSAPIInDNS(additionalRRs, m);
+    }
     
-    uint GetLength()
+    void DecodeGSSAPIInDNS(array<OPTPseudoResourceRecord | ResourceRecord> additionalRRs, DNSMessage m)
     {
-        return ((LongLength != nothing ? (LongLength as uint): 0) + Length + 2) as uint;
+        for (int i = 0; i < additionalRRs.Count; i++)
+        {
+            if (additionalRRs[i] is ResourceRecord)
+            {
+                var curRR = additionalRRs[i] as ResourceRecord;
+                if (curRR.Type == DNS.RRType.TKEY)
+                {
+                    TransactionKey tk = curRR.RData as TransactionKey;
+                    if (tk.Mode == DNS.TKEYMode.GSSAPINegotiation && tk.KeyData is keyData:binary)
+                    {
+                        if (IsGSSAPIByCheckingTag(keyData))
+                        {
+                            var gssapi = DecodeGssapiAndSetAnnotation(keyData, m);
+                            if (gssapi != nothing)
+                            {
+                                tk.Gssapi = gssapi;
+                                tk.KeyData = nothing;
+                            }
+                            else
+                            {
+                                ValidationCheck(false, m, DiagnosisLevel.Warning, "DNS: The KeyData in type TransactionKey should be decoded as GSSAPI.");
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
+}
+
+optional NlmpMessage GetNTLMFromGssapiType(GssapiType gss)
+{
+    optional NlmpMessage nlmpMess = nothing;
+    if (gss.Gssapi is initToken:InitialContextToken && initToken.InnerContextToken is nlmpMess2:NlmpMessage)
+    {
+        nlmpMess = nlmpMess2;
+    }
+    else if (gss.Gssapi is negInit:NegTokenInit && negInit.MechToken is nlmpMess3:NlmpMessage)
+    {
+        nlmpMess = nlmpMess3;
+    }
+    else if (gss.Gssapi is negResp1:NegTokenResp && negResp1.ResponseToken is nlmpMess4:NlmpMessage)
+    {
+        nlmpMess = nlmpMess4;
+    }
+    else if (gss.Gssapi is negResp2:NegTokenResp && negResp2.MechListMIC is nlmpMess5:NlmpMessage)
+    {
+        nlmpMess = nlmpMess5;
+    }
+    return nlmpMess;
 }

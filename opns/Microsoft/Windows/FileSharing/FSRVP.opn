@@ -32,11 +32,11 @@ protocol FSRVP with
         Copyright = "(c) Microsoft Corporation",
         References = 
         [
-            new Reference{Name = "MS-FSRVP", Version = "3.0", ProgramName = ProgramName.MCPP},
+            new Reference{Name = "MS-FSRVP", Version = "3.0", Date = "10/25/2012", ProgramName = ProgramName.MCPP},
         ],
         RevisionSummary =
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "07/6/2012"}
+            new Revision{Class = RevisionClass.Major, Version = "355026", Date = "10/10/2013"}
         ]
     };
 

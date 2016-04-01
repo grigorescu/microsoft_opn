@@ -25,7 +25,30 @@ using Standard;
 using LLC;
 using Utility;
 
-endpoint Node over ReassembleSessionFrames accepts NBFCommonHeader;
+endpoint Node 
+    over ReassembleSessionFrames 
+    accepts AddGroupNameQuery
+    accepts AddNameQuery
+    accepts AddNameResponse
+    accepts NameInConflict
+    accepts NameQuery
+    accepts NameRecognised
+    accepts Datagram
+    accepts DatagramBroadcast
+    accepts StatusQuery
+    accepts StatusResponse
+    accepts TerminateTrace 
+    accepts TerminateLocalRemoteTrace
+    accepts SessionAlive
+    accepts SessionConfirm 
+    accepts SessionEnd
+    accepts SessionInitialize 
+    accepts DataAck
+    accepts DataFirstMiddle
+    accepts DataOnlyLast
+    accepts NoReceive 
+    accepts ReceiveOutstanding
+    accepts ReceiveContinue;
 
 // For NetBIOS, DSAP = 0xF0 (240) , SSAP = 0xF0
 autostart actor NBFOverLLC(LLC.Node node)

@@ -1,4 +1,4 @@
-﻿protocol LPR with 
+protocol LPR with 
 BinaryEncodingDefaults{Endian = Endian.Big, TextEncoding = TextEncoding.ASCII},
 Documentation
 {
@@ -15,384 +15,444 @@ OPNAuthoring
         ],
     RevisionSummary = 
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "10/13/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "380827", Date = "09/22/2015"}
         ]
 };
 
-using IANA;
 using Utility;
 using TCP;
-using VirtualTransport;
+using DecodingUtility; // WORKAROUND: compiler bug#3131164, When type A inherit from type B, module C use tye A, and A, B, C is in different module file, compiler will give a compilation error
+using IANA;
 
 endpoint Server
-    over VirtualTransport.Server
-    accepts Request
+    over TCP.Server
+    accepts Command
+    accepts DataFile
+    accepts ControlFile
     issues Response;
 
 client endpoint Client connected to Server;
 
-autostart actor LPROverTCP(VirtualTransport.Server server)
+autostart actor LPROverTCP(TCP.Server server)
 {
-    process server accepts s:VirtualTransport.VirtualDataSegment{DestinationPort is Port.LPR}
+    LPROverTCPDecodingHelper decodingHelper = null;
+
+    process server accepts s:TCP.Segment{DestinationPort is Port.LPR}
     {
-        switch (s.Payload)
+        if (decodingHelper == null)
         {
-            case request:Request from BinaryDecoder<Request> =>
-                var node = endpoint LPR.Server over server;
-                dispatch node accepts request;
-            default =>
-                ThrowDecodingExceptionForTCP("LPR", "Request", s#IsIncomplete, s#SegmentLost);
+            decodingHelper = new LPROverTCPDecodingHelper();
+            decodingHelper.InitializeLPROverTCPDecodingHelper(server);
         }
+
+        decodingHelper.TryDecode(s, MessageDirection.Accepts);
     }
     
-    process server issues s:VirtualTransport.VirtualDataSegment{SourcePort is Port.LPR}
+    process server issues s:TCP.Segment{SourcePort is Port.LPR}
     {
-        switch (s.Payload)
+        if (decodingHelper == null)
         {
-            case response:Response from BinaryDecoder<Response> =>
-                var node = endpoint LPR.Server over server;
-                dispatch node issues response;
-            default =>
-                ThrowDecodingExceptionForTCP("LPR", "Response", s#IsIncomplete, s#SegmentLost);
+            decodingHelper = new LPROverTCPDecodingHelper();
+            decodingHelper.InitializeLPROverTCPDecodingHelper(server);
+        }
+
+        decodingHelper.TryDecode(s, MessageDirection.Issues);
+    }
+
+    ~endpoint(TCP.Server server)
+    {
+        if (decodingHelper != null)
+        {
+            decodingHelper.ClearInDestructor();
+            decodingHelper = null;
         }
     }
 }
 
-message Request
+const set<byte> CommandCode = {1, 2, 3, 4, 5};
+const binary ZeroTermination = $[00];
+const binary LFTermination = $[0A];
+type SessionContext
 {
-    optional (byte where value > 0 && value <= 5) CommandCode;
-    optional ([|!(CommandCode is nothing) && CommandCode == 1|] Command01
-        | [|!(CommandCode is nothing) && CommandCode == 2|] Command02
-        | [|!(CommandCode is nothing) && CommandCode == 3|] Command03 
-        | [|!(CommandCode is nothing) && CommandCode == 4|] SendQueueState
-        | [|!(CommandCode is nothing) && CommandCode == 5|] RemoveJobs) Job;
-    // Future Reference: Blocking bug has been fixed, use syntax to further decode, Bug #28383, string teminator doesn't accept other charactors,
-    // use one string to consume all lines for temp.
-        optional string ControlFileLine;
-    
-    override string ToString()
+    Command Command = null;
+}
+
+type LPROverTCPDecodingHelper : TCP.TCPDecodingHelper
+{
+    void InitializeLPROverTCPDecodingHelper(TCP.Server server)
     {
-        string summary = "Request";
-        if (!(CommandCode is nothing))
+        SessionContext context = new SessionContext{};
+
+        LPROverTCPDecodingCache acceptsCache = new LPROverTCPDecodingCache();
+        acceptsCache.InitializeLPROverTCPDecodingCache(MessageDirection.Accepts, server, ref context);
+        AcceptsCache = acceptsCache;
+
+        LPROverTCPDecodingCache issuesCache = new LPROverTCPDecodingCache();
+        issuesCache.InitializeLPROverTCPDecodingCache(MessageDirection.Issues, server, ref context);
+        IssuesCache = issuesCache;
+    }
+}
+
+type LPROverTCPDecodingCache: TCPTextDecodingCache
+{
+    SessionContext Context;
+
+    void InitializeLPROverTCPDecodingCache(MessageDirection messageDirection, TCP.Server server, ref SessionContext context)
+    {
+        Context = context;
+        base.InitializeTextDecodingCache(
+            "LPR",
+            endpoint LPR.Server over server,
+            messageDirection,
+            messageDirection == MessageDirection.Accepts ? IsLPRRequest : IsLPRReponse,
+            GetLRPEndMarkBinary,
+            messageDirection == MessageDirection.Accepts ? DecodeLPRRequest : DecodeLPRResponse,
+            (binary b) => nothing);
+    }
+
+    binary GetLRPEndMarkBinary()
+    {
+        if (Direction == MessageDirection.Accepts)
         {
-            summary = "Client's Command to Daemon";
-            if ((CommandCode as byte) <= 5)
-            {
-                switch (Job)
-                {
-                    case PrintWaintingJobs =>
-                        summary += ", 'Print Wainting Jobs'";
-                    case ReceivePrinterJob =>
-                        summary += ", 'Receive Printer Job'";
-                    case SendQueueState =>
-                        summary += ", 'Send Queue State'";
-                    case RemoveJobs =>
-                        summary += ", 'Remove Jobs'";
-                    case AbortJob =>
-                        summary += ", 'Abort Job'";
-                    case ReceiveControlFile =>
-                        summary += ", 'Receive Control File'";
-                    case ReceiveDataFile =>
-                        summary += ", 'Receive Data File'";
-                    default =>
-                }
-            }
+            return LFTermination;
         }
         else
         {
-            summary = "Data file";
+            return ZeroTermination;
         }
-        
-        return summary;
     }
+
+    bool? IsLPRRequest(binary buffer)
+    {
+        if ((buffer[0] in CommandCode) || (Context.Command is ReceiveControlFile) || (Context.Command is ReceiveDataFile))
+        {
+            return true;
+        }
+        else // missing ReceiveControlFile or ReceiveDataFile command, and ControlFile or DataFile frame is coming
+        {
+            return false;
+        }
+    }
+
+    bool? IsLPRReponse(binary buffer)
+    {
+        return true;
+    }
+
+    override uint? IsSufficientSingleTextMessage(binary data)
+    {
+        if (Direction == MessageDirection.Accepts)
+        {
+            return IsSufficientForLPRRequest(data);
+        }
+        else
+        {
+            return IsSufficientForLPRResponse(data);
+        }
+    }
+
+    uint? IsSufficientForLPRRequest(binary buffer)
+    {
+        if (Context.Command is ctl:ReceiveControlFile) // for data file and control file, use count
+        {
+            if (buffer.Count >= ctl.Count)
+                return 0;
+            else
+                return ctl.Count;
+        }
+        else if (Context.Command is data:ReceiveDataFile)
+        {
+            if (buffer.Count >= data.Count)
+                return 0;
+            else
+                return data.Count;
+        }
+        else if (buffer[0] in CommandCode) // for normal command, use \n as termination
+        {
+            return base.IsSufficientSingleTextMessage(buffer);
+        }
+        else
+        {
+            return null;
+        }
+    }
+
+    uint? IsSufficientForLPRResponse(binary buffer)
+    {
+        // if command is SendQueueState, check whether 0 in buffer
+        if (Context.Command is SendQueueState)
+        {
+            return base.IsSufficientSingleTextMessage(buffer);
+        }
+        else
+            return 0;
+    }
+
+    optional any message DecodeLPRRequest(stream s)
+    {
+        // decode request
+        byte command = s.PeekByte(s.BitPosition);
+        optional any message result = nothing;
+        switch (command)
+        {
+            // Case 1-5 is for Command
+            case 1 =>
+                result = Command01(s) as optional any message;
+            case 2 =>
+                result = Command02(s) as optional any message;
+            case 3 =>
+                result = Command03(s) as optional any message;
+            case 4 =>
+                result = SendQueueStateSyntax(s);
+            case 5 =>
+                result = RemoveJobsSyntax(s);
+            default =>
+                if (Context.Command is ReceiveControlFile) // for ControlFile
+                {
+                    result = ControlFileSyntax(s);
+                }
+                else if (Context.Command is ReceiveDataFile) // for DataFile
+                {
+                    result = DataFileSyntax(s);
+                }
+        }
+
+        // update context
+        if (result is anyMsg:any message)
+        {
+            if (anyMsg is cmd:Command)
+                Context.Command = cmd;
+            else
+                Context.Command = null;
+        }
+
+        return result;
+    }
+
+    optional any message DecodeLPRResponse(stream s)
+    {
+        if (Context.Command is SendQueueState || RemainingByteLength(s) > 1) // for SendQueueState Response
+        {
+            return SendQueueStateResponseSyntax(s);
+        }
+        else
+        {
+            Response result = new Response{Result = BinaryDecoder<byte>(s) as byte};
+            result.Origins = Origins;
+            result.SourceData = Buffer;
+            result.AssignFieldEncodingInfo("Result", 0, 1);
+            
+            return result;
+        }
+    }
+
+    override void ClearExceptionally()
+    {
+        Context.Command = null;
+        base.ClearExceptionally();
+    }
+}
+
+pattern SP                = " ";
+pattern LF                = "\n";
+pattern NoLFOctets        = regex{[^\n]+};
+pattern NoSpaceOctets     = regex{[^\x20]+};
+pattern Count             = regex{[0-9]+};
+pattern Termination       = regex{\x00};
+message Command
+{
+    byte CommandCode;
+}
+
+// 01
+syntax Command01 = AbortJobSyntax | PrintAnyWaitingJobsSyntax;
+// 5.1 01 - Print any waiting jobs
+syntax PrintAnyWaitingJobsSyntax = s1:regex{\x01} s2:NoLFOctets LF
+                                     => new PrintAnyWaitingJobs
+                                        {
+                                            CommandCode = s1[0] as byte,
+                                            Queue = s2
+                                        };
+message PrintAnyWaitingJobs : Command
+{
+    string Queue;
+
+    override string ToString()
+    {
+        return "Print Any Waiting Jobs";
+    }
+}
+syntax AbortJobSyntax = s1:regex{\x01} LF
+                        => new AbortJob
+                        {
+                            CommandCode = s1[0] as byte,
+                        };
+message AbortJob : Command
+{
+    override string ToString()
+    {
+        return "Abort Job";
+    }
+}
+
+// 02
+syntax Command02 = ReceiveControlFileSyntax | ReceiveAPrinterJobSyntax;
+// 5.2 02 - Receive a printer job
+syntax ReceiveAPrinterJobSyntax = s1:regex{\x02} s2:NoLFOctets? LF
+                                     => new ReceiveAPrinterJob
+                                        {
+                                            CommandCode = s1[0] as byte,
+                                            Queue = (s2.Count == 0 ? nothing : s2[0])
+                                        };
+message ReceiveAPrinterJob : Command
+{
+    optional string Queue;
+
+    override string ToString()
+    {
+        return "Receive A Printer Job";
+    }
+}
+// 6.2 02 - Receive control file
+syntax ReceiveControlFileSyntax = s1:regex{\x02} s2:Count SP s3:NoLFOctets? LF
+                                     => new ReceiveControlFile
+                                        {
+                                            CommandCode = s1[0] as byte,
+                                            Count = s2 as uint,
+                                            Name = (s3.Count == 0 ? nothing : s3[0])
+                                        };
+message ReceiveControlFile : Command
+{
+    uint Count;
+    optional string Name;
+
+    override string ToString()
+    {
+        return "Receive Control File, Count: " + (Count as string);
+    }
+}
+
+// 03, 04
+syntax Command03 = ReceiveDataFileSyntax | SendQueueStateSyntax;
+// 5.3 03 - Send queue state (short)
+// 5.4 04 - Send queue state (long)
+syntax SendQueueStateSyntax = s1:regex{[\x03-\x04]} s2:NoSpaceOctets SP s3:NoLFOctets? LF
+                                     => new SendQueueState
+                                        {
+                                            CommandCode = s1[0] as byte,
+                                            Queue = s2,
+                                            List = (s3.Count == 0 ? nothing : s3[0])
+                                        };
+message SendQueueState : Command
+{
+    string Queue;
+    optional string List;
+
+    override string ToString()
+    {
+        return "Send Queue State, Queue: " + Queue;
+    }
+}
+
+// 6.3 03 - Receive data file
+syntax ReceiveDataFileSyntax = s1:regex{\x03} s2:Count SP s3:NoLFOctets? LF
+                                     => new ReceiveDataFile
+                                        {
+                                            CommandCode = s1[0] as byte,
+                                            Count = s2 as uint,
+                                            Name = (s3.Count == 0 ? nothing : s3[0])
+                                        };
+message ReceiveDataFile : Command
+{
+    uint Count;
+    optional string Name;
+
+    override string ToString()
+    {
+        return "Receive Data File, Count: " + (Count as string);
+    }
+}
+
+// 05
+syntax RemoveJobsSyntax = s1:regex{\x05} s2:NoSpaceOctets SP s3:NoSpaceOctets SP s4:NoLFOctets LF
+                                     => new RemoveJobs
+                                        {
+                                            CommandCode = s1[0] as byte,
+                                            Queue = s2,
+                                            Agent = s3,
+                                            List = s4
+                                        };
+message RemoveJobs : Command
+{
+    string Queue;
+    string Agent;
+    string List;
+
+    override string ToString()
+    {
+        return "Remove Jobs, Queue: " + Queue;
+    }
+}
+pattern NoLFZeroOctets        = regex{[^\n\x00]+};
+
+syntax DataFileSyntax = s:(s1:NoLFZeroOctets LF* => s1)* Termination
+                           => new DataFile
+                              {
+                                  Lines = s
+                              };
+message DataFile
+{
+    array<string> Lines;
+
+    override string ToString()
+    {
+        return "Data File";
+    }
+}
+
+syntax ControlFileSyntax = s:ControlFileLineSyntax* Termination
+                           => new ControlFile
+                              {
+                                  Lines = s
+                              };
+message ControlFile
+{
+    array<ControlFileLine> Lines;
+
+    override string ToString()
+    {
+        return "Control File";
+    }
+}
+syntax ControlFileLineSyntax = s1:regex{[\x41-\x5A\x61-\x7A]} s2:NoLFZeroOctets LF
+                                    => new ControlFileLine
+                                        {
+                                            CommandCode = s1[0] as char,
+                                            Operand = s2
+                                        };
+type ControlFileLine
+{
+    char CommandCode;
+    string Operand;
 }
 
 message Response
 {
-    optional (byte where value == 0) Code;
-    optional string QueueReport;
+    (byte | array<string>) Result;
     
     override string ToString()
     {
-        string summary = "Response";
-        if (!(Code is nothing))
+        string summary = "";
+        if (Result is res:byte)
         {
-            summary ="Acknowledgement From Daeman" + (Code == 0 ? ", Positive Ack" : ", Negative Ack");
+            summary = "Response, " + (res == 0 ? "Positive Ack" : "Negative Ack");
+        }
+        else if (Result is array<string>)
+        {
+            summary = "Send Queue State Response";
         }
         return summary;
     }
 }
-
-type ResponseCode
-{
-    byte Code where value == 0;
-}
-
-type RequestCode
-{
-    byte Code where value <= 5;
-}
-
-pattern Command01 = AbortJob | PrintWaintingJobs;
-pattern Command02 = ReceiveControlFile | ReceivePrinterJob;
-pattern Command03 = ReceiveDataFile | SendQueueState;
-
-// 01
-type PrintWaintingJobs
-{
-    string Queue with BinaryEncoding{TextTerminator = "\n"};
-}
-
-// 02
-type ReceivePrinterJob
-{
-    string Queue with BinaryEncoding{TextTerminator = "\n"};
-}
-
-// 03/04
-type SendQueueState
-{
-    string Queue with BinaryEncoding{TextTerminator = " "};
-    string List with BinaryEncoding{TextTerminator = "\n"};
-}
-
-// 05
-type RemoveJobs
-{
-    string Queue with BinaryEncoding{TextTerminator = " "};
-    string Agent with BinaryEncoding{TextTerminator = " "};
-    string List with BinaryEncoding{TextTerminator = "\n"};
-}
-
-// Subcommand 01
-type AbortJob
-{
-    byte LF where value == 10;
-}
-
-// Subcommand 02
-type ReceiveControlFile
-{
-    string Count with BinaryEncoding{TextTerminator = " "};
-    invariant Count != "" && (Count.Segment(0, 1) as char) >= '0' && (Count.Segment(0, 1) as char) <= '9';
-    optional string Name with BinaryEncoding{TextTerminator = "\n"};
-}
-
-// Subcommand 03
-type ReceiveDataFile
-{
-    string Count with BinaryEncoding{TextTerminator = " "};
-    invariant Count != "" && (Count.Segment(0, 1) as char) >= '0' && (Count.Segment(0, 1) as char) <= '9';
-    optional string Name with BinaryEncoding{TextTerminator = "\n"};
-}
-
-pattern ControlFileLine = 
-            ControlFileLineC |
-            ControlFileLineH |
-            ControlFileLineI |
-            ControlFileLineJ |
-            ControlFileLineL |
-            ControlFileLineM |
-            ControlFileLineN |
-            ControlFileLineP |
-            ControlFileLineT |
-            ControlFileLineU |
-            ControlFileLineW |
-            ControlFileLineS |
-            ControlFileLine1 |
-            ControlFileLine2 |
-            ControlFileLine3 |
-            ControlFileLine4 |
-            ControlFileLinec |
-            ControlFileLined |
-            ControlFileLinef |
-            ControlFileLineg |
-            ControlFileLinek |
-            ControlFileLinel |
-            ControlFileLinen |
-            ControlFileLineo |
-            ControlFileLinep |
-            ControlFileLiner |
-            ControlFileLinet |
-            ControlFileLinev |
-            DataFile;
-
-type ControlFileLineC
-{
-    (char where value == 'C') CommandCode;
-    string BannerPageClass with BinaryEncoding{TextTerminator = "\n"};
-}
-
-type ControlFileLineH
-{
-    (char where value == 'H') CommandCode;
-    string HostName with BinaryEncoding{TextTerminator = "\n"};
-}
-
-type ControlFileLineI
-{
-    (char where value == 'I') CommandCode;
-    string IndentingCount with BinaryEncoding{TextTerminator = "\n"};
-}
-
-type ControlFileLineJ
-{
-    (char where value == 'J') CommandCode;
-    string JobName with BinaryEncoding{TextTerminator = "\n"};
-}
-
-type ControlFileLineL
-{
-    (char where value == 'L') CommandCode;
-    string BurstPagesUserName with BinaryEncoding{TextTerminator = "\n"};
-}
-
-type ControlFileLineM
-{
-    (char where value == 'N') CommandCode;
-    string UserName with BinaryEncoding{TextTerminator = "\n"};
-}
-
-type ControlFileLineN
-{
-    (char where value == 'N') CommandCode;
-    string FileName with BinaryEncoding{TextTerminator = "\n"};
-}
-
-type ControlFileLineP
-{
-    (char where value == 'P') CommandCode;
-    string UserID with BinaryEncoding{TextTerminator = "\n"};
-}
-
-type ControlFileLineT
-{
-    (char where value == 'T') CommandCode;
-    string Title with BinaryEncoding{TextTerminator = "\n"};
-}
-
-type ControlFileLineU
-{
-    (char where value == 'U') CommandCode;
-    string FileToUnlink with BinaryEncoding{TextTerminator = "\n"};
-}
-
-type ControlFileLineW
-{
-    (char where value == 'W') CommandCode;
-    string WidthCount with BinaryEncoding{TextTerminator = "\n"};
-}
-
-type ControlFileLineS
-{
-    (char where value == 'S') CommandCode;
-    string Device with BinaryEncoding{TextTerminator = " "};
-    string Inode with BinaryEncoding{TextTerminator = "\n"};
-}
-
-type ControlFileLine1
-{
-    (char where value == '1') CommandCode;
-    string FileName with BinaryEncoding{TextTerminator = "\n"};
-}
-
-type ControlFileLine2
-{
-    (char where value == '2') CommandCode;
-    string FileName with BinaryEncoding{TextTerminator = "\n"};
-}
-
-type ControlFileLine3
-{
-    (char where value == '3') CommandCode;
-    string FileName with BinaryEncoding{TextTerminator = "\n"};
-}
-
-type ControlFileLine4
-{
-    (char where value == '4') CommandCode;
-    string FileName with BinaryEncoding{TextTerminator = "\n"};
-}
-
-type ControlFileLinec
-{
-    (char where value == 'c') CommandCode;
-    string FileToPlot with BinaryEncoding{TextTerminator = "\n"};
-}
-
-type ControlFileLined
-{
-    (char where value == 'd') CommandCode;
-    string FileToPrint with BinaryEncoding{TextTerminator = "\n"};
-}
-
-type ControlFileLinef
-{
-    (char where value == 'f') CommandCode;
-    string FileToPrint with BinaryEncoding{TextTerminator = "\n"};
-}
-
-type ControlFileLineg
-{
-    (char where value == 'g') CommandCode;
-    string FileToPlot with BinaryEncoding{TextTerminator = "\n"};
-}
-
-type ControlFileLinek
-{
-    (char where value == 'k') CommandCode;
-    string Operand with BinaryEncoding{TextTerminator = "\n"};
-}
-
-type ControlFileLinel
-{
-    (char where value == 'l') CommandCode;
-    string FileToPrint with BinaryEncoding{TextTerminator = "\n"};
-}
-
-type ControlFileLinen
-{
-    (char where value == 'n') CommandCode;
-    string FileToPrint with BinaryEncoding{TextTerminator = "\n"};
-}
-
-type ControlFileLineo
-{
-    (char where value == 'o') CommandCode;
-    string FileToPrint with BinaryEncoding{TextTerminator = "\n"};
-}
-
-type ControlFileLinep
-{
-    (char where value == 'p') CommandCode;
-    string FileToPrint with BinaryEncoding{TextTerminator = "\n"};
-}
-
-type ControlFileLiner
-{
-    (char where value == 'r') CommandCode;
-    string FileToPrint with BinaryEncoding{TextTerminator = "\n"};
-}
-
-type ControlFileLinet
-{
-    (char where value == 't') CommandCode;
-    string FileToPrint with BinaryEncoding{TextTerminator = "\n"};
-}
-
-type ControlFileLinev
-{
-    (char where value == 'v') CommandCode;
-    string FileToPrint with BinaryEncoding{TextTerminator = "\n"};
-}
-
-type ControlFileLineDefault
-{
-    char CommandCode;
-    string FileToPrint with BinaryEncoding{TextTerminator = "\n"};
-}
-
-type DataFile
-{
-    string File with BinaryEncoding{TextTerminator = "\n"};
-}
+syntax NormalResponseSyntax = s1:regex{[\x00-\xFF]} => new Response{Result = (s1[0] as byte)};
+syntax SendQueueStateResponseSyntax = s:(s1:NoLFZeroOctets LF+ => s1)* Termination+ => new Response{Result = s};

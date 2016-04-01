@@ -12,23 +12,23 @@ OPNAuthoring
     Copyright = "(c) Microsoft Corporation",
     References = 
         [
-            new Reference{Name = "MS-KKDCP", Version = "1.1", ProgramName = ProgramName.WSPP},
+            new Reference{Name = "MS-KKDCP", Version = "1.1", Date = "10/25/2012", ProgramName = ProgramName.WSPP},
         ],
     RevisionSummary =
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "11/20/2012"},
+            new Revision{Class = RevisionClass.Major, Version = "363167", Date = "04/30/2014"},
         ]
 };
 
 using Standard;
-using ASN1;
+using Technologies.ASN1;
 using HTTP;
 using KerberosV5;
 using Utility;
 
 const string KdcProxyString = "/KdcProxy";
 
-endpoint Server over HTTP.Server accepts KdcProxyMessage issues KdcProxyMessage
+endpoint Server over HTTP.Server accepts mutable KdcProxyMessage issues mutable KdcProxyMessage
 {
     observe this accepts kdcMsg:KdcProxyMessage
     {
@@ -42,24 +42,12 @@ endpoint Server over HTTP.Server accepts KdcProxyMessage issues KdcProxyMessage
 
 void DecodeActualKerbMessage(KdcProxyMessage kdcMsg)
 {
-    if (kdcMsg.KerbMessage is binary)
+    if (kdcMsg.KerbMessage is msgPayload:binary &&
+        msgPayload.Count > 4 &&
+        BinaryDecoder<MaxLength>(msgPayload.Segment(0, 4)) is length:MaxLength &&
+        BinaryDecoder<KrbMessage[length.Length == (msgPayload.Count - 4)]>(msgPayload) is krbMsg:KrbMessage)
     {
-        var msgPayload = kdcMsg.KerbMessage as binary;
-        if (msgPayload.Count > 4)
-        {
-            var length = BinaryDecoder<MaxLength>(msgPayload.Segment(0, 4)) as MaxLength;
-            // has TCP MaxLength header for Kerberos message. Not sure whether need reassemble here (no such case currently), pending updates for reassembly logic.
-            if (length.Length == msgPayload.Count - 4) 
-            {
-                var krbMsg = Asn1BerDecoder<KrbMessage>(msgPayload.Segment(4)) as KrbMessage;
-                krbMsg.Length = length;
-                kdcMsg.KerbMessage = krbMsg;
-            }
-            else
-            {
-                kdcMsg.KerbMessage = Asn1BerDecoder<KrbMessage>(msgPayload) as KrbMessage;
-            }
-        }
+        kdcMsg.KerbMessage = krbMsg;
     }
 }
 
@@ -78,7 +66,6 @@ message KdcProxyMessage
         summary += (DclocatorHint is nothing) ? "" : ", DclocatorHint: " + DclocatorHint.ToString();
         return summary;
     }
-
 } with Documentation{NameInDocumentation = "KDC-PROXY-MESSAGE"};
 
 autostart actor KkdcpOverHttps(HTTP.Server httpServer)
@@ -87,7 +74,7 @@ autostart actor KkdcpOverHttps(HTTP.Server httpServer)
     {
         DecodeKdcProxyMessage(httpServer, req.Payload, true);
     }
-    process httpServer issues resp:HttpContract.Response where IsKkdcpPayload((resp#Uri as UriType).AbsPath)
+    process httpServer issues resp:HttpContract.Response where resp#Uri != nothing && IsKkdcpPayload((resp#Uri as UriType).AbsPath)
     {
         DecodeKdcProxyMessage(httpServer, resp.Payload, false);
     }

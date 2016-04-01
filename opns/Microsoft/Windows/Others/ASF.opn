@@ -15,7 +15,7 @@ OPNAuthoring
         ],
     RevisionSummary = 
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "11/01/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "362740", Date = "04/18/2014"}
         ]
 };
 
@@ -62,7 +62,7 @@ message File
 type HeaderObject
 {
     HeaderOfHeaderObject Header;
-    array<ChildObjectOfHeaderObject> ChildObjects with BinaryEncoding{Length = Header.NumberOfHeaderObjects as uint};
+    array<ChildObjectOfHeaderObject> ChildObjects with BinaryEncoding{Length = Header.NumberOfHeaderObjects};
 }
 
 type HeaderOfHeaderObject
@@ -336,7 +336,7 @@ type PaddingObject
 {
     (guid where value == {1806D474-CADF-4509-A4BA-9AABCB96AAE8}) ObjectId;
     ulong ObjectSize where ValidationCheck(value >= 24, null, "ASF: The ObjectSize in type PaddingObject must be at least 24 bytes.");
-    binary PaddingData with BinaryEncoding{Length = (ObjectSize - 24) as uint};
+    binary PaddingData with BinaryEncoding{Length = (ObjectSize - 24) as long};
 }
 
 //*********************************Header Extension objects**********************************//
@@ -569,7 +569,7 @@ type DataObject
     guid FileId;
     ulong TotalDataPackets;
     ushort Reserved;
-    array<DataPacket> DataPackets with BinaryEncoding{Length = TotalDataPackets as uint};
+    array<DataPacket> DataPackets with BinaryEncoding{Length = TotalDataPackets as long};
 }
 
 type DataPacket
@@ -614,7 +614,7 @@ type PayloadParsingInformation
     ushort Duration;
     ( [|LengthTypeFlags.MultiplePayloadsPresent == 1|] MultiPayloads |
     SinglePayloadwithCompressedData[GetPaylodLength()] | SinglePayload[GetPaylodLength()]) Payload;
-    binary Padding with BinaryEncoding{Length = PaddingLength as uint};
+    binary Padding with BinaryEncoding{Length = PaddingLength as long};
     
     uint GetPaylodLength()
     {
@@ -664,7 +664,7 @@ type SinglePayload[uint Count]
     uint OffsetIntoMediaObject;
     byte ReplicatedDataLength;
     binary ReplicatedData with BinaryEncoding{Length = ReplicatedDataLength};
-    binary PayloadData with BinaryEncoding{Length = (Count - ReplicatedDataLength - 7) as uint};
+    binary PayloadData with BinaryEncoding{Length = (Count - ReplicatedDataLength - 7)};
 }
 
 type SinglePayloadwithCompressedData[uint Count]
@@ -675,13 +675,13 @@ type SinglePayloadwithCompressedData[uint Count]
     uint PresentationTime;
     (byte where value == 1) ReplicatedDataLength;
     ulong PresentationTimeDelta;
-    binary PayloadData with BinaryEncoding{Length = (Count - 15) as uint};
+    binary PayloadData with BinaryEncoding{Length = (Count - 15)};
 }
 
 type SubPayload
 {
     ulong DataLength;
-    binary Data with BinaryEncoding{Length = DataLength as uint};
+    binary Data with BinaryEncoding{Length = DataLength as long};
 }
 
 type MultiPayloads
@@ -845,7 +845,7 @@ type BitmapInfoHeader[uint Size]
     uint VerticalPixelsPerMeter;
     uint ColorsUsedCount;
     uint ImportantColorsCount;
-    binary CodecSpecificData with BinaryEncoding{Length = (Size - 40) as uint};
+    binary CodecSpecificData with BinaryEncoding{Length = (Size - 40)};
 }
 
 type JpegMediaType

@@ -1,21 +1,21 @@
 protocol DRSR with
 Documentation
 {
-	ProtocolName = "Directory Replication Service (DRS) Remote Protocol",
+    ProtocolName = "Directory Replication Service (DRS) Remote Protocol",
     ProtocolType = "rpc",
     ShortName = "DRSR",
-	DocumentName = "MS-DRSR",
+    DocumentName = "MS-DRSR",
     Description = ""
 },
 OPNAuthoring
 {
-	Copyright = "(c) Microsoft Corporation",
+    Copyright = "(c) Microsoft Corporation",
     References = 
-	[
-		new Reference {Name = "DRSR", Version = "31.0", ProgramName = ProgramName.WSPP}
-	],
-    RevisionSummary = [new Revision {Class = RevisionClass.Major, Version = "1.0.0", Date = "03/13/2013"}
-	]
+    [
+        new Reference {Name = "DRSR", Version = "34.0", Date = "06/30/2015", ProgramName = ProgramName.WSPP}
+    ],
+    RevisionSummary = [new Revision {Class = RevisionClass.Major, Version = "379846", Date = "07/22/2015"}
+    ]
 };
 
 using Technologies.IDL;
@@ -23,7 +23,7 @@ using DTYP;
 using MSRPCE;
 
 endpoint DrsrService over MSRPCE.Server provides drsuapi
-										provides dsaop;
+                                        provides dsaop;
 
 contract drsuapi
 {
@@ -43,11 +43,11 @@ contract drsuapi
         {
             return
                 "IDL_DRSBind" + 
-				", rpc_handle = " + rpc_handle.ToString() +
+                ", rpc_handle = " + rpc_handle.ToString() +
                 ", puuidClientDsa = " + puuidClientDsa.ToString() +
                 ", pextClient = " + pextClient.ToString() + 
-				", ppextServer = " + ppextServer.ToString() + 
-				", phDrs = " + phDrs.ToString() +
+                ", ppextServer = " + ppextServer.ToString() + 
+                ", phDrs = " + phDrs.ToString() +
                 ", ReturnValue = " + ReturnValue.ToString();
         }
     }
@@ -63,7 +63,7 @@ contract drsuapi
         {
             return
                 "IDL_DRSUnbind" + 
-				", phDrs = " + phDrs.ToString() +
+                ", phDrs = " + phDrs.ToString() +
                 ", ReturnValue = " + ReturnValue.ToString();
         }
     }
@@ -83,10 +83,10 @@ contract drsuapi
         {
             return
                 "IDL_DRSReplicaSync" + 
-				", hDrs = " + hDrs.ToString() +
+                ", hDrs = " + hDrs.ToString() +
                 ", dwVersion = " + dwVersion.ToString() + 
-				", pmsgSync = " + pmsgSync.ToString() + 
-				", ReturnValue = " + ReturnValue.ToString();
+                ", pmsgSync = " + pmsgSync.ToString() + 
+                ", ReturnValue = " + ReturnValue.ToString();
         }
     }
     with IDL{Opnum = 2};
@@ -111,11 +111,11 @@ contract drsuapi
         {
             return
                 "IDL_DRSGetNCChanges" + 
-				", hDrs = " + hDrs.ToString() +
+                ", hDrs = " + hDrs.ToString() +
                 ", dwInVersion = " + dwInVersion.ToString() + 
-				", pmsgIn = " + pmsgIn.ToString() + 
-				", pdwOutVersion = " + pdwOutVersion.ToString() + 
-				", pmsgOut = " + pmsgOut.ToString() +
+                ", pmsgIn = " + pmsgIn.ToString() + 
+                ", pdwOutVersion = " + pdwOutVersion.ToString() + 
+                ", pmsgOut = " + pmsgOut.ToString() +
                 ", ReturnValue = " + ReturnValue.ToString();
         }
     }
@@ -135,10 +135,10 @@ contract drsuapi
         {
             return
                 "IDL_DRSUpdateRefs" + 
-				", hDrs = " + hDrs.ToString() +
+                ", hDrs = " + hDrs.ToString() +
                 ", dwVersion = " + dwVersion.ToString() + 
-				", pmsgUpdRefs = " + pmsgUpdRefs.ToString() + 
-				", ReturnValue = " + ReturnValue.ToString();
+                ", pmsgUpdRefs = " + pmsgUpdRefs.ToString() + 
+                ", ReturnValue = " + ReturnValue.ToString();
         }
     }
     with IDL{Opnum = 4};
@@ -157,10 +157,10 @@ contract drsuapi
         {
             return
                 "IDL_DRSReplicaAdd" +
-				", hDrs = " + hDrs.ToString() +
+                ", hDrs = " + hDrs.ToString() +
                 ", dwVersion = " + dwVersion.ToString() +
-				", pmsgAdd = " + pmsgAdd.ToString() +
-				", ReturnValue = " + ReturnValue.ToString();
+                ", pmsgAdd = " + pmsgAdd.ToString() +
+                ", ReturnValue = " + ReturnValue.ToString();
         }
     }
     with IDL{Opnum = 5};
@@ -1098,6 +1098,7 @@ type __MIDL_drsuapi_0074[DWORD tag]
     optional [|tag in {2}|] DRS_MSG_GETCHGREPLY_V2 V2 with IDL{Case = [2]};
     optional [|tag in {6}|] DRS_MSG_GETCHGREPLY_V6 V6 with IDL{Case = [6]};
     optional [|tag in {7}|] DRS_MSG_GETCHGREPLY_V7 V7 with IDL{Case = [7]};
+    optional [|tag in {9}|] DRS_MSG_GETCHGREPLY_V9 V9 with IDL{Case = [9]};
 }
 with IDL{Switch_Type = TypeOf<DWORD>(), UnionKind = UnionKind.NonEncapsulated};
 
@@ -1203,11 +1204,31 @@ type __MIDL_drsuapi_0065
     BOOL fMoreData;
     ULONG cNumNcSizeObjects;
     ULONG cNumNcSizeValues;
-    DWORD cNumValues
-        with IDL{Range = new RangePattern {Low = 0, High = 1048576}};
-    REPLVALINF rgValues with IDL{Size_is = [cNumValues], IndirectionLevel = 1};
+    DWORD cNumValues with IDL{Range = new RangePattern{Low = 0, High = 1048576}};
+    REPLVALINF_V1 rgValues with IDL{Size_is = [cNumValues], IndirectionLevel = 1};
     DWORD dwDRSError;
 }
+
+type DRS_MSG_GETCHGREPLY_V9
+{
+    UUID uuidDsaObjSrc;
+    UUID uuidInvocIdSrc;
+    DSNAME pNC with IDL{PointerType = PointerKind.UniquePtr, IndirectionLevel = 1};
+    USN_VECTOR usnvecFrom;
+    USN_VECTOR usnvecTo;
+    UPTODATE_VECTOR_V2_EXT pUpToDateVecSrc with IDL{PointerType = PointerKind.UniquePtr, IndirectionLevel = 1};
+    SCHEMA_PREFIX_TABLE PrefixTableSrc;
+    ULONG ulExtendedRet;
+    ULONG cNumObjects;
+    ULONG cNumBytes;
+    REPLENTINFLIST pObjects with IDL{PointerType = PointerKind.UniquePtr, IndirectionLevel = 1};
+    BOOL fMoreData;
+    ULONG cNumNcSizeObjects;
+    ULONG cNumNcSizeValues;
+    DWORD cNumValues with IDL{Range = new RangePattern {Low = 1, High = 1048576}};
+    array<REPLVALINF_V3> rgValues with IDL{Size_is = [cNumValues], Dimensions = [null]};
+    DWORD dwDRSError;
+};
 
 typedef UPTODATE_VECTOR_V2_EXT = __MIDL_drsuapi_0019 ;
 
@@ -1222,6 +1243,16 @@ type __MIDL_drsuapi_0019
         with IDL{Size_is = [cNumCursors], Dimensions = [null]};
 }
 
+type VALUE_META_DATA_EXT_V3
+{
+    DSTIME timeCreated;
+    PROPERTY_META_DATA_EXT MetaData;
+    DWORD unused1;
+    DWORD unused2;
+    DWORD unused3;
+    DSTIME timeExpired;
+};
+
 typedef UPTODATE_CURSOR_V2 = __MIDL_drsuapi_0018 ;
 
 type __MIDL_drsuapi_0018
@@ -1231,7 +1262,7 @@ type __MIDL_drsuapi_0018
     DSTIME timeLastSyncSuccess;
 }
 
-typedef REPLVALINF = __MIDL_drsuapi_0021 ;
+typedef REPLVALINF_V1 = __MIDL_drsuapi_0021 ;
 
 type __MIDL_drsuapi_0021
 {
@@ -1241,6 +1272,16 @@ type __MIDL_drsuapi_0021
     BOOL fIsPresent;
     VALUE_META_DATA_EXT_V1 MetaData;
 }
+
+type REPLVALINF_V3
+{
+    DSNAME pObject with IDL{IndirectionLevel = 1};
+    ATTRTYP attrTyp;
+    ATTRVAL Aval;
+    BOOL fIsPresent;
+    VALUE_META_DATA_EXT_V3 MetaData;
+};
+
 
 typedef VALUE_META_DATA_EXT_V1 = __MIDL_drsuapi_0020 ;
 
@@ -1262,12 +1303,12 @@ type __MIDL_drsuapi_0073
 typedef DRS_COMP_ALG_TYPE = __MIDL_drsuapi_0072 ;
 
 pattern __MIDL_drsuapi_0072 = enum 
-                              {
-                                  DRS_COMP_ALG_NONE = 0,
-                                  DRS_COMP_ALG_UNUSED = 1,
-                                  DRS_COMP_ALG_MSZIP = 2,
-                                  DRS_COMP_ALG_WIN2K3 = 3
-                              };
+{
+    DRS_COMP_ALG_NONE = 0,
+    DRS_COMP_ALG_UNUSED = 1,
+    DRS_COMP_ALG_MSZIP = 2,
+    DRS_COMP_ALG_WIN2K3 = 3
+};
 
 typedef DRS_COMPRESSED_BLOB = __MIDL_drsuapi_0066 ;
 

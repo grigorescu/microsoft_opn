@@ -1,9 +1,11 @@
 protocol RDPEUDP with
+Visualization{AliasName = "RDP"},
 BinaryEncodingDefaults{Endian = Endian.Big},
 Documentation
 {
     ProtocolName = "Remote Desktop Protocol: UDP Transport Extension",
     DocumentName = "MS-RDPEUDP",
+    ShortName = "RDPEUDP",
     ProtocolType = "block",
     Description = ""
 },
@@ -12,138 +14,50 @@ OPNAuthoring
     Copyright = "(c) Microsoft Corporation",
     References = 
         [
-            new Reference{Name = "MS-RDPEUDP", Version = "4.0", ProgramName = ProgramName.MCPP},
+            new Reference{Name = "MS-RDPEUDP", Version = "4.0", Date = "01/31/2013", ProgramName = ProgramName.MCPP},
         ],
     RevisionSummary =
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "01/18/2013"}
+            new Revision{Class = RevisionClass.Major, Version = "383234", Date = "12/23/2015"}
         ]
 };
 
 using Standard;
 using Utility;
 using UDP;
-using TLS;
-using DTLS;
 
-endpoint Server over UDP.Host accepts SYNDatagram accepts ACKDatagram issues SYNDatagram issues ACKDatagram;
-client endpoint Client connected to Server;
+annotation bool ACKDatagram#IsKeepAlive;
 
-autostart actor TLSOverRDPEUDP(RDPEUDP.Server server)
+endpoint Server accepts ACKDatagram issues ACKDatagram;
+
+endpoint EncryptionServer over UDP.Host accepts SYNDatagram accepts ACKDatagram issues SYNDatagram issues ACKDatagram
 {
-    DecodingCache SendDC = new DecodingCache{ Dispatcher = IssueDispatcher };
-    DecodingCache ReceiveDC = new DecodingCache{ Dispatcher = AcceptDispatcher };
-    bool isClientEncryptd = false;
-    bool isServerEncryptd = false;
-    bool IsSynLossy = false;
-    
-    void AcceptDispatcher(TLS.RecordLayers msg)
-    {
-        dispatch (endpoint TLS.Server) accepts msg;
-    }
-    
-    void IssueDispatcher(TLS.RecordLayers msg)
-    {
-        dispatch (endpoint TLS.Server) issues msg;
-    }
-    
-    observe server accepts d:SYNDatagram
-    {
-        SYNDatagramObserver(d, ReceiveDC, SendDC, ref IsSynLossy);
-    }
-    
-    observe server issues d:SYNDatagram
-    {
-        SYNDatagramObserver(d, SendDC, ReceiveDC, ref IsSynLossy);
-    }
-    
-    // Unreliable Mode
-    process server accepts d:ACKDatagram where IsDataPacket(d) && !IsFecPacket(d) && IsCompleteDtls(d.Payload as binary)
-    {
-        IsSynLossy = true;
-        array<DTLS.RecordLayer> records = DTLSDecoder(d.Payload as binary, ref isClientEncryptd);
-        if (records.Count == 0)
-        {
-            ThrowDecodingException("DTLS", "RecordLayers");
-        }
-        else
-        {
-            DTLS.RecordLayers rlsMsg = new DTLS.RecordLayers{records = records};
-            
-            var n = endpoint DTLS.Server;
-            dispatch n accepts rlsMsg;
-        }
-    }
-    
-    process server issues d:ACKDatagram where IsDataPacket(d) && !IsFecPacket(d) && IsCompleteDtls(d.Payload as binary)
-    {
-        IsSynLossy = true;
-        array<DTLS.RecordLayer> records = DTLSDecoder(d.Payload as binary, ref isServerEncryptd);
-        if (records.Count == 0)
-        {
-            ThrowDecodingException("DTLS", "RecordLayers");
-        }
-        else
-        {
-            DTLS.RecordLayers rlsMsg = new DTLS.RecordLayers{records = records};
-            
-            var n = endpoint DTLS.Server;
-            dispatch n issues rlsMsg;
-        }
-    }
-    
-    // Reliable Mode
-    process server accepts d:ACKDatagram where !IsSynPacket(d) && !IsFecPacket(d) && !IsSynLossy
-    {
-        if (IsDataPacket(d))
-        {
-            if (!AckSourcePacketProcesser(d, ReceiveDC, SendDC))
-            {
-                reject;
-            }
-        }
-        else
-        {
-            if (!PureAckProcesser(d, ReceiveDC, SendDC))
-            {
-                reject;
-            }
-        }
-    }
-    
-    process server issues d:ACKDatagram where !IsSynPacket(d) && !IsFecPacket(d) && !IsSynLossy
-    {
-        if (IsDataPacket(d))
-        {
-            if (!AckSourcePacketProcesser(d, SendDC, ReceiveDC))
-            {
-                reject;
-            }
-        }
-        else
-        {
-            if (!PureAckProcesser(d, SendDC, ReceiveDC))
-            {
-                reject;
-            }
-        }
-    }
-    
-    ~endpoint(RDPEUDP.Server server)
-    {
-        SendDC.Clear();
-        ReceiveDC.Clear();
-    }
+    binary LocalAddress;
+    binary RemoteAddress;
+    ushort LocalPort;
+    ushort RemotePort;
 }
+
+client endpoint Client connected to Server;
 
 autostart actor RDPOverUDP(UDP.Host host)
 {
-    process host accepts p:UDP.Datagram where p.DestinationPort == 3389
+    EncryptionServer e = endpoint EncryptionServer over host;
+    
+    process host accepts p:UDP.Datagram where p.Payload.Count > 0 && p.DestinationPort == 3389
     {
+        if (e.LocalAddress == null)
+        {
+            e.LocalAddress = p#DestinationAddress is b1:binary ? b1 : $[];
+            e.RemoteAddress = p#SourceAddress is b2:binary ? b2 : $[];
+            e.LocalPort = p.DestinationPort;
+            e.RemotePort = p.SourcePort;
+        }
+
         switch (p.Payload)
         {
             case d:SYNDatagram from BinaryDecoder<SYNDatagram> =>
-                dispatch endpoint Server over host accepts d;
+                dispatch e accepts d;
             case d:ACKDatagram from BinaryDecoder<ACKDatagram> =>
                 if (IsCongestionNotification(d))
                 {
@@ -153,18 +67,26 @@ autostart actor RDPOverUDP(UDP.Host host)
                 {
                     ErrorCodeIf(true, d, DiagnosisLevel.Information, "RDPEUDP: Congestion Window Reset");
                 }
-                dispatch endpoint Server over host accepts d;
+                dispatch e accepts d;
             default =>
                 ThrowDecodingException("RDPEUDP");
         }
     }
     
-    process host accepts p:UDP.Datagram where p.SourcePort == 3389
+    process host accepts p:UDP.Datagram where p.Payload.Count > 0 && p.SourcePort == 3389
     {
+        if (e.LocalAddress == null)
+        {
+            e.LocalAddress = p#SourceAddress is b1:binary ? b1 : $[];
+            e.RemoteAddress = p#DestinationAddress is b2:binary ? b2 : $[];
+            e.LocalPort = p.SourcePort;
+            e.RemotePort = p.DestinationPort;
+        }
+        
         switch (p.Payload)
         {
             case d:SYNDatagram from BinaryDecoder<SYNDatagram> =>
-                dispatch endpoint Server over host issues d;
+                dispatch e issues d;
             case d:ACKDatagram from BinaryDecoder<ACKDatagram> =>
                 if (IsCongestionNotification(d))
                 {
@@ -174,325 +96,16 @@ autostart actor RDPOverUDP(UDP.Host host)
                 {
                     ErrorCodeIf(true, d, DiagnosisLevel.Information, "RDPEUDP: Congestion Window Reset");
                 }
-                dispatch endpoint Server over host issues d;
+                dispatch e issues d;
             default =>
                 ThrowDecodingException("RDPEUDP");
         }
     }
 }
 
-type DecodingCache
+bool IsSynLossyMode(SYNDatagram d)
 {
-    uint InitialSequenceNumber;
-    uint NextSequenceNumber;
-    // The max sequence number which has been ACKed.
-    uint AckNumber;
-    
-    // The binary data to be decoded
-    binary ReceiveBuffer = $[];
-    // The max and min sequence number of messages in BufferedDatagrams
-    uint BufferStartSequenceNumber;
-    uint BufferEndSequenceNumber;
-    // The original messages corresponding to the data in ReceiveBuffer
-    array<any message> BufferedDatagrams = [];
-    
-    // Messages whose payload haven't been added to ReceiveBuffer due to out-of-order sequence number 
-    SortedDatagramList DatagramCache = new SortedDatagramList{};
-    SortedDatagramList PureAckCache = new SortedDatagramList{};
-    
-    // Successfully decoded messages, will be dispatched when ACK comes.
-    TLSCache CompletedTLSList = new TLSCache{};
-    
-    bool Initialized;
-    bool isEncrypted;
-    
-    void(TLS.RecordLayers) Dispatcher;
-        
-    void Initialize((SYNDatagram | ACKDatagram) d)
-    {
-        if (d is SYNDatagram)
-        {
-            InitialSequenceNumber = (d as SYNDatagram).SyndataPayload.snInitialSequenceNumber;
-            AckNumber = InitialSequenceNumber - 1;
-        }
-        // Do nothing for pure Ack
-        else if(!IsDataPacket(d as ACKDatagram))
-        {
-            return;
-        }
-        else if(!IsFecPacket(d as ACKDatagram))
-        {
-            InitialSequenceNumber = ((d as ACKDatagram).SourcePayloadHeader as RDPUDP_SOURCE_PAYLOAD_HEADER).snSourceStart - 1;
-            AckNumber = (d as ACKDatagram).SequenceNumber - 1;
-        }
-        else
-        {
-            InitialSequenceNumber = ((d as ACKDatagram).FecPayloadHeader as RDPUDP_FEC_PAYLOAD_HEADER).snSourceStart - 1;
-            AckNumber = (d as ACKDatagram).SequenceNumber - 1;
-        }
-        NextSequenceNumber = InitialSequenceNumber + 1;
-        DatagramCache.InitialSequenceNumber = InitialSequenceNumber;
-        
-        Initialized = true;
-        isEncrypted = false;
-    }
-    
-    void TryDispatch()
-    {
-        while (CompletedTLSList.Head != null && SequenceComparer(AckNumber, CompletedTLSList.Head.MaxSequenceNumber, InitialSequenceNumber) >= 0)
-        {
-            var p = PureAckCache.Head;
-            while (p != null && SequenceComparer(p.Datagram.SequenceNumber, CompletedTLSList.Head.MaxSequenceNumber, InitialSequenceNumber) <= 0)
-            {
-                CompletedTLSList.Head.Value.Origins += [p.Datagram];
-                p = p.Next;
-                PureAckCache.RemoveHead();
-            }
-            Dispatcher(CompletedTLSList.Head.Value);
-            CompletedTLSList.RemoveHead();
-        }
-    }
-    
-    void RemoveDatagramIntoBuffer()
-    {
-        var p = DatagramCache.Head;
-        while (p != null && p.Datagram.SequenceNumber == NextSequenceNumber)
-        {
-            if(ReceiveBuffer.Count == 0)
-            {
-                BufferStartSequenceNumber = p.Datagram.SequenceNumber;
-                BufferEndSequenceNumber = p.Datagram.SequenceNumber;
-            }
-            else
-            {
-                BufferEndSequenceNumber = p.Datagram.SequenceNumber;
-            }
-            BufferedDatagrams += [p.Datagram];
-            ReceiveBuffer += p.Datagram.Payload as binary;
-            NextSequenceNumber += 1;
-            p = p.Next;
-            TryDecode(false);
-            DatagramCache.RemoveHead();
-        }
-    }
-
-    void TryDecode(bool isPartial)
-    {
-        if (ReceiveBuffer.Count == 0)
-        {
-            return;
-        }
-        if (!IsTlsHeader(ReceiveBuffer))
-        {
-            if (DatagramCache.Head != null)
-            {
-                ErrorCodeIf(true, DatagramCache.Head.Datagram, DiagnosisLevel.Warning, "RDPEUDP: Parse TLS message failed due to incomplete data.");
-                Reset();
-                return;
-            }
-        }
-        if (!isPartial)
-        {
-            if (!IsCompleteTls(ReceiveBuffer))
-            {
-                return;
-            }
-        }
-        
-        bool temp = isEncrypted;
-        array<TLS.RecordLayer> records = TLSDecoder(ReceiveBuffer, ref temp);
-        isEncrypted = temp;
-        
-        if (records.Count == 0)
-        {
-            ThrowDecodingException("TLS");
-            Reset();
-            return;
-        }
-        TLS.RecordLayers rlsMsg = new TLS.RecordLayers{records = records};
-        rlsMsg.SourceData = ReceiveBuffer;
-        rlsMsg.Origins = BufferedDatagrams;
-        CompletedTLSList.Insert(rlsMsg, BufferStartSequenceNumber, BufferEndSequenceNumber);
-        BufferedDatagrams = [];
-        ReceiveBuffer = $[];
-        BufferStartSequenceNumber = BufferEndSequenceNumber;
-    }
-    
-    void Reset()
-    {
-        foreach(var q in BufferedDatagrams)
-        {
-            var d = q as ACKDatagram;
-            var fSeqNum = d.FrameSequenceNumber;
-                    
-            if (IsDataPacket(d))
-            {
-                var t = PureAckCache.Head;
-                while (t != null && SequenceComparer(t.Datagram.SequenceNumber, d.SequenceNumber, InitialSequenceNumber) <= 0)
-                {
-                    var aSeqNum = t.Datagram.FrameSequenceNumber;
-                    if (fSeqNum != nothing && aSeqNum != nothing && (aSeqNum as uint) < (fSeqNum as uint))
-                    {
-                        DisplayTopLevelMessage(t.Datagram);
-                        t = t.Next;
-                        PureAckCache.RemoveHead();
-                    }
-                    else
-                    {
-                        break;
-                    }
-                }
-            }
-            DisplayTopLevelMessage(q);
-        }
-        BufferedDatagrams = [];
-        BufferStartSequenceNumber += 1;
-        ReceiveBuffer = $[];
-    }
-    
-    void Clear()
-    {
-        TryDecode(true);
-        AckNumber = NextSequenceNumber - 1;
-        TryDispatch();
-        ReceiveBuffer = $[];
-        foreach(var d in BufferedDatagrams)
-        {
-            DisplayTopLevelMessage(d);
-        }
-        BufferedDatagrams = [];
-        var p = PureAckCache.Head;
-        while (p != null)
-        {
-            DisplayTopLevelMessage(p.Datagram);
-            p = p.Next;
-            PureAckCache.RemoveHead();
-        }
-        Initialized = false;
-    }
-    
-    void DatagramLostProcessor()
-    {
-        var t = DatagramCache.Head;
-        // Process datagram lost.
-        if (t != null && t.Datagram.SequenceNumber != NextSequenceNumber && SequenceComparer(AckNumber, t.Datagram.SequenceNumber, InitialSequenceNumber) >= 0)
-        {
-            string errorInfo = "RDPEUDP: Lost ACK and Source Packet Data. Lost sequence number: " + (NextSequenceNumber as string) + (t.Datagram.SequenceNumber == NextSequenceNumber + 1 ? "" : " ~ " + ((t.Datagram.SequenceNumber - 1) as string) + ".");
-            TryDecode(true); 
-            ErrorCodeIf(true, t.Datagram, DiagnosisLevel.Warning, errorInfo);
-            TryDispatch();
-            
-            ReceiveBuffer = $[];
-            foreach(var d in BufferedDatagrams)
-            {
-                DisplayTopLevelMessage(d);
-            }
-            BufferedDatagrams = [];
-            NextSequenceNumber = t.Datagram.SequenceNumber;
-            RemoveDatagramIntoBuffer();
-        }
-    }
-} with Documentation{Ignore = true};
-
-void SYNDatagramObserver(SYNDatagram d, DecodingCache ReceiveDC, DecodingCache SendDC, ref bool IsSynLossy)
-{
-    if (ReceiveDC.Initialized && d.SyndataPayload.snInitialSequenceNumber == ReceiveDC.InitialSequenceNumber)
-    {
-        ErrorCodeIf(true, d, DiagnosisLevel.Warning, "RDPEUDP: Retransmitted SYN Datagram.");
-    }
-    // Always initialize for SYN message
-    ReceiveDC.Initialize(d);
-
-    if ((d.FecHeader.uFlags & Flags.RDPUDP_FLAG_SYNLOSSY) ==  Flags.RDPUDP_FLAG_SYNLOSSY)
-    {
-        IsSynLossy = true;
-    }
-    else
-    {
-        IsSynLossy = false;
-    }
-    // Update the AckNumber for SYN & ACK message
-    if ((d.FecHeader.uFlags & Flags.RDPUDP_FLAG_ACK) ==  Flags.RDPUDP_FLAG_ACK)
-    {
-        SendDC.AckNumber = d.FecHeader.snSourceAck;
-    }
-}
-
-bool AckSourcePacketProcesser(ACKDatagram d, DecodingCache ReceiveDC, DecodingCache SendDC)
-{
-    if (!ReceiveDC.Initialized)
-    {
-        ErrorCodeIf(true, d, DiagnosisLevel.Warning, "RDPEUDP: Datagram lost, missing 3-way handshake.");
-        ReceiveDC.Initialize(d);
-    }
-    if (IsDatagramReceived(d))
-    {
-        SendDC.AckNumber = d.FecHeader.snSourceAck;
-    }
-    SendDC.DatagramLostProcessor();
-    SendDC.TryDispatch();
-    if (SequenceComparer(d.SequenceNumber, ReceiveDC.NextSequenceNumber, ReceiveDC.InitialSequenceNumber) < 0)
-    {
-        ErrorCodeIf(true, d, DiagnosisLevel.Warning, "RDPEUDP: Retransmitted ACK and Source Packet Data.");
-        return false;
-    }
-    else
-    {
-        ReceiveDC.DatagramCache.Insert(d);
-        ReceiveDC.RemoveDatagramIntoBuffer();    
-    }
-    return true;
-}
-
-bool PureAckProcesser(ACKDatagram d, DecodingCache ReceiveDC, DecodingCache SendDC)
-{
-    if (!SendDC.Initialized)
-    {
-        return false;
-    }
-    if (SequenceComparer(SendDC.AckNumber, d.SequenceNumber, SendDC.InitialSequenceNumber) > 0)
-    {
-        ErrorCodeIf(true, d, DiagnosisLevel.Warning, "RDPEUDP: Duplicate ACK Datagram.");
-        return false;
-    }
-    // Keep Alive
-    else if (SequenceComparer(SendDC.AckNumber, d.SequenceNumber, SendDC.InitialSequenceNumber) == 0)
-    {
-        d#IsKeepAlive = true;
-        return false;
-    }
-    SendDC.AckNumber = d.SequenceNumber;
-
-    var p = SendDC.CompletedTLSList.Head;
-    while (p!= null)
-    {
-        if (SequenceComparer(d.SequenceNumber, p.MinSequenceNumber, SendDC.InitialSequenceNumber) >= 0 &&
-            SequenceComparer(d.SequenceNumber, p.MaxSequenceNumber, SendDC.InitialSequenceNumber) <= 0)
-        {
-            p.Value.Origins += [d];
-            break;
-        }
-        p = p.Next;
-    }
-    if (p == null)
-    {
-        if (SequenceComparer(d.SequenceNumber, SendDC.BufferStartSequenceNumber, SendDC.InitialSequenceNumber) < 0)
-        {
-            return false;
-        }
-        if (SendDC.ReceiveBuffer.Count > 0 && SequenceComparer(d.SequenceNumber, SendDC.BufferStartSequenceNumber, SendDC.InitialSequenceNumber) >= 0
-            && SequenceComparer(d.SequenceNumber, SendDC.BufferEndSequenceNumber, SendDC.InitialSequenceNumber) <= 0)
-        {
-            SendDC.BufferedDatagrams += [d];
-        }
-        else 
-        {
-            SendDC.PureAckCache.Insert(d);
-            SendDC.DatagramLostProcessor();
-        }
-    }
-    SendDC.TryDispatch();
-    return true;
+    return (d.FecHeader.uFlags & Flags.RDPUDP_FLAG_SYNLOSSY) == Flags.RDPUDP_FLAG_SYNLOSSY;
 }
 
 // 3.1.5.1.1    SYN Datagrams   &   3.1.5.1.3   SYN and ACK Datagrams
@@ -501,7 +114,7 @@ message SYNDatagram
     RDPUDP_FEC_HEADER FecHeader where ((Flags.RDPUDP_FLAG_SYN & value.uFlags) == Flags.RDPUDP_FLAG_SYN) &&
         ValidationCheckValue(((Flags.RDPUDP_FLAG_ACK & value.uFlags) == Flags.RDPUDP_FLAG_ACK) ? true : value.snSourceAck == 0xFFFFFFFF, this, true, ReferenceType.Message, "RDPEUDP", "FecHeader.snSourceAck", "SYNDatagram", "-1", value);
     RDPUDP_SYNDATA_PAYLOAD SyndataPayload;
-    binary Padding where ValidationCheckValue(value.Count == 1216, null, true, ReferenceType.Message, "RDPEUSB", "byte count of Padding", "SYNDatagram", "1216 bytes", value.Count);  
+    binary Padding where ValidationCheckValue(value.Count == 1216, this, true, ReferenceType.Message, "RDPEUSB", "byte count of Padding", "SYNDatagram", "1216 bytes", value.Count);
     override string ToString()
     {
         string summary = ((Flags.RDPUDP_FLAG_ACK & FecHeader.uFlags) == Flags.RDPUDP_FLAG_ACK ? "SYN and ACK Datagram, " : "SYN Datagram, ") + "snInitialSequenceNumber: " + (SyndataPayload.snInitialSequenceNumber as string);
@@ -542,8 +155,6 @@ message ACKDatagram
     }
 } with Documentation{Ignore = true};
 
-annotation bool ACKDatagram#IsKeepAlive;
-
 bool IsDatagramReceived(ACKDatagram d)
 {
     var vector = d.AckVectorHeader.AckVectorElement;
@@ -555,20 +166,6 @@ bool IsDatagramReceived(ACKDatagram d)
         }
     }
     return true;
-}
-
-bool IsCompleteTls(binary data)
-{
-    int len = 5 + (data[4] + ((data[3] as int) << 8)) as int;
-    while (len + 5 < data.Count)
-    {
-        len += ((data[len + 4] + ((data[len + 3] as int) << 8)) as int) + 5;
-    }
-    if (len == data.Count)
-    {
-        return true;
-    }
-    return false;
 }
 
 uint get SequenceNumber(this ACKDatagram d)
@@ -620,7 +217,7 @@ type SortedDatagramList
     
     void Insert(ACKDatagram d)
     {
-        var newNode = new DatagramListNode { Datagram = d };
+        var newNode = new DatagramListNode{Datagram = d};
         
         // Insert the node into an empty list
         if (Head == null)
@@ -696,54 +293,6 @@ type DatagramListNode
     ACKDatagram Datagram;
     DatagramListNode PreviousNode;
     DatagramListNode NextNode;
-} with Documentation{Ignore = true};
-
-type TLSCache
-{
-    TLSCacheNode Head = null;
-    TLSCacheNode Rear = null;
-    
-    void Insert(TLS.RecordLayers records, uint minNum, uint maxNum)
-    {
-        var newNode = new TLSCacheNode{ Value = records, MinSequenceNumber = minNum, MaxSequenceNumber = maxNum};
-
-        if (Head == null)
-        {
-            Head = newNode;
-            Rear = Head;
-            return;
-        }
-
-        Rear.Next = newNode;
-        Rear = newNode;
-    }
-
-    void Clear()
-    {
-        Head = null;
-        Rear = null;
-    }
-    
-    void RemoveHead()
-    {
-        if (Head == null)
-        {
-            return;
-        }
-        Head = Head.Next;
-        if (Head == null)
-        {
-            Rear = null;
-        }
-    }
-} with Documentation{Ignore = true};
-
-type TLSCacheNode
-{
-    TLS.RecordLayers Value;
-    uint MinSequenceNumber;
-    uint MaxSequenceNumber;
-    TLSCacheNode Next;
 } with Documentation{Ignore = true};
 
 DatagramListNode get Previous(this DatagramListNode node)
@@ -834,7 +383,7 @@ type RDPUDP_FEC_HEADER
 {
     uint snSourceAck;
     ushort uReceiveWindowSize;
-    Flags uFlags where ValidationCheck(InRange<Flags>(value), null, "RDPEUDP: The bits ranging from 1 to 6 of the uFlags field in type RDPUDP_FEC_HEADER are reserved and should be set to zero.");
+    Flags uFlags;
 }
 
 // 2.2.2.2      RDPUDP_FEC_PAYLOAD_HEADER Structure
@@ -867,7 +416,7 @@ type RDPUDP_SYNDATA_PAYLOAD
     ushort uUpStreamMtu
         where ValidationCheckValueInRange((value >= 1132 && value <= 1232), null, true, ReferenceType.Type, "RDPEUDP", "uUpStreamMtu", "RDPUDP_SYNDATA_PAYLOAD", "1132", "1232", value);
     ushort uDownStreamMtu
-        where ValidationCheckValueInRange((value >= 1132 && value <= 1232), null, true, ReferenceType.Type, "RDPEUDP", "uDownStreamMtu", "RDPUDP_SYNDATA_PAYLOAD", "1132", "1232", value);        
+        where ValidationCheckValueInRange((value >= 1132 && value <= 1232), null, true, ReferenceType.Type, "RDPEUDP", "uDownStreamMtu", "RDPUDP_SYNDATA_PAYLOAD", "1132", "1232", value);
 }
 
 // 2.2.2.6      RDPUDP_ACK_OF_ACKVECTOR_HEADER Structure
@@ -881,7 +430,7 @@ type RDPUDP_ACK_VECTOR_HEADER
 {
     ushort uAckVectorSize;
     array<RDPUDP_ACK_VECTOR> AckVectorElement with BinaryEncoding{Length = uAckVectorSize};
-    optional [|(2 + (uAckVectorSize as uint)) % 4 != 0|] binary Padding with BinaryEncoding{Length = 4 - ((2 + (uAckVectorSize as uint)) % 4)};
+    optional [|(2 + (uAckVectorSize as uint)) % 4 != 0|] binary Padding with BinaryEncoding{Length = 4 - ((2 + (uAckVectorSize)) % 4)};
 }
 
 // 2.2.1.1      VECTOR_ELEMENT_STATE Enumeration
@@ -897,20 +446,51 @@ pattern VECTOR_ELEMENT_STATE = enum byte
 type RDPUDP_ACK_VECTOR
 {
     VECTOR_ELEMENT_STATE VectorElementState with BinaryEncoding{Width = 2};
-    byte Length with BinaryEncoding{Width = 6}; 
+    byte Length with BinaryEncoding{Width = 6};
+
+    override string ToString()
+    {
+        return "RDPUDP_ACK_VECTOR, VectorElementState: " + EnumToString<VECTOR_ELEMENT_STATE>(VectorElementState) + ", Length: " + Length.ToString();
+    }
 } with Documentation{Ignore = true};
 
 pattern Flags = flags ushort
 {
-    RDPUDP_FLAG_SYNLOSSY      = 0x0200,
-    RDPUDP_FLAG_ACK_OF_ACKS   = 0x0100,
-    RDPUDP_FLAG_SACK_OPTION   = 0x0080,
-    RDPUDP_FLAG_CWR           = 0x0040,
-    RDPUDP_FLAG_CN            = 0x0020,
-    RDPUDP_FLAG_FEC           = 0x0010,
-    RDPUDP_FLAG_DATA          = 0x0008,
-    RDPUDP_FLAG_ACK           = 0x0004,
-    RDPUDP_FLAG_FIN           = 0x0002,
-    RDPUDP_FLAG_SYN           = 0x0001,
+    RDPUDP_FLAG_CORRELATION_ID = 0x0800
+        with Documentation
+            {Description = "The optional RDPUDP_CORRELATION_ID_PAYLOAD Structure is present."},
+    RDPUDP_FLAG_ACKDELAYED     = 0x0400
+        with Documentation
+            {Description = "The receiver delayed generating the ACK for the source sequence numbers received."},
+    RDPUDP_FLAG_SYNLOSSY       = 0x0200
+        with Documentation
+            {Description = "The connection does not require persistent retransmits."},
+    RDPUDP_FLAG_ACK_OF_ACKS    = 0x0100
+        with Documentation
+            {Description = "The RDPUDP_ACK_OF_ACKVECTOR_HEADER Structure is present."},
+    RDPUDP_FLAG_SACK_OPTION    = 0x0080
+        with Documentation
+            {Description = "The optional RDPUDP_CORRELATION_ID_PAYLOAD Structure is present."},
+    RDPUDP_FLAG_CWR            = 0x0040
+        with Documentation
+            {Description = "Congestion Window Reset flag, the sender has reduced the congestion window, and informs the receiver to stop adding the RDPUDP_FLAG_CN."},
+    RDPUDP_FLAG_CN             = 0x0020
+        with Documentation
+            {Description = "Congestion Notification flag, the receiver reports missing datagrams."},
+    RDPUDP_FLAG_FEC            = 0x0010
+        with Documentation
+            {Description = "The RDPUDP_FEC_PAYLOAD_HEADER Structure is present."},
+    RDPUDP_FLAG_DATA           = 0x0008
+        with Documentation
+            {Description = "The RDPUDP_SOURCE_PAYLOAD_HEADER Structure or the RDPUDP_FEC_PAYLOAD_HEADER Structure is present."},
+    RDPUDP_FLAG_ACK            = 0x0004
+        with Documentation
+            {Description = "The RDPUDP_ACK_VECTOR_HEADER Structure is present."},
+    RDPUDP_FLAG_FIN            = 0x0002
+        with Documentation
+            {Description = "Corresponds to the FIN flag."},
+    RDPUDP_FLAG_SYN            = 0x0001
+        with Documentation
+            {Description = "Corresponds to the SYN flag, for initializing connection."},
     ...
 } with Documentation{Ignore = true};

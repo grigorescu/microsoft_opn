@@ -28,7 +28,7 @@ OPNAuthoring
         ],
     RevisionSummary =    
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "10/8/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "380144", Date = "09/22/2015"}
         ]
 };
 
@@ -38,6 +38,9 @@ using Standard;
 using IANA;
 using Utility;
 using ESP;
+using AH;
+using MicrosoftCommonResources;
+using Diagnostics;
 
 endpoint Node[binary LocalAddress]
     provides Messages;
@@ -69,6 +72,15 @@ autostart actor IGMPOverIPv6(IPv6.Node node)
     }
 }
 
+autostart actor IGMPOverAH(AH.Node node)
+{
+    bool netmaskFlag = false;
+    process node accepts p:AH.Msg where (p.NextHeader == ProtocolType.IGMP)
+    {
+        DecodeAndDispatchDatagram(p#DestinationAddress as binary, p.Payload, ref netmaskFlag);
+    }
+}
+
 // Decode IGMP segment and dispatch to IGMP layer
 void DecodeAndDispatchDatagram(binary destinationAddress, binary payload, ref bool netmaskFlag)
 {
@@ -80,7 +92,7 @@ void DecodeAndDispatchDatagram(binary destinationAddress, binary payload, ref bo
             switch (s)
             {
                 case m:Messages.CreateGroupRequest from BinaryDecoder<Messages.CreateGroupRequest> =>
-                    ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, "IGMP Checksum is invalid.");
+                    ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, () => Format(IGMP_CHECKSUM_INVALID, "CreateGroupRequest"));
                     dispatch (endpoint Node[destinationAddress]) accepts m;
                 default => 
                     ThrowDecodingException("IGMP", "CreateGroupRequest");
@@ -89,7 +101,7 @@ void DecodeAndDispatchDatagram(binary destinationAddress, binary payload, ref bo
             switch (s)
             {
                 case m:Messages.CreateGroupReply from BinaryDecoder<Messages.CreateGroupReply> =>
-                     ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, "IGMP Checksum is invalid.");
+                     ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, () => Format(IGMP_CHECKSUM_INVALID, "CreateGroupReply"));
                      dispatch (endpoint Node[destinationAddress]) accepts m;
                 default => 
                     ThrowDecodingException("IGMP", "CreateGroupReply");
@@ -98,7 +110,7 @@ void DecodeAndDispatchDatagram(binary destinationAddress, binary payload, ref bo
             switch (s)
             {
                 case m:Messages.JoinGroupRequest from BinaryDecoder<Messages.JoinGroupRequest> =>
-                    ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, "IGMP Checksum is invalid.");
+                    ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, () => Format(IGMP_CHECKSUM_INVALID, "JoinGroupRequest"));
                     dispatch (endpoint Node[destinationAddress]) accepts m;
                 default => 
                     ThrowDecodingException("IGMP", "JoinGroupRequest");
@@ -107,7 +119,7 @@ void DecodeAndDispatchDatagram(binary destinationAddress, binary payload, ref bo
             switch (s)
             {
                 case m:Messages.JoinGroupReply from BinaryDecoder<Messages.JoinGroupReply> =>
-                    ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, "IGMP Checksum is invalid.");
+                    ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, () => Format(IGMP_CHECKSUM_INVALID, "JoinGroupReply"));
                     dispatch (endpoint Node[destinationAddress]) accepts m;
                 default => 
                     ThrowDecodingException("IGMP", "JoinGroupReply");
@@ -116,7 +128,7 @@ void DecodeAndDispatchDatagram(binary destinationAddress, binary payload, ref bo
             switch (s)
             {
                 case m:Messages.LeaveGroupRequest from BinaryDecoder<Messages.LeaveGroupRequest> =>
-                    ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, "IGMP Checksum is invalid.");
+                    ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, () => Format(IGMP_CHECKSUM_INVALID, "LeaveGroupRequest"));
                     dispatch (endpoint Node[destinationAddress]) accepts m;
                 default => 
                     ThrowDecodingException("IGMP", "LeaveGroupRequest");
@@ -125,7 +137,7 @@ void DecodeAndDispatchDatagram(binary destinationAddress, binary payload, ref bo
             switch (s)
             {
                 case m:Messages.LeaveGroupReply from BinaryDecoder<Messages.LeaveGroupReply> =>
-                    ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, "IGMP Checksum is invalid.");
+                    ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, () => Format(IGMP_CHECKSUM_INVALID, "LeaveGroupReply"));
                      dispatch (endpoint Node[destinationAddress]) accepts m;
                 default => 
                     ThrowDecodingException("IGMP", "LeaveGroupReply");
@@ -134,7 +146,7 @@ void DecodeAndDispatchDatagram(binary destinationAddress, binary payload, ref bo
             switch (s)
             {
                 case m:Messages.ConfirmGroupRequest from BinaryDecoder<Messages.ConfirmGroupRequest> =>
-                    ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, "IGMP Checksum is invalid.");
+                    ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, () => Format(IGMP_CHECKSUM_INVALID, "ConfirmGroupRequest"));
                     dispatch (endpoint Node[destinationAddress]) accepts m;
                 default => 
                     ThrowDecodingException("IGMP", "ConfirmGroupRequest");
@@ -143,7 +155,7 @@ void DecodeAndDispatchDatagram(binary destinationAddress, binary payload, ref bo
             switch (s)
             {
                 case m:Messages.ConfirmGroupReply from BinaryDecoder<Messages.ConfirmGroupReply> =>
-                     ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, "IGMP Checksum is invalid.");
+                     ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, () => Format(IGMP_CHECKSUM_INVALID, "ConfirmGroupReply"));
                      dispatch (endpoint Node[destinationAddress]) accepts m;
                 default => 
                     ThrowDecodingException("IGMP", "ConfirmGroupReply");
@@ -155,7 +167,7 @@ void DecodeAndDispatchDatagram(binary destinationAddress, binary payload, ref bo
                 switch (s)
                 {
                     case m:Messages.V1MembershipQueryMessage from BinaryDecoder<Messages.V1MembershipQueryMessage> =>
-                         ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, "IGMP Checksum is invalid.");
+                         ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, () => Format(IGMP_CHECKSUM_INVALID, "V1MembershipQueryMessage"));
                          dispatch (endpoint Node[destinationAddress]) accepts m;
                     default => 
                         ThrowDecodingException("IGMP", "V1MembershipQueryMessage");
@@ -166,7 +178,7 @@ void DecodeAndDispatchDatagram(binary destinationAddress, binary payload, ref bo
                 switch (s)
                 {
                     case m:Messages.V2MembershipQueryMessage from BinaryDecoder<Messages.V2MembershipQueryMessage> =>
-                         ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, "IGMP Checksum is invalid.");
+                         ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, () => Format(IGMP_CHECKSUM_INVALID, "V2MembershipQueryMessage"));
                          dispatch (endpoint Node[destinationAddress]) accepts m;
                     default => 
                         ThrowDecodingException("IGMP", "V2MembershipQueryMessage");
@@ -177,7 +189,7 @@ void DecodeAndDispatchDatagram(binary destinationAddress, binary payload, ref bo
                 switch (s)
                 {
                     case m:Messages.V3MembershipQueryMessage from BinaryDecoder<Messages.V3MembershipQueryMessage> =>
-                        ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, "IGMP Checksum is invalid.");
+                        ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, () => Format(IGMP_CHECKSUM_INVALID, "V3MembershipQueryMessage"));
                         dispatch (endpoint Node[destinationAddress]) accepts m;
                     default => 
                         ThrowDecodingException("IGMP", "V3MembershipQueryMessage");
@@ -188,7 +200,7 @@ void DecodeAndDispatchDatagram(binary destinationAddress, binary payload, ref bo
             switch (s)
             {
                 case m:Messages.V1MembershipReport from BinaryDecoder<Messages.V1MembershipReport> =>
-                     ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, "IGMP Checksum is invalid.");
+                     ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, () => Format(IGMP_CHECKSUM_INVALID, "V1MembershipReport"));
                      dispatch (endpoint Node[destinationAddress]) accepts m;
                 default => 
                     ThrowDecodingException("IGMP", "V1MembershipReport");
@@ -200,7 +212,7 @@ void DecodeAndDispatchDatagram(binary destinationAddress, binary payload, ref bo
                 switch (s)
                 {
                     case m:Messages.DVMRPV3 from BinaryDecoder<Messages.DVMRPV3> =>
-                         ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, "IGMP Checksum is invalid.");
+                         ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, () => Format(IGMP_CHECKSUM_INVALID, "DVMRPV3"));
                          if (s.PeekBytes(1 * 8, 1) == $[01])
                          {
                              // Keep N bit in ProbeCapabilityFlags for network masks appended to the Prune, Graft, and Graft Ack messages or not
@@ -237,7 +249,7 @@ void DecodeAndDispatchDatagram(binary destinationAddress, binary payload, ref bo
                 switch (s)
                 {
                     case m:Messages.DVMRPV1 from BinaryDecoder<Messages.DVMRPV1> =>
-                         ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, "IGMP Checksum is invalid.");
+                         ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, () => Format(IGMP_CHECKSUM_INVALID, "DVMRPV1"));
                          dispatch (endpoint Node[destinationAddress]) accepts m;
                     default => 
                         ThrowDecodingException("IGMP", "DVMRPV1");
@@ -251,7 +263,7 @@ void DecodeAndDispatchDatagram(binary destinationAddress, binary payload, ref bo
                 switch (s)
                 {
                     case m:Messages.PIMQuery from BinaryDecoder<Messages.PIMQuery> =>
-                        ValidationCheck(Utility.ValidateCheckSum(payload, m.PIMHeader.CheckSum), m, "Validation Error. IGMP Checksum is invalid.");
+                        ValidationCheck(Utility.ValidateCheckSum(payload, m.PIMHeader.CheckSum), m, () => Format(IGMP_CHECKSUM_INVALID, "PIMQuery"));
                         dispatch (endpoint Node[destinationAddress]) accepts m;
                     default => 
                         ThrowDecodingException("IGMP", "PIMQuery");
@@ -262,7 +274,7 @@ void DecodeAndDispatchDatagram(binary destinationAddress, binary payload, ref bo
                 switch (s)
                 {
                     case m:Messages.PIMRegister from BinaryDecoder<Messages.PIMRegister> =>
-                        ValidationCheck(Utility.ValidateCheckSum(payload, m.PIMHeader.CheckSum), m, "Validation Error. IGMP Checksum is invalid.");
+                        ValidationCheck(Utility.ValidateCheckSum(payload, m.PIMHeader.CheckSum), m, () => Format(IGMP_CHECKSUM_INVALID, "PIMRegister"));
                         dispatch (endpoint Node[destinationAddress]) accepts m;
                     default => 
                         ThrowDecodingException("IGMP", "PIMRegister");
@@ -273,7 +285,7 @@ void DecodeAndDispatchDatagram(binary destinationAddress, binary payload, ref bo
                 switch (s)
                 {
                     case m:Messages.PIMRegister from BinaryDecoder<Messages.PIMRegister> =>
-                        ValidationCheck(Utility.ValidateCheckSum(payload, m.PIMHeader.CheckSum), m, "Validation Error. IGMP Checksum is invalid.");
+                        ValidationCheck(Utility.ValidateCheckSum(payload, m.PIMHeader.CheckSum), m, () => Format(IGMP_CHECKSUM_INVALID, "PIMRegister"));
                         dispatch (endpoint Node[destinationAddress]) accepts m;
                     default => 
                         ThrowDecodingException("IGMP", "PIMRegister");
@@ -284,7 +296,7 @@ void DecodeAndDispatchDatagram(binary destinationAddress, binary payload, ref bo
                 switch (s)
                 {
                     case m:Messages.PIMJoinPrune  from BinaryDecoder<Messages.PIMJoinPrune> =>
-                        ValidationCheck(Utility.ValidateCheckSum(payload, m.PIMHeader.CheckSum), m, "Validation Error. IGMP Checksum is invalid.");
+                        ValidationCheck(Utility.ValidateCheckSum(payload, m.PIMHeader.CheckSum), m, () => Format(IGMP_CHECKSUM_INVALID, "PIMJoinPrune"));
                         dispatch (endpoint Node[destinationAddress]) accepts m;
                     default => 
                         ThrowDecodingException("IGMP", "PIMJoinPrune");
@@ -295,7 +307,7 @@ void DecodeAndDispatchDatagram(binary destinationAddress, binary payload, ref bo
                 switch (s)
                 {
                     case m:Messages.PIMRPReachability from BinaryDecoder<Messages.PIMRPReachability> =>
-                        ValidationCheck(Utility.ValidateCheckSum(payload, m.PIMHeader.CheckSum), m, "Validation Error. IGMP Checksum is invalid.");
+                        ValidationCheck(Utility.ValidateCheckSum(payload, m.PIMHeader.CheckSum), m, () => Format(IGMP_CHECKSUM_INVALID, "PIMRPReachability"));
                         dispatch (endpoint Node[destinationAddress]) accepts m;
                     default => 
                         ThrowDecodingException("IGMP", "PIMRPReachability");
@@ -306,7 +318,7 @@ void DecodeAndDispatchDatagram(binary destinationAddress, binary payload, ref bo
                 switch (s)
                 {
                     case m:Messages.PIMAssert from BinaryDecoder<Messages.PIMAssert> =>
-                        ValidationCheck(Utility.ValidateCheckSum(payload, m.PIMHeader.CheckSum), m, "Validation Error. IGMP Checksum is invalid.");
+                        ValidationCheck(Utility.ValidateCheckSum(payload, m.PIMHeader.CheckSum), m, () => Format(IGMP_CHECKSUM_INVALID, "PIMAssert"));
                         dispatch (endpoint Node[destinationAddress]) accepts m;
                     default => 
                         ThrowDecodingException("IGMP", "PIMAssert");
@@ -317,7 +329,7 @@ void DecodeAndDispatchDatagram(binary destinationAddress, binary payload, ref bo
                 switch (s)
                 {
                     case m:Messages.PIMCandidateRPAdvertisement from BinaryDecoder<Messages.PIMCandidateRPAdvertisement> =>
-                        ValidationCheck(Utility.ValidateCheckSum(payload, m.PIMHeader.CheckSum), m, "Validation Error. IGMP Checksum is invalid.");
+                        ValidationCheck(Utility.ValidateCheckSum(payload, m.PIMHeader.CheckSum), m, () => Format(IGMP_CHECKSUM_INVALID, "PIMCandidateRPAdvertisement"));
                         dispatch (endpoint Node[destinationAddress]) accepts m;
                     default => 
                         ThrowDecodingException("IGMP", "PIMCandidateRPAdvertisement");
@@ -328,7 +340,7 @@ void DecodeAndDispatchDatagram(binary destinationAddress, binary payload, ref bo
                 switch (s)
                 {
                     case m:Messages.PIMPoll from BinaryDecoder<Messages.PIMPoll> =>
-                        ValidationCheck(Utility.ValidateCheckSum(payload, m.PIMHeader.CheckSum), m, "Validation Error. IGMP Checksum is invalid.");
+                        ValidationCheck(Utility.ValidateCheckSum(payload, m.PIMHeader.CheckSum), m, () => Format(IGMP_CHECKSUM_INVALID, "PIMPoll"));
                         dispatch (endpoint Node[destinationAddress]) accepts m;
                     default => 
                         ThrowDecodingException("IGMP", "PIMPoll");
@@ -347,7 +359,7 @@ void DecodeAndDispatchDatagram(binary destinationAddress, binary payload, ref bo
             switch (s)
             {
                 case m:Messages.V2MembershipReport from BinaryDecoder<Messages.V2MembershipReport> =>
-                     ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, " IGMP Checksum is invalid");
+                     ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, () => Format(IGMP_CHECKSUM_INVALID, "V2MembershipReport"));
                      dispatch (endpoint Node[destinationAddress]) accepts m;
                 default => 
                     ThrowDecodingException("IGMP", "V2MembershipReport");
@@ -356,7 +368,7 @@ void DecodeAndDispatchDatagram(binary destinationAddress, binary payload, ref bo
             switch (s)
             {
                 case m:Messages.V2LeaveGroup from BinaryDecoder<Messages.V2LeaveGroup> =>
-                     ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, " IGMP Checksum is invalid");
+                     ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, () => Format(IGMP_CHECKSUM_INVALID, "V2LeaveGroup"));
                      dispatch (endpoint Node[destinationAddress]) accepts m;
                 default => 
                     ThrowDecodingException("IGMP", "V2LeaveGroup");
@@ -365,7 +377,7 @@ void DecodeAndDispatchDatagram(binary destinationAddress, binary payload, ref bo
             switch (s)
             {
                 case m:Messages.MulticastTracerouteResponse from BinaryDecoder<Messages.MulticastTracerouteResponse> =>
-                     ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, " IGMP Checksum is invalid");
+                     ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, () => Format(IGMP_CHECKSUM_INVALID, "MulticastTracerouteResponse"));
                      dispatch (endpoint Node[destinationAddress]) accepts m;
                 default => 
                     ThrowDecodingException("IGMP", "MulticastTracerouteResponse");
@@ -374,7 +386,7 @@ void DecodeAndDispatchDatagram(binary destinationAddress, binary payload, ref bo
             switch (s)
             {
                 case m:Messages.MulticastTraceroute from BinaryDecoder<Messages.MulticastTraceroute> =>
-                     ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, " IGMP Checksum is invalid");
+                     ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, () => Format(IGMP_CHECKSUM_INVALID, "MulticastTraceroute"));
                      dispatch (endpoint Node[destinationAddress]) accepts m;
                 default => 
                     ThrowDecodingException("IGMP", "MulticastTraceroute");
@@ -383,7 +395,7 @@ void DecodeAndDispatchDatagram(binary destinationAddress, binary payload, ref bo
             switch (s)
             {
                 case m:Messages.V3MembershipReport from BinaryDecoder<Messages.V3MembershipReport> =>
-                     ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, " IGMP Checksum is invalid");
+                     ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, () => Format(IGMP_CHECKSUM_INVALID, "V3MembershipReport"));
                      dispatch (endpoint Node[destinationAddress]) accepts m;
                 default => 
                     ThrowDecodingException("IGMP", "V3MembershipReport");
@@ -392,7 +404,7 @@ void DecodeAndDispatchDatagram(binary destinationAddress, binary payload, ref bo
             switch (s)
             {
                 case m:Messages.GroupMap from BinaryDecoder<Messages.GroupMap> =>
-                     ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, " IGMP Checksum is invalid");
+                     ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, () => Format(IGMP_CHECKSUM_INVALID, "GroupMap"));
                      dispatch (endpoint Node[destinationAddress]) accepts m;
                 default => 
                     ThrowDecodingException("IGMP", "GroupMap");
@@ -401,7 +413,7 @@ void DecodeAndDispatchDatagram(binary destinationAddress, binary payload, ref bo
             switch (s)
             {
                 case m:Messages.InterestSolicitation from BinaryDecoder<Messages.InterestSolicitation> =>
-                     ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, " IGMP Checksum is invalid");
+                     ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, () => Format(IGMP_CHECKSUM_INVALID, "InterestSolicitation"));
                      dispatch (endpoint Node[destinationAddress]) accepts m;
                 default => 
                     ThrowDecodingException("IGMP", "InterestSolicitation");
@@ -410,7 +422,7 @@ void DecodeAndDispatchDatagram(binary destinationAddress, binary payload, ref bo
             switch (s)
             {
                 case m:Messages.ReceiverMembershipReport from BinaryDecoder<Messages.ReceiverMembershipReport> =>
-                     ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, " IGMP Checksum is invalid");
+                     ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, () => Format(IGMP_CHECKSUM_INVALID, "ReceiverMembershipReport"));
                      dispatch (endpoint Node[destinationAddress]) accepts m;
                 default => 
                     ThrowDecodingException("IGMP", "ReceiverMembershipReport");
@@ -419,7 +431,7 @@ void DecodeAndDispatchDatagram(binary destinationAddress, binary payload, ref bo
             switch (s)
             {
                 case m:Messages.MulticastRouterAdvertisement from BinaryDecoder<Messages.MulticastRouterAdvertisement> =>
-                     ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, " IGMP Checksum is invalid");
+                     ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, () => Format(IGMP_CHECKSUM_INVALID, "MulticastRouterAdvertisement"));
                      dispatch (endpoint Node[destinationAddress]) accepts m;
                 default => 
                     ThrowDecodingException("IGMP", "MulticastRouterAdvertisement");
@@ -428,7 +440,7 @@ void DecodeAndDispatchDatagram(binary destinationAddress, binary payload, ref bo
             switch (s)
             {
                 case m:Messages.MulticastRouterSolicitation from BinaryDecoder<Messages.MulticastRouterSolicitation> =>
-                     ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, " IGMP Checksum is invalid");
+                     ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, () => Format(IGMP_CHECKSUM_INVALID, "MulticastRouterSolicitation"));
                      dispatch (endpoint Node[destinationAddress]) accepts m;
                 default => 
                     ThrowDecodingException("IGMP", "MulticastRouterSolicitation");
@@ -437,7 +449,7 @@ void DecodeAndDispatchDatagram(binary destinationAddress, binary payload, ref bo
             switch (s)
             {
                 case m:Messages.MulticastRouterTermination from BinaryDecoder<Messages.MulticastRouterTermination> =>
-                     ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, " IGMP Checksum is invalid");
+                     ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, () => Format(IGMP_CHECKSUM_INVALID, "MulticastRouterTermination"));
                      dispatch (endpoint Node[destinationAddress]) accepts m;
                 default => 
                     ThrowDecodingException("IGMP", "MulticastRouterTermination");
@@ -446,7 +458,7 @@ void DecodeAndDispatchDatagram(binary destinationAddress, binary payload, ref bo
             switch (s)
             {
                 case m:Messages.IGAPMembershipReport from BinaryDecoder<Messages.IGAPMembershipReport> =>
-                     ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, " IGMP Checksum is invalid");
+                     ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, () => Format(IGMP_CHECKSUM_INVALID, "IGAPMembershipReport"));
                      dispatch (endpoint Node[destinationAddress]) accepts m;
                 default => 
                     ThrowDecodingException("IGMP", "IGAPMembershipReport");
@@ -455,7 +467,7 @@ void DecodeAndDispatchDatagram(binary destinationAddress, binary payload, ref bo
             switch (s)
             {
                 case m:Messages.IGAPMembershipQuery from BinaryDecoder<Messages.IGAPMembershipQuery> =>
-                     ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, " IGMP Checksum is invalid");
+                     ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, () => Format(IGMP_CHECKSUM_INVALID, "IGAPMembershipQuery"));
                      dispatch (endpoint Node[destinationAddress]) accepts m;
                 default => 
                     ThrowDecodingException("IGMP", "IGAPMembershipQuery");
@@ -464,7 +476,7 @@ void DecodeAndDispatchDatagram(binary destinationAddress, binary payload, ref bo
             switch (s)
             {
                 case m:Messages.IGAPLeaveGroup from BinaryDecoder<Messages.IGAPLeaveGroup> =>
-                     ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, " IGMP Checksum is invalid");
+                     ValidationCheck(Utility.ValidateCheckSum(payload, m.CheckSum), m, () => Format(IGMP_CHECKSUM_INVALID, "IGAPLeaveGroup"));
                      dispatch (endpoint Node[destinationAddress]) accepts m;
                 default => 
                     ThrowDecodingException("IGMP", "IGAPLeaveGroup");
@@ -485,33 +497,34 @@ void DecodeAndDispatchDatagram(binary destinationAddress, binary payload, ref bo
 //draft-andou-igmp-auth-00.txt, type 0x40~0x42
 pattern MessageType = enum byte
 {
-        CreateGroupRequest = 0x1,                                    
-        CreateGroupReply = 0x2,                                      
-        JoinGroupRequest = 0x3,                                     
-        JoinGroupReply = 0x4,                                       
-        LeaveGroupRequest = 0x5,                                     
-        LeaveGroupReply = 0x6,                                       
-        ConfirmGroupRequest = 0x7,                                   
-        ConfirmGroupReply = 0x8,                                     
-        MembershipQuery = 0x11,                                  
-        V1MembershipReport = 0x12,                               
-        DVMRP = 0x13,                                                
-        PIMVersion1 = 0x14,                                          
-        CiscoTraceMessages = 0x15,                                   
-        V2MembershipReport = 0x16,                               
-        V2LeaveGroup = 0x17,                                     
-        MulticastTracerouteResponse = 0x1E,                          
-        MulticastTraceroute = 0x1F,                                  
-        V3MembershipReport = 0x22,                               
-        GroupMap = 0x23,                                             
-        InterestSolicitation = 0x24,                                 
-        ReceiverMembershipReport = 0x25,                             
-        MulticastRouterAdvertisement = 0x30,                         
-        MulticastRouterSolicitation = 0x31,                          
-        MulticastRouterTermination = 0x32,                           
-        IGAPMembershipReport = 0x40,                                 
-        IGAPMembershipQuery = 0x41,                                  
-        IGAPLeaveGroup = 0x42   
+    CreateGroupRequest = 0x1,                                    
+    CreateGroupReply = 0x2,                                      
+    JoinGroupRequest = 0x3,                                     
+    JoinGroupReply = 0x4,                                       
+    LeaveGroupRequest = 0x5,                                     
+    LeaveGroupReply = 0x6,                                       
+    ConfirmGroupRequest = 0x7,                                   
+    ConfirmGroupReply = 0x8,                                     
+    MembershipQuery = 0x11,                                  
+    V1MembershipReport = 0x12,                               
+    DVMRP = 0x13,                                                
+    PIMVersion1 = 0x14,                                          
+    CiscoTraceMessages = 0x15,                                   
+    V2MembershipReport = 0x16,                               
+    V2LeaveGroup = 0x17,                                     
+    MulticastTracerouteResponse = 0x1E,                          
+    MulticastTraceroute = 0x1F,                                  
+    V3MembershipReport = 0x22,                               
+    GroupMap = 0x23,                                             
+    InterestSolicitation = 0x24,                                 
+    ReceiverMembershipReport = 0x25,                             
+    MulticastRouterAdvertisement = 0x30,                         
+    MulticastRouterSolicitation = 0x31,                          
+    MulticastRouterTermination = 0x32,                           
+    IGAPMembershipReport = 0x40,                                 
+    IGAPMembershipQuery = 0x41,                                  
+    IGAPLeaveGroup = 0x42,
+    ...
 };
 
 contract Messages
@@ -653,7 +666,7 @@ contract Messages
     
         override string ToString()
         {
-            return "IGMP V1 Membership Query";
+            return "IGMPv1 Membership Query";
         }
     }
 
@@ -667,7 +680,7 @@ contract Messages
    
        override string ToString()
        {
-           return  "IGMP V1 Membership Report";
+           return  "IGMPv1 Membership Report";
        }
     }
 
@@ -681,7 +694,7 @@ contract Messages
     
        override string ToString()
        {
-           return "IGMP V2 Membership Query";
+           return "IGMPv2 Membership Query";
        }
     }
 
@@ -694,7 +707,7 @@ contract Messages
     
        override string ToString()
        {
-           return "IGMP V2 Membership Report";
+           return "IGMPv2 Membership Report";
        }
     }
 
@@ -724,11 +737,11 @@ contract Messages
         optional [|NumberofSources > 0|] array<IPv4Address> SourceAddresses 
             where ValidationCheckLength(NumberofSources > 0 ? (value as array<IPv4Address>).Count == NumberofSources : true, null, false, Utility.ReferenceType.Message, 
                                         "IGMP", "SourceAddresses", "V3MembershipQueryMessage", NumberofSources, NumberofSources > 0 ? (value as array<IPv4Address>).Count : 0)
-            with BinaryEncoding{MaxLength = NumberofSources as uint};
+            with BinaryEncoding{MaxLength = NumberofSources};
     
        override string ToString()
        {
-           return "IGMP V3 Membership Query";
+           return "IGMPv3 Membership Query";
        }
     }
     
@@ -739,7 +752,7 @@ contract Messages
         ushort CheckSum;
         ushort Reserved2 where ValidationCheck(value == 0, null, "IGMP: The Reserved2 in message V3MembershipReport should be set to zero.");
         ushort NumOfGroupRecords;
-        optional [|NumOfGroupRecords > 0|] array<GroupRecord> GroupRecords with BinaryEncoding{Length = NumOfGroupRecords as uint};
+        optional [|NumOfGroupRecords > 0|] array<GroupRecord> GroupRecords with BinaryEncoding{Length = NumOfGroupRecords};
 
        override string ToString()
        {
@@ -760,7 +773,7 @@ contract Messages
     
        override string ToString()
        {
-           return "DVMRPV1";
+           return "DVMRPv1 " + EnumToString<IGMP.SubType>(SubType, false);
        }
     }
     
@@ -785,7 +798,7 @@ contract Messages
     
        override string ToString()
        {
-           return "DVMRPV3";
+           return "DVMRPv3 " + EnumToString<IGMP.Code>(Code, false);
        }
     }
     
@@ -801,7 +814,7 @@ contract Messages
     
        override string ToString()
        {
-           return "PIM Version 1 - Query";
+           return "PIM Router-Query";
        }
     }
     
@@ -815,12 +828,12 @@ contract Messages
         bool Q with BinaryEncoding{Width = 1};
         uint Reserved2 with BinaryEncoding{Width = 24};
         uint RPCnt with BinaryEncoding{Width = 4};
-        optional [|RPCnt > 0|] array<IPv4Address> UnicastRPAddress with BinaryEncoding{Length = RPCnt as uint};
+        optional [|RPCnt > 0|] array<IPv4Address> UnicastRPAddress with BinaryEncoding{Length = RPCnt};
         optional (binary where D == true) MulticastDataPacket;
         
        override string ToString()
        {
-           return "PIM Version 1 - Register";
+           return "PIM Register";
        }
     }
     
@@ -838,7 +851,7 @@ contract Messages
         
        override string ToString()
        {
-           return "PIM Version 1 - RegisterAck";
+           return "PIM Register-Ack";
        }
     }
     
@@ -852,11 +865,11 @@ contract Messages
         byte Reserved2;
         byte NumGroups;
         ushort Holdtime;
-        optional [|NumGroups > 0|] array<PIMJoinPruneGroup> PIMJoinPruneGroups with BinaryEncoding{Length = NumGroups as uint};
+        optional [|NumGroups > 0|] array<PIMJoinPruneGroup> PIMJoinPruneGroups with BinaryEncoding{Length = NumGroups};
                 
        override string ToString()
        {
-           return "PIM Version 1 - RegisterAck";
+           return "PIM Join/Prune";
        }
     }
     
@@ -873,7 +886,7 @@ contract Messages
                 
        override string ToString()
        {
-           return "PIM Version 1 - RP - Reachability";
+           return "PIM RP-Reachability";
        }
     }
     
@@ -891,7 +904,7 @@ contract Messages
                 
        override string ToString()
        {
-           return "PIM Version 1 - Assert";
+           return "PIM Assert";
        }
     }
     
@@ -907,7 +920,7 @@ contract Messages
                 
        override string ToString()
        {
-           return "PIM Version 1 - Candidate - RP - Advertisement";
+           return "PIM Candidate-RP-Advertisement";
        }
     }
     
@@ -922,7 +935,7 @@ contract Messages
                 
        override string ToString()
        {
-           return "PIM Version 1 - Poll";
+           return "PIM Poll";
        }
     }
     
@@ -930,7 +943,7 @@ contract Messages
     {                  
        override string ToString()
        {
-           return "Cisco Trace messages";
+           return "Cisco Trace Messages";
        }             
     }
 
@@ -979,11 +992,11 @@ contract Messages
         byte RangeCount;
         ushort CheckSum;
         uint HoldTime;
-        optional [|RangeCount > 0|] array<GroupRangeRecord> GroupRangeRecords with BinaryEncoding{Length = RangeCount as uint};
+        optional [|RangeCount > 0|] array<GroupRangeRecord> GroupRangeRecords with BinaryEncoding{Length = RangeCount};
     
        override string ToString()
        {
-           return "Group Map";
+           return "Range Map";
        }
     }
     
@@ -1006,7 +1019,7 @@ contract Messages
         (byte where value == 37) Type;
         byte DestCount;
         ushort CheckSum;
-        optional [|DestCount > 0|] array<ReceiverMembershipReportGroupAddress> ReceiverMembershipReportGroupAddresses with BinaryEncoding{Length = DestCount as uint};
+        optional [|DestCount > 0|] array<ReceiverMembershipReportGroupAddress> ReceiverMembershipReportGroupAddresses with BinaryEncoding{Length = DestCount};
     
        override string ToString()
        {
@@ -1053,7 +1066,7 @@ contract Messages
        }
     }
 
-    // http://bgp.potaroo.net/ietf/all-ids/draft-andou-igmp-auth-00.txt
+    // http://tools.ietf.org/html/draft-andou-igmp-auth-00
     accepts message IGAPMembershipReport : Imessage
     {
         (byte where value == 64) Type;
@@ -1069,9 +1082,9 @@ contract Messages
         ushort Reserved2;
         optional [|AccountSize > 0|] string UserAccount with BinaryEncoding{Length = AccountSize};
         // WORKAROUND: Use "TrailPadding" attribute for UserAccount when it supports 
-        optional array<byte> AccountPadding with BinaryEncoding{Length = (16 - AccountSize) as uint};
+        optional array<byte> AccountPadding with BinaryEncoding{Length = (16 - AccountSize)};
         optional [|MessageSize > 0|] ([|ReportType == 2|] UserPassword[MessageSize] | [|ReportType == 4|] ResponseValue[MessageSize]) Message;
-        optional array<byte> MessagePadding with BinaryEncoding{Length = (16 - MessageSize) as uint};
+        optional array<byte> MessagePadding with BinaryEncoding{Length = (16 - MessageSize)};
     
        override string ToString()
        {
@@ -1093,12 +1106,12 @@ contract Messages
         byte MessageSize;
         ushort Reserved2;
         optional [|AccountSize > 0|] string UserAccount with BinaryEncoding{Length = AccountSize};
-        optional array<byte> AccountPadding with BinaryEncoding{Length = (16 - AccountSize) as uint};
+        optional array<byte> AccountPadding with BinaryEncoding{Length = (16 - AccountSize)};
         optional [|MessageSize > 0|] ([|ReportType == 35|] ChallengeValue[MessageSize]
             | [|ReportType == 36|] Authentication[MessageSize]
             | [|ReportType == 37|] Accounting[MessageSize]
             | UndefinedMessage[MessageSize]) Message;
-        optional array<byte> MessagePadding with BinaryEncoding{Length = (16 - MessageSize) as uint};
+        optional array<byte> MessagePadding with BinaryEncoding{Length = (16 - MessageSize)};
     
        override string ToString()
        {
@@ -1120,9 +1133,9 @@ contract Messages
         byte MessageSize;
         ushort Reserved2;
         optional [|AccountSize > 0|] string UserAccount with BinaryEncoding{Length = AccountSize};
-        optional array<byte> AccountPadding with BinaryEncoding{Length = (16 - AccountSize) as uint};
+        optional array<byte> AccountPadding with BinaryEncoding{Length = (16 - AccountSize)};
         optional [|MessageSize > 0|] ([|ReportType == 66|] UserPassword[MessageSize] | [|ReportType == 68|] ResponseValue[MessageSize]) Message;
-        optional array<byte> MessagePadding with BinaryEncoding{Length = (16 - MessageSize) as uint};
+        optional array<byte> MessagePadding with BinaryEncoding{Length = (16 - MessageSize)};
     
        override string ToString()
        {
@@ -1146,19 +1159,19 @@ pattern SubType = enum byte
 {
    Response  = 1,                                    
    Request = 2,                                      
-   NonMembershipReport = 3,                                     
-   NonMembershipCancellation = 4
+   $"Non-Membership Report" = 3,                                     
+   $"Non-Membership Cancellation" = 4
 };
 
 pattern Code = enum byte
 {
-   NeighborDiscovery = 1,                                    
-   RouteExchange = 2,                                      
-   RequestNeighborList = 5,                                     
-   RespondWithNeighborList = 6,
-   PruningMulticastDeliveryTrees = 7,                                      
-   GraftingMulticastDeliveryTrees = 8,                                     
-   AcknowledgingGraftMessages = 9
+   $"Neighbor Discovery" = 1,                                    
+   $"Route Exchange" = 2,                                      
+   $"Request Neighbor List" = 5,                                     
+   $"Respond With Neighbor List" = 6,
+   $"Pruning Multicast Delivery Trees" = 7,                                      
+   $"Grafting Multicast Delivery Trees" = 8,                                     
+   $"Acknowledging Graft Messages" = 9
 };
 
 pattern PIMCode = enum byte
@@ -1199,8 +1212,8 @@ type GroupRecord
    byte AuxDataLen;
    ushort NumOfSources;
    IPv4Address MulticastAddress;
-   optional [|NumOfSources > 0|] array<IPv4Address> IPAddresses with BinaryEncoding{Length = NumOfSources as uint};
-   optional [|AuxDataLen > 0|] string AuxData with BinaryEncoding{TextEncoding = TextEncoding.ASCII,Width = (AuxDataLen * 4 ) as uint};
+   optional [|NumOfSources > 0|] array<IPv4Address> IPAddresses with BinaryEncoding{Length = NumOfSources};
+   optional [|AuxDataLen > 0|] string AuxData with BinaryEncoding{TextEncoding = TextEncoding.ASCII,Width = (AuxDataLen * 4 )};
 }
 
 type NULLCommand
@@ -1251,21 +1264,21 @@ type DestinationAddressCommand
 {
     (byte where value == 7) Command;
     byte Count;
-    array<IPv4Address> DestinationAddress with BinaryEncoding{Length = Count as uint};
+    array<IPv4Address> DestinationAddress with BinaryEncoding{Length = Count};
 }    
             
 type RequestedDestinationAddressCommand
 {
     (byte where value == 8) Command;
     byte Count;
-    optional array<IPv4Address> DestinationAddress with BinaryEncoding{Length = Count as uint};
+    optional array<IPv4Address> DestinationAddress with BinaryEncoding{Length = Count};
 }                
 
 type NonMembershipReportCommand
 {
     (byte where value == 9) Command;
     byte Count;
-    array<NonMembershipReport> NonMembershipReports with BinaryEncoding{Length = Count as uint};
+    array<NonMembershipReport> NonMembershipReports with BinaryEncoding{Length = Count};
 }
 
 type NonMembershipReport
@@ -1278,7 +1291,7 @@ type NonMembershipReportCancelCommand
 {
     (byte where value == 10) Command;
     byte Count;
-    optional array<IPv4Address> MulticastAddress with BinaryEncoding{Length = Count as uint};
+    optional array<IPv4Address> MulticastAddress with BinaryEncoding{Length = Count};
 }
 
 type FlagCapabilities
@@ -1348,7 +1361,7 @@ type DVMRPNeighbors2element
     byte Threshold;
     FlagDVMRPNeighbors2    Flags;
     byte NeighborCount;
-    optional [|NeighborCount > 0|] array<IPv4Address> NeighborIP with BinaryEncoding{Length = NeighborCount as uint};
+    optional [|NeighborCount > 0|] array<IPv4Address> NeighborIP with BinaryEncoding{Length = NeighborCount};
 }
 
 type FlagDVMRPNeighbors2
@@ -1399,9 +1412,9 @@ type PIMJoinPruneGroup
     uint RPCnt with BinaryEncoding{Width = 4};
     uint NumberOfJoinSrcs with BinaryEncoding{Width = 10};
     uint NumberOfPruneSrcs with BinaryEncoding{Width = 10};
-    optional [|RPCnt > 0|] array<IPv4Address> UnicastRPAddress with BinaryEncoding{Length = RPCnt as uint};
-    optional [|NumberOfJoinSrcs > 0|] array<IPv4Address> EncodedJoinSourceAddress with BinaryEncoding{Length = NumberOfJoinSrcs as uint};
-    optional [|NumberOfPruneSrcs > 0|] array<IPv4Address> EncodedPruneSourceAddress with BinaryEncoding{Length = NumberOfPruneSrcs as uint};
+    optional [|RPCnt > 0|] array<IPv4Address> UnicastRPAddress with BinaryEncoding{Length = RPCnt};
+    optional [|NumberOfJoinSrcs > 0|] array<IPv4Address> EncodedJoinSourceAddress with BinaryEncoding{Length = NumberOfJoinSrcs};
+    optional [|NumberOfPruneSrcs > 0|] array<IPv4Address> EncodedPruneSourceAddress with BinaryEncoding{Length = NumberOfPruneSrcs};
 }
 
 type ResposeData
@@ -1430,7 +1443,7 @@ type GroupRangeRecord
 
 type ReceiverMembershipReportGroupAddress
 {
-    ushort RecordType1;
+    byte RecordType1;
     array<byte> Reserved where ValidationCheck(value is $ [0, 0, 0], null, "IGMP: The Reserved in type ReceiverMembershipReportGroupAddress should be zero.") with BinaryEncoding{Length = 3};
     IPv4Address DestinationAddress1;
 }

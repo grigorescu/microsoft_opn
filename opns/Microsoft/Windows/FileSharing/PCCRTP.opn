@@ -11,11 +11,11 @@ OPNAuthoring
     Copyright = "(c) Microsoft Corporation",
     References = 
         [
-            new Reference{Name = "MS-PCCRTP", Version = "6.0", ProgramName = ProgramName.MCPP},
+            new Reference{Name = "MS-PCCRTP", Version = "6.0", Date = "01/31/2013", ProgramName = ProgramName.MCPP},
         ],
     RevisionSummary = 
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "07/06/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "355026", Date = "10/10/2013"}
         ]
 };
 

@@ -15,7 +15,7 @@ OPNAuthoring
         ],
     RevisionSummary = 
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "09/02/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "381993", Date = "10/09/2015"}
         ]
 };
 
@@ -37,27 +37,44 @@ endpoint Host[binary Address1, binary Address2, ushort Port1, ushort Port2] acce
 
 message Datagram
 {
-    ushort SourcePort with Visualization{AliasName = "Port"};
-    ushort DestinationPort with Visualization{AliasName = "Port"};
+    IANA.Port SourcePort with Visualization{AliasName = "Port"}, DisplayInfo{ToText = (any port) => IANA.PortToServiceNameForAlias(port as ushort)};
+    IANA.Port DestinationPort with Visualization{AliasName = "Port"}, DisplayInfo{ToText = (any port) => IANA.PortToServiceNameForAlias(port as ushort)};
     ushort Length;
     ushort Checksum;
     // Specify Length here since field Length indicates the total length of
     // the UDP Datagram in bytes
-    binary Payload with BinaryEncoding{MaxLength = (Length - 8) as uint};
+    binary Payload with BinaryEncoding{MaxLength = Length > 8 ? (Length - 8) : 0};
     
     override string ToString()
     {
-        string summary = this#IsTruncated != nothing && (this#IsTruncated as bool) ? "Truncated, " : ""; 
-        summary += "Source Port: " + (SourcePort as string) + ", Destination Port: " + (DestinationPort as string) + ", Length: " + (Length as string);
+        string summary = "SrcPort: " + IANA.PortToServiceNameForAlias(SourcePort as ushort);
+        summary += ", DstPort: " + IANA.PortToServiceNameForAlias(DestinationPort as ushort);
+        summary += ", Length: " + (Length as string);
         return summary;
     }
 }
 
 string get Transport(this UDP.Datagram datagram)
 {
-    return "UDP: " + (datagram.SourcePort > datagram.DestinationPort
-        ? (datagram.DestinationPort as string) + " - " + (datagram.SourcePort as string)
-        : (datagram.SourcePort as string) + " - " + (datagram.DestinationPort as string));
+    string srcPort = IANA.PortToServiceNameForAlias(datagram.SourcePort as ushort);
+    string dstPort = IANA.PortToServiceNameForAlias(datagram.DestinationPort as ushort);
+    if (datagram#SourceAddress is srcAddr:binary && datagram#DestinationAddress is dstAddr:binary)
+    {
+        if (srcAddr == dstAddr)
+        {
+            // If the source and destination address are equal(loop back scenario), then compare ports.
+            return "UDP: " + ((datagram.SourcePort > datagram.DestinationPort) ? (srcPort + " - " + dstPort) : (dstPort + " - " + srcPort));
+        }
+        else
+        {
+            // Keep direction consistent with 'Network' property: the smaller address is prior to the larger one. 
+            return "UDP: " + ((srcAddr > dstAddr) ? (dstPort + " - " + srcPort) : (srcPort + " - " + dstPort));
+        }
+    }
+    else
+    {
+        return "UDP: " + ((datagram.SourcePort > datagram.DestinationPort) ? (srcPort + " - " + dstPort) : (dstPort + " - " + srcPort));
+    }
 }
 
 int get PayloadLength(this UDP.Datagram d)
@@ -80,7 +97,6 @@ autostart actor UDPOverIPv6(IPv6.Node node)
         DecodeDatagram(d.SourceAddress.FlatAddress, d.DestinationAddress.FlatAddress, d.Payload);
     }
 }
-
 
 // Decode UDP segment and dispatch to UDP layer
 void DecodeDatagram(binary sourceAddress, binary destinationAddress, binary payload)

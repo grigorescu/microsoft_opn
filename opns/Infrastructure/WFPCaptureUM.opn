@@ -7,7 +7,7 @@ OPNAuthoring
         ],
     RevisionSummary = 
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "12/05/2012"}
+            new Revision{Class = RevisionClass.Major, Version = "370484", Date = "11/06/2014"}
         ]
 };
 
@@ -15,8 +15,8 @@ using Etw;
 using EtwEvent;
 using Utility;
 using DTYP;
-using Technologies.Block;
 using WfpUtility;
+using InfrastructureResources;
 
 public const guid EtwProviderIDWfpCaptureUM = {95c3e301-7837-4e66-852d-848ee5e6d941};
 
@@ -46,7 +46,7 @@ autostart actor WfpUMOverEtwEvent(EtwEvent.Node etw)
                 DecodeBinaryWithErrorOnFail<ServiceError>(etwMsg.Payload, "WfpCaptureUM", "ServiceError", ref msg);
                 dispatch ep accepts msg;
             default =>
-                ThrowDecodingExceptionWithReason("WFPCaptureUM", "invalid event ID");
+                ThrowDecodingException("WFPCaptureUM", UTILITY_INVALID_DATA, ["event ID"]);
         }
     }
 }

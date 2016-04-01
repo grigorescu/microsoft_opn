@@ -11,18 +11,17 @@ OPNAuthoring
     Copyright = "(c) Microsoft Corporation",
     References =
         [
-            new Reference{Name = "MS-XCEP", Version = "8.0", ProgramName = ProgramName.MCPP},
+            new Reference{Name = "MS-XCEP", Version = "8.0", Date = "01/31/2013", ProgramName = ProgramName.MCPP},
         ],
     RevisionSummary =
         [
-            new Revision{Class=RevisionClass.Major, Version="1.0.0", Date="6/8/2012"}
+            new Revision{Class=RevisionClass.Major, Version="371750", Date="12/02/2014"}
         ]
 };
 
 using Standard;
 using Utility;
 using SOAP;
-using Technologies.WSDL;
 using Technologies.SOAP;
 using XSD;
 
@@ -37,10 +36,10 @@ endpoint IntermediateServer
     provides MessageContract;
 client endpoint IntermidiateClient connected to IntermediateServer;
 
-autostart actor XCEPOverSOAP(SOAP.Server node) precedes SOAP.Server
+autostart actor XCEPOverSOAP(SOAP.Server node)
 {
     //GetPolicies message
-    process node accepts soap:SOAP.SoapMessage where soap.Action == XcepGetPoliciesAction && soap.Body != null
+    process node accepts soap:SOAP.SoapMessage where soap.WsaAction == XcepGetPoliciesAction && soap.Body != null
     {
         switch (soap.Body)
         {
@@ -52,7 +51,7 @@ autostart actor XCEPOverSOAP(SOAP.Server node) precedes SOAP.Server
     }
     
     //GetPoliciesResponse message
-    process node issues soap:SOAP.SoapMessage where soap.Action == XcepGetPoliciesResponseAction && soap.Body != null
+    process node issues soap:SOAP.SoapMessage where soap.WsaAction == XcepGetPoliciesResponseAction && soap.Body != null
     {
         switch (soap.Body)
         {
@@ -68,6 +67,17 @@ autostart actor OperationActor(IntermediateServer node)
 {
     MessageContract.GetPolicies getPolicies = null;
     
+    ~endpoint(IntermediateServer node)
+    {
+        if (getPolicies != null)
+        {
+            ReportInsufficientOperation(getPolicies, "XCEP", "GetPoliciesOp", false);
+            release getPolicies;
+        }
+
+        getPolicies = null;
+    }
+
     //GetPolicies Request
     process node accepts req:MessageContract.GetPolicies
     {
@@ -121,7 +131,7 @@ contract OperationContract
         
         override string ToString()
         {
-            return this.ExtendingSummary + "XCEP.GetPolicies Operation";
+            return "XCEP.GetPolicies Operation";
         }
     } with SoapMessageInfo{
                 Action = XcepGetPoliciesAction,

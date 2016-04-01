@@ -1,4 +1,4 @@
-﻿module PcapFileActors with 
+module PcapFileActors with 
 OPNAuthoring
 {
     Copyright = "(c) Microsoft Corporation",
@@ -7,28 +7,24 @@ OPNAuthoring
         ],
     RevisionSummary =
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "04/01/2013"}
+            new Revision{Class = RevisionClass.Major, Version = "380832", Date = "08/14/2015"}
         ]
 };
 
 using Standard;
 using PcapFile;
 using Ethernet;
+using SolarisIPNET;
 using IP1394;
-using WebProxy;
 using WiFi;
 using WiFiChannelInfo;
 using LinuxCookedMode;
 using Utility;
-using HTTP;
 using WiFiChannelInfo;
-using Etw;
-using EtwEvent;
-using PefNdisProvider;
-using WFPCapture;
 using IPv4;
 using IPv6;
 using ERF;
+using Radiotap;
 
 autostart actor PcapFileToBasicNetworkingProtocol(PcapFile.PcapFileEndpoint pcap)
 {
@@ -60,12 +56,12 @@ autostart actor PcapNgFileToBasicNetworkingProtocol(PcapFile.PcapNgFileEndpoint 
 
 autostart actor PcapFileToProtocol(PcapFile.PcapFileEndpoint pcap)
 {
-    process pcap accepts pk:PcapFile.Packet{Network is PcapLinkTypeCode.LINKTYPE_ETHERNET}
+    process pcap accepts pk:PcapFile.Packet where !pk.IsSessionTruncated && pk.Network == PcapLinkTypeCode.LINKTYPE_ETHERNET
     {
         switch (pk.Payload)
         {
             case f:Ethernet.Frame from BinaryDecoder<Ethernet.Frame[false]> =>
-                dispatch (endpoint Ethernet.Node[f.DestinationAddress.FlatAddress]) accepts f;
+                dispatch (endpoint Ethernet.Node) accepts f;
             default =>
                 ThrowDecodingException("PcapFile", "Ethernet");
         }
@@ -75,9 +71,9 @@ autostart actor PcapFileToProtocol(PcapFile.PcapFileEndpoint pcap)
         switch (pk.Payload)
         {
             case d:IPv4.Datagram from BinaryDecoder<IPv4.Datagram> =>
-                dispatch (endpoint IPv4.ReassemblyNode[d.DestinationAddress.FlatAddress]) accepts d;
+                DispatchIPv4DatagramToReassemblyNode(d);
             case d:IPv6.Datagram from BinaryDecoder<IPv6.Datagram> =>
-                dispatch (endpoint IPv6.ReassemblyNode[d.DestinationAddress.FlatAddress]) accepts d;
+                DispatchIPv6DatagramToReassemblyNode(d);
             default =>
                 ThrowDecodingException("PcapFile", "RAW");
         }
@@ -89,7 +85,7 @@ autostart actor PcapFileToProtocol(PcapFile.PcapFileEndpoint pcap)
             case wifi:NetMon3WiFiChannelMessage from BinaryDecoder<NetMon3WiFiChannelMessage> =>
                 dispatch endpoint WiFiChannelNode accepts wifi;
             default =>
-                if (!WiFi.DecodeWiFiMessageAndDispatch(pk.Payload, false))
+                if (!WiFi.DecodeWiFiMessageAndDispatch(pk.Payload, true))
                 {
                     ThrowDecodingException("PcapFile, WiFi");
                 }
@@ -99,8 +95,8 @@ autostart actor PcapFileToProtocol(PcapFile.PcapFileEndpoint pcap)
     {
         switch (pk.Payload)
         {
-            case m:ieee80211_radiotap from BinaryDecoder<ieee80211_radiotap> =>
-                WiFi.DecodeWiFiMessageAndDispatch(m.data, false);
+            case m:Radiotap.ieee80211_radiotap from BinaryDecoder<Radiotap.ieee80211_radiotap> =>
+                dispatch endpoint Radiotap.Node accepts m;
             default =>
                 ThrowDecodingException("PcapFile", "ieee80211_radiotap");
         }
@@ -120,7 +116,7 @@ autostart actor PcapFileToProtocol(PcapFile.PcapFileEndpoint pcap)
         switch (pk.Payload)
         {
             case d:IPv4.Datagram from BinaryDecoder<IPv4.Datagram> =>
-                dispatch endpoint IPv4.ReassemblyNode[d.DestinationAddress.FlatAddress < d.SourceAddress.FlatAddress ? d.DestinationAddress.FlatAddress : d.SourceAddress.FlatAddress] accepts d;
+                DispatchIPv4DatagramToReassemblyNode(d);
             default =>
                 ThrowDecodingException("PcapFile", "IPv4");
         }
@@ -130,7 +126,7 @@ autostart actor PcapFileToProtocol(PcapFile.PcapFileEndpoint pcap)
         switch (pk.Payload)
         {
             case d:IPv6.Datagram from IPv6Decoder =>
-                dispatch endpoint IPv6.ReassemblyNode[d.DestinationAddress.FlatAddress < d.SourceAddress.FlatAddress ? d.DestinationAddress.FlatAddress : d.SourceAddress.FlatAddress] accepts d;
+                DispatchIPv6DatagramToReassemblyNode(d);
             default =>
                 ThrowDecodingException("PcapFile", "IPv6");
         }
@@ -145,16 +141,26 @@ autostart actor PcapFileToProtocol(PcapFile.PcapFileEndpoint pcap)
                 ThrowDecodingException("PcapFile", "ERF");
         }
     }
+    process pcap accepts pk:PcapFile.Packet{Network is PcapLinkTypeCode.LINKTYPE_IPNET}
+    {
+        switch (pk.Payload)
+        {
+            case f:SolarisIPNET.Frame from BinaryDecoder<SolarisIPNET.Frame> =>
+                dispatch endpoint SolarisIPNET.Node accepts f;
+            default =>
+                ThrowDecodingException("PcapFile", "Solaris IPNET");
+        }
+    }
 }
 
 autostart actor PcapNgFileToProtocol(PcapFile.PcapNgFileEndpoint pcapNg)
 {
-    process pcapNg accepts pk:PcapFile.PacketNg{LinkType is PcapNgLinkTypeCode.LINKTYPE_ETHERNET}
+    process pcapNg accepts pk:PcapFile.PacketNg where !pk.IsSessionTruncated && pk.LinkType == PcapNgLinkTypeCode.LINKTYPE_ETHERNET
     {
         switch (pk.Payload)
         {
             case f:Ethernet.Frame from BinaryDecoder<Ethernet.Frame[false]> =>
-                dispatch (endpoint Ethernet.Node[f.DestinationAddress.FlatAddress]) accepts f;
+                dispatch (endpoint Ethernet.Node) accepts f;
             default =>
                 ThrowDecodingException("PcapNgFile", "Ethernet");
         }
@@ -164,9 +170,9 @@ autostart actor PcapNgFileToProtocol(PcapFile.PcapNgFileEndpoint pcapNg)
         switch (pk.Payload)
         {
             case d:IPv4.Datagram from BinaryDecoder<IPv4.Datagram> =>
-                dispatch (endpoint IPv4.ReassemblyNode[d.DestinationAddress.FlatAddress]) accepts d;
+                DispatchIPv4DatagramToReassemblyNode(d);
             case d:IPv6.Datagram from BinaryDecoder<IPv6.Datagram> =>
-                dispatch (endpoint IPv6.ReassemblyNode[d.DestinationAddress.FlatAddress]) accepts d;
+                DispatchIPv6DatagramToReassemblyNode(d);
             default =>
                 ThrowDecodingException("PcapNgFile", "RAW");
         }
@@ -178,10 +184,20 @@ autostart actor PcapNgFileToProtocol(PcapFile.PcapNgFileEndpoint pcapNg)
             case wifi:NetMon3WiFiChannelMessage from BinaryDecoder<NetMon3WiFiChannelMessage> =>
                 dispatch endpoint WiFiChannelNode accepts wifi;
             default =>
-                if (!WiFi.DecodeWiFiMessageAndDispatch(pk.Payload, false))
+                if (!WiFi.DecodeWiFiMessageAndDispatch(pk.Payload, true))
                 {
                     ThrowDecodingException("PcapNgFile, WiFi");
                 }
+        }
+    }
+    process pcapNg accepts pk:PcapFile.PacketNg{LinkType is PcapNgLinkTypeCode.LINKTYPE_IEEE802_11_RADIO}
+    {
+        switch (pk.Payload)
+        {
+            case m:Radiotap.ieee80211_radiotap from BinaryDecoder<Radiotap.ieee80211_radiotap> =>
+                dispatch endpoint Radiotap.Node accepts m;
+            default =>
+                ThrowDecodingException("PcapNgFile", "ieee80211_radiotap");
         }
     }
     process pcapNg accepts pk:PcapFile.PacketNg{LinkType is PcapNgLinkTypeCode.LINKTYPE_APPLE_IP_OVER_IEEE1394}
@@ -194,18 +210,14 @@ autostart actor PcapNgFileToProtocol(PcapFile.PcapNgFileEndpoint pcapNg)
                 ThrowDecodingException("PcapNgFile", "IP1394");
         }
     }
-}
-
-type ieee80211_radiotap_header
-{
-    byte it_version;
-    byte it_pad;
-    ushort it_len;
-    uint it_present;
-}
-
-type ieee80211_radiotap : ieee80211_radiotap_header
-{
-    binary radiotapdata with BinaryEncoding{Length = (it_len - 8) as uint};
-    binary data;
+    process pcapNg accepts pk:PcapFile.PacketNg{LinkType is PcapNgLinkTypeCode.LINKTYPE_IPNET}
+    {
+        switch (pk.Payload)
+        {
+            case f:SolarisIPNET.Frame from BinaryDecoder<SolarisIPNET.Frame> =>
+                dispatch endpoint SolarisIPNET.Node accepts f;
+            default =>
+                ThrowDecodingException("PcapNgFile", "Solaris IPNET");
+        }
+    }
 }

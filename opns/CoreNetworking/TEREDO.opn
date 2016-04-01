@@ -16,16 +16,14 @@ OPNAuthoring
         ],
     RevisionSummary =
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "12/09/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "370439", Date = "11/03/2014"}
         ]
 };
 
 using Standard;
 using Utility;
 using IANA;
-using TCP;
 using UDP;
-using IPv4;
 using IPv6;
 
 // WORKAROUND: Using global variable to keep TEREDO message's IPv4 address, UDP port and Random Port.
@@ -44,7 +42,7 @@ endpoint Node
         switch (p.TunnelingIPv6)
         {
             case d:IPv6.Datagram from IPv6Decoder =>
-                dispatch (endpoint IPv6.ReassemblyNode[d.DestinationAddress.FlatAddress < d.SourceAddress.FlatAddress ? d.DestinationAddress.FlatAddress : d.SourceAddress.FlatAddress] over this) accepts d;
+               DispatchIPv6DatagramToReassemblyNode(d, this);
             default => 
                 ThrowDecodingException("TEREDO", "IPv6.Datagram");
         }
@@ -53,7 +51,7 @@ endpoint Node
 
 autostart actor NodeOverUDP(UDP.Host host)
 {
-    process host accepts d:UDP.Datagram where ((d.SourcePort == Port.TEREDO || d.DestinationPort == Port.TEREDO) || 
+    process host accepts d:UDP.Datagram where d.Payload.Count > 0 && ((d.SourcePort == Port.TEREDO || d.DestinationPort == Port.TEREDO) || 
                                                 (AddressAndPort != null && ((((d#DestinationAddress as string) + (d.DestinationPort as string) == AddressAndPort) && (GetPrefix(d.Payload, true) == $[3FFE831F] || GetPrefix(d.Payload, true) == $[20010000])) || (((d#SourceAddress as string) + (d.SourcePort as string) == AddressAndPort) && (GetPrefix(d.Payload, false) == $[3FFE831F] || GetPrefix(d.Payload, false) == $[20010000])))) || 
                                                 (AddressAndRandomPort != null && (((d#SourceAddress as string) + (d.SourcePort as string)) == AddressAndRandomPort || ((d#DestinationAddress as string) + (d.DestinationPort as string)) == AddressAndRandomPort)))
     {
@@ -170,8 +168,8 @@ type Authentication
     (ushort where value == 0X0001) AuthenticationIndicator;
     byte IDLen;
     byte AULen;
-    optional binary ClientIdentifier with BinaryEncoding{Length = (IDLen as uint)};
-    optional binary AuthenticationValue with BinaryEncoding{Length = (AULen as uint)};
+    optional binary ClientIdentifier with BinaryEncoding{Length = (IDLen)};
+    optional binary AuthenticationValue with BinaryEncoding{Length = (AULen)};
     binary NonceValue with BinaryEncoding{Length = 8};
     byte Confirmation;
 }
@@ -190,7 +188,7 @@ type Trailer
 {
     byte Type;
     byte Length;
-    binary NonceValue with BinaryEncoding{Length = (Length as uint)};
+    binary NonceValue with BinaryEncoding{Length = (Length)};
 }
 
 // RFC 6081, 4.2.  Nonce Trailer
@@ -207,7 +205,7 @@ type AlternateAddressTrailer
     (byte where value == 0x03) Type;
     (byte where ((value >= 0x08) && (value <= 0x1A))) Length;
     (ushort where value == 0x0000) Reserved;
-    array<AlternateAddressPort> AlternateAddressPortList with BinaryEncoding{Length = ((Length - 2)/6 as uint)};
+    array<AlternateAddressPort> AlternateAddressPortList with BinaryEncoding{Length = ((Length - 2)/6)};
 }
 
 type AlternateAddressPort
@@ -285,6 +283,8 @@ ushort GetRandomPortValue(array<TrailerType> trailers)
 
 binary GetPrefix(binary s, bool isdst)// isdst: dst == true
 {
+    if (s.Count < 4)
+        return $[];
     binary prefix;
     binary h = s.Segment(0,2);
     int len;
@@ -293,27 +293,29 @@ binary GetPrefix(binary s, bool isdst)// isdst: dst == true
         binary s1 = s.Segment(2, 2);
         array<byte> b = s1 as array<byte>;
         len = (b[0] << 8) + b[1];
+        if (s.Count < 15 + len)
+            return $[];
         h = s.Segment(((13 + len) as int), 2);
         if (h == $[0000]) // Authentication && Origin
         {
             if (isdst)
             {
-                prefix = s.Segment(((45 + len) as int), 4); // dst: Authentication(13 + len) + Origin(8) + ipv6 data(24)
+                prefix = (s.Count < 49 + len) ? $[] : s.Segment(((45 + len) as int), 4); // dst: Authentication(13 + len) + Origin(8) + ipv6 data(24)
             }
             else
             {
-                prefix = s.Segment(((29 + len) as int), 4); // src: Authentication(13 + len) + Origin(8) + ipv6 data(8)
+                prefix = (s.Count < 33 + len) ? $[] : s.Segment(((29 + len) as int), 4); // src: Authentication(13 + len) + Origin(8) + ipv6 data(8)
             }
         }
         else
         {
             if (isdst)
             {
-                prefix = s.Segment(((37 + len) as int), 4); // dst: Authentication(13 + len) + ipv6 data(24)
+                prefix = (s.Count < 41 + len) ? $[] : s.Segment(((37 + len) as int), 4); // dst: Authentication(13 + len) + ipv6 data(24)
             }
             else
             {
-                prefix = s.Segment(((21 + len) as int), 4); // src: Authentication(13 + len) + ipv6 data(8)
+                prefix = (s.Count < 25 + len) ? $[] : s.Segment(((21 + len) as int), 4); // src: Authentication(13 + len) + ipv6 data(8)
             }
         }
     }
@@ -321,22 +323,22 @@ binary GetPrefix(binary s, bool isdst)// isdst: dst == true
     {
         if (isdst)
         {
-            prefix = s.Segment(32, 4); // dst: Origin(8)+ ipv6 data(24)
+            prefix = (s.Count < 36) ? $[] : s.Segment(32, 4); // dst: Origin(8)+ ipv6 data(24)
         }
         else
         {
-            prefix = s.Segment(16, 4); // src: Origin(8) + ipv6 data(8)
+            prefix = (s.Count < 20) ? $[] : s.Segment(16, 4); // src: Origin(8) + ipv6 data(8)
         }
     }
     else // Don't have Authentication && Origin
     {
         if (isdst)
         {
-            prefix = s.Segment(24, 4); // dst: ipv6 data(24)
+            prefix = (s.Count < 28) ? $[] : s.Segment(24, 4); // dst: ipv6 data(24)
         }
         else
         {
-            prefix = s.Segment(8, 4); // src: ipv6 data(8)
+            prefix = (s.Count < 12) ? $[] : s.Segment(8, 4); // src: ipv6 data(8)
         }
     }
     return prefix;

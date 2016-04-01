@@ -15,15 +15,14 @@ OPNAuthoring
         ],
     RevisionSummary =
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "10/17/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "356548", Date = "11/16/2013"}
         ]
 };
 
 using Standard;
 using Utility;
-using IANA;
-using IPv4;
 using IP1394;
+using IANA;
 
 endpoint Node
     accepts Packet;

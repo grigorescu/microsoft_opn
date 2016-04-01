@@ -11,20 +11,18 @@ OPNAuthoring
     Copyright = "(c) Microsoft Corporation",
     References =
         [
-            new Reference{Name = "MS-RDPEUSB", Version = "12.0", ProgramName = ProgramName.MCPP},
+            new Reference{Name = "MS-RDPEUSB", Version = "12.0", Date = "01/31/2013", ProgramName = ProgramName.MCPP},
         ],
     RevisionSummary =
         [
-            new Revision{Class=RevisionClass.Major, Version="1.0.0", Date="06/15/2012"}
+            new Revision{Class=RevisionClass.Major, Version="376320", Date="04/07/2015"}
         ]
 };
 
-using Technologies.Block;
 using Standard;
 using Utility;
-using DTYP;
-using ERREF;
 using RDPEDYC;
+using InfrastructureResources;
 
 endpoint Server over RDPEDYC.Server
     provides OperationContract consumes OperationContract;
@@ -202,7 +200,7 @@ autostart actor ServerOverRDPEDYC(RDPEDYC.Server server)
         }
         else
         {
-            ThrowDecodingExceptionWithReason("RDPEUSB", "some important informaiton needed by the decoder may be compressed or lost");
+            ThrowDecodingException("RDPEUSB", UTILITY_LOST_INFO, []);
         }
     }
     
@@ -369,7 +367,7 @@ autostart actor ServerOverRDPEDYC(RDPEDYC.Server server)
         }
         else
         {
-            ThrowDecodingExceptionWithReason("RDPEUSB", "some important informaiton needed by the decoder may be compressed or lost");
+            ThrowDecodingException("RDPEUSB", UTILITY_LOST_INFO, []);
         }
     }
     
@@ -1062,6 +1060,12 @@ type TsUsbdInterfaceInformation
     ushort Padding with Documentation{Description = "A 16-bit unsigned integer for padding. This field can be set to any value and MUST be ignored upon receipt."};
     uint NumberOfPipes with Documentation{Description = "A 32-bit unsigned integer. This value is from the NumberOfPipes field in USBD_INTERFACE_INFORMATION."};
     array<TsUsbdPipeInformation> TsUsbdPipeInformation with BinaryEncoding{Length = NumberOfPipes}, Documentation{Description = "An array of TS_USBD_PIPE_INFORMATION structures, as specified in section . The number of array elements is determined by the NumberOfPipes field."};
+
+    override string ToString()
+    {
+        return "TsUsbdInterfaceInformation, NumberOfPipesExpected: " + NumberOfPipesExpected.ToString() + ", InterfaceNumber: " + InterfaceNumber.ToString() + 
+            ", NumberOfPipes: " + NumberOfPipes.ToString();
+    }
 } with Documentation{Applicability = "2.2.9.1.2", Description = "The TS_USBD_INTERFACE_INFORMATION is based on the USBD_INTERFACE_INFORMATION structure as described in [MSFT-W2KDDK], Volume 2, Part 4, Chapter 3."};
 
 // 2.2.9.1.3   TS_USBD_PIPE_INFORMATION
@@ -1071,6 +1075,11 @@ type TsUsbdPipeInformation
     ushort Padding with Documentation{Description = "A 16-bit unsigned integer for padding. This field can be set to any value and MUST be ignored upon receipt."};
     uint MaximumTransferSize with Documentation{Description = "A 32-bit unsigned integer. This value is from the MaximumTransferSize field in USBD_PIPE_INFORMATION."};
     uint PipeFlags with Documentation {Description = "A 32-bit unsigned integer. This value is from the PipeFlags field in USBD_PIPE_INFORMATION."};
+
+    override string ToString()
+    {
+        return "TsUsbdPipeInformation, MaximumPacketSize: " + MaximumPacketSize.ToString() + ", MaximumTransferSize: " + MaximumTransferSize.ToString();
+    }
 } with Documentation{Applicability = "2.2.9.1.3", Description = "The TS_USBD_PIPE_INFORMATION is based on the USBD_PIPE_INFORMATION structure as described in [MSFT-W2KDDK], Volume 2, Part 4, Chapter 3.The field MaximumTransferSize of USBD_PIPE_INFORMATION is ignored."};
 
 // 2.2.9.2   TS_URB_SELECT_CONFIGURATION
@@ -1124,6 +1133,11 @@ type UsbBOSDescriptor
     USB_DESCRIPTER_TYPE bDescriptorType where value == USB_DESCRIPTER_TYPE.USB_BOS_DESCRIPTOR_TYPE;
     ushort wTotalLength;
     byte bNumDeviceCaps;
+
+    override string ToString()
+    {
+        return "UsbBOSDescriptor, wTotalLength: " + wTotalLength.ToString() + ", bNumDeviceCaps: " + bNumDeviceCaps.ToString();
+    }
 }
 
 // Universal Serial Bus 3.0 Specification, Section 9.6.2
@@ -1132,7 +1146,12 @@ type UsbDeviceCapabilityDescriptor
     (byte where value > 2) bLength;
     USB_DESCRIPTER_TYPE bDescriptorType where value == USB_DESCRIPTER_TYPE.USB_DEVICE_CAPABILITY_DESCRIPTOR_TYPE;
     byte bDevCapabilityType;
-    binary CapabilityData with BinaryEncoding{Length = (bLength - 3) as uint};
+    binary CapabilityData with BinaryEncoding{Length = (bLength - 3)};
+
+    override string ToString()
+    {
+        return "UsbDeviceCapabilityDescriptor, bDevCapabilityType: " + bDevCapabilityType.ToString();
+    }
 }
 
 // Universal Serial Bus 3.0 Specification, Section 9.6.7
@@ -1143,6 +1162,12 @@ type UsbSuperSpeedEndpointCompanionDescriptor
     byte bMsxBurst;
     byte bmAttributes;
     ushort wBytesPerInterval;
+
+    override string ToString()
+    {
+        return "UsbSuperSpeedEndpointCompanionDescriptor, bMsxBurst: " + bMsxBurst.ToString() + 
+            ", bmAttributes: " + bmAttributes.ToString() + ", wBytesPerInterval: " + wBytesPerInterval.ToString();
+    }
 }
 
 // Universal Serial Bus 3.0 Specification, Section 9.6.8
@@ -1150,7 +1175,12 @@ type UsbStringDescriptor
 {
     (byte where value > 1) bLength;
     USB_DESCRIPTER_TYPE bDescriptorType where value == USB_DESCRIPTER_TYPE.USB_STRING_DESCRIPTOR_TYPE;
-    binary bString with BinaryEncoding{Length = (bLength - 2) as uint};
+    string bString with BinaryEncoding{Length = (bLength - 2)};
+
+    override string ToString()
+    {
+        return "UsbStringDescriptor, bString: " + bString;
+    }
 }
 
 // USB_DEVICE_DESCRIPTOR: http://msdn.microsoft.com/en-us/library/ff539280(v=vs.85).aspx
@@ -1170,6 +1200,12 @@ type UsbDeviceDescriptor
     byte IProduct;
     byte ISerialNumber;
     byte BNumConfigurations;
+
+    override string ToString()
+    {
+        return "UsbDeviceDescriptor, BcdUSB: " + BcdUSB.ToString() + 
+            ", BDeviceClass: " + BDeviceClass.ToString() + ", BDeviceProtocol: " + BDeviceProtocol.ToString();
+    }
 }
 
 // USB_CONFIGURATION_DESCRIPTOR: http://msdn.microsoft.com/en-us/library/ff539241(VS.85).aspx
@@ -1183,6 +1219,12 @@ type UsbConfigurationDescriptor
     byte IConfiguration;
     Attributes BmAttributes;
     byte MaxPower;
+
+    override string ToString()
+    {
+        return "UsbConfigurationDescriptor, WTotalLength: " + WTotalLength.ToString() + 
+            ", BNumInterfaces: " + BNumInterfaces.ToString() + ", BConfigurationValue: " + BConfigurationValue.ToString();
+    }
 }
 
 // USB_INTERFACE_DESCRIPTOR: http://msdn.microsoft.com/en-us/library/ff540065(VS.85).aspx
@@ -1197,6 +1239,12 @@ type UsbInterfaceDescriptor
     byte bInterfaceSubClass;
     byte bInterfaceProtocol;
     byte iInterface;
+
+    override string ToString()
+    {
+        return "UsbInterfaceDescriptor, bInterfaceNumber: " + bInterfaceNumber.ToString() + 
+            ", bAlternateSetting: " + bAlternateSetting.ToString() + ", bNumEndpoints: " + bNumEndpoints.ToString();
+    }
 }
 
 // USB_ENDPOINT_DESCRIPTOR: http://msdn.microsoft.com/en-us/library/ff539317(VS.85).aspx
@@ -1208,6 +1256,12 @@ type UsbEndpointDescriptor
     Attributes bAttributes;
     ushort wMaxPacketSize;
     byte bInterval;
+
+    override string ToString()
+    {
+        return "UsbEndpointDescriptor, bEndpointAddress: " + bEndpointAddress.ToString() + 
+            ", wMaxPacketSize: " + wMaxPacketSize.ToString();
+    }
 }
 
 // USB_INTERFACE_ASSOCIATION_DESCRIPTOR: http://msdn.microsoft.com/en-us/library/gg159474.aspx
@@ -1221,6 +1275,12 @@ type UsbInterfaceAssociationDescriptor
     byte bFunctionSubClass;
     byte bFunctionProtocol;
     byte iFunction;
+
+    override string ToString()
+    {
+        return "UsbInterfaceAssociationDescriptor, bFirstInterface: " + bFirstInterface.ToString() + 
+            ", bInterfaceCount: " + bInterfaceCount.ToString();
+    }
 }
 
 // Class-specific Interface Descriptor: http://www.usb.org/developers/devclass_docs/audio10.pdf Section B.3
@@ -1229,7 +1289,12 @@ type UsbClassSpecificInterfaceDescriptor
     (byte where value > 2) bLength;
     USB_DESCRIPTER_TYPE bDescriptorType where value == USB_DESCRIPTER_TYPE.USB_CS_INTERFACE_DESCRIPTOR_TYPE;
     byte bDescriptorSubtype;
-    binary descriptorData with BinaryEncoding{Length = (bLength - 3) as uint};
+    binary descriptorData with BinaryEncoding{Length = (bLength - 3)};
+
+    override string ToString()
+    {
+        return "UsbClassSpecificInterfaceDescriptor, bDescriptorSubtype: " + bDescriptorSubtype.ToString();
+    }
 }
 
 // Class-specific Endpoint Descriptor: http://www.usb.org/developers/devclass_docs/audio10.pdf Section B.3
@@ -1238,7 +1303,12 @@ type UsbClassSpecificEndpointDescriptor
     (byte where value > 2) bLength;
     USB_DESCRIPTER_TYPE bDescriptorType where value == USB_DESCRIPTER_TYPE.USB_CS_ENDPOINT_DESCRIPTOR_TYPE;
     byte bDescriptorSubtype;
-    binary descriptorData with BinaryEncoding{Length = (bLength - 3) as uint};
+    binary descriptorData with BinaryEncoding{Length = (bLength - 3)};
+
+    override string ToString()
+    {
+        return "UsbClassSpecificEndpointDescriptor, bDescriptorSubtype: " + bDescriptorSubtype.ToString();
+    }
 }
 
 type UsbUnknownDescriptor
@@ -1246,6 +1316,11 @@ type UsbUnknownDescriptor
     (byte where value > 1) bLength;
     USB_DESCRIPTER_TYPE bDescriptorType where value > 0;
     Blob[(bLength - 2) as uint] DescriptorData;
+
+    override string ToString()
+    {
+        return "UsbUnknownDescriptor";
+    }
 }
 
 type Attributes
@@ -1449,6 +1524,11 @@ type TsUsbdInterfaceInformationResult
     uint InterfaceHandle with Documentation{Description = "A 32-bit unsigned integer. This value represents the InterfaceHandle field in USBD_INTERFACE_INFORMATION."};
     uint NumberOfPipes with Documentation{Description = "A 32-bit unsigned integer. This value represents the NumberOfPipes field in USBD_INTERFACE_INFORMATION. It also indicates the number of Pipes array elements that are to follow."};
     array<TsUsbdPipeInformationResult> Pipes with BinaryEncoding{Length = NumberOfPipes}, Documentation{Description = "An array of TS_USBD_PIPE_INFORMATION_RESULT structures. The number of array elements is determined by the NumberOfPipes field."};
+
+    override string ToString()
+    {
+        return "TsUsbdInterfaceInformationResult, InterfaceNumber: " + InterfaceNumber.ToString() + ", AlternateSetting: " + AlternateSetting.ToString();
+    }
 } with Documentation{Applicability = "2.2.10.1.2", Description = "The TS_USBD_INTERFACE_INFORMATION_RESULT structure is based on the USBD_INTERFACE_INFORMATION structure as described in [MSFT-W2KDDK], Volume 2, Part 4, Chapter 3."};
 
 
@@ -1462,6 +1542,11 @@ type TsUsbdPipeInformationResult
     uint PipeHandle with Documentation{Description = "A 32-bit unsigned integer. This value represents the PipeHandle field in USBD_PIPE_INFORMATION."};
     uint MaximumTransferSize with Documentation{Description = "A 32-bit unsigned integer. This value represents the MaximumTransferSize field in USBD_PIPE_INFORMATION."};
     uint PipeFlags with Documentation{Description = "A 32-bit unsigned integer. This value represents the PipeFlags field in USBD_PIPE_INFORMATION."};
+
+    override string ToString()
+    {
+        return "TsUsbdPipeInformationResult, MaximumPacketSize: " + MaximumPacketSize.ToString() + ", EndpointAddress: " + EndpointAddress.ToString();
+    }
 } with Documentation{Applicability = "2.2.10.1.3", Description = "The TS_USBD_PIPE_INFORMATION_RESULT is based on the USBD_PIPE_INFORMATION structure as described in [MSFT-W2KDDK], Volume 2, Part 4, Chapter 3."};
 
 // 2.2.10.2   TS_URB_SELECT_CONFIGURATION_RESULT
@@ -1569,11 +1654,21 @@ type UsbdIsoPacketDescriptor
     uint Offset with Documentation{Description = "Specifies the offset, in bytes, of the buffer for this packet from the beginning of the entire isochronous transfer buffer."};
     uint Length with Documentation{Description = "Set by the host controller to indicate the actual number of bytes received from the device for isochronous IN transfers. Length not used for isochronous OUT transfers."};
     UsbdStatus Status with Documentation{Description = "Contains the status, on return from the host controller driver, of this transfer packet."};
+
+    override string ToString()
+    {
+        return "UsbdIsoPacketDescriptor, Offset: " + Offset.ToString() + ", Length: " + Length.ToString() + ", Status: " + Status.ToString();
+    }
 }with Documentation{Description = "The USBD_ISO_PACKET_DESCRIPTOR structure is used by USB client drivers to describe an isochronous transfer packet."};
 
 type UsbdStatus
 {
     int Status;
+
+    override string ToString()
+    {
+        return "UsbdStatus, Status: " + Status.ToString();
+    }
 }
 
 // ---------------------------------- Utilities -------------------------------------

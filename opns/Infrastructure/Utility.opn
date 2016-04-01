@@ -7,100 +7,249 @@ OPNAuthoring
         ],
     RevisionSummary =
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "09/02/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "382596", Date = "12/03/2015"}
         ]
 };
 
 using Standard;
-using DTYP;
-using CommonResources;
+using InfrastructureResources;
 using Diagnostics;
+using MACOrganizationCodes;
 
-type IPv4Address
+const binary EmptyBinary = $[];
+
+bool IsArrayItemWithinRange(array<string> arr, int start, int end, bool hexDigit)
+{
+    foreach (var a in arr)
+    {
+        var i = a.ToInt(hexDigit);
+
+        if (i == nothing)
+        {
+            return false;
+        }
+
+        int val = i as int;
+        if (val < start || val > end)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+// GetHashCode from Binary
+// This method is similar with String.GetHashCode() in .Net Framework.
+int GetHashCodeFromBinary(binary bin)
+{
+    if (bin == null)
+        return 0;
+
+    int hash1 = (5381 << 16) + 5381;
+    int hash2 = hash1;
+
+    int len = bin.Count;
+    int index = 0;
+    while (len > 2)
+    {
+        hash1 = ((hash1 << 5) + hash1 + (hash1 >> 27)) ^ bin[index];
+        hash2 = ((hash2 << 5) + hash2 + (hash2 >> 27)) ^ bin[index + 1];
+        index += 2;
+        len -= 4;
+    }
+
+    if (len > 0)
+    {
+        hash1 = ((hash1 << 5) + hash1 + (hash1 >> 27)) ^ bin[index];
+    }
+
+    return hash1 + (hash2 * 1566083941);
+}
+
+type IPv4Address with SupportsAliasing{IsValid = IsIPv4Address} : IComparable
 {
     binary Octets with BinaryEncoding{Length = 4};
 
     override string ToString()
     {
-        array<byte> bytes = Octets as array<byte>;
-        // Memo: Using array index may fail if encounter trucated messages.
-        int counter = 0;
         string ip = "";
-        foreach (byte b in bytes)
+        for (int counter = 0; counter < Octets.Count; counter++)
         {
-            counter += 1;
-            ip = ip + (b as string);
-            if (counter < bytes.Count)
+            ip = ip + (Octets[counter] as string);
+            if (counter < Octets.Count - 1)
             {
                 ip = ip + ".";
             }
         }
-
         return ip;
     }
-}
-
-// Future Reference: Currently only used in ADTS, suggest remove this from Utility, and define either pattern or type in special module(ADTS)
-type IPv4AddressLittleEndian
-{
-    binary Octets with BinaryEncoding{Length = 4};
-
-    override string ToString()
+    
+    int CompareTo(any other)
     {
-        array<byte> bytes = Octets as array<byte>;
-        // Memo: Using array index may fail if encounter trucated messages.
-        string ip = "";
-        for (int i = bytes.Count - 1; i >= 0; i--)
+        if (other != null &&
+            other is ipv4:IPv4Address)
         {
-            ip = ip + (bytes[i] as string);
-            if (i > 0)
-            {
-                ip = ip + ".";
-            }
+            return (this.Octets > ipv4.Octets ? 1 : (this.Octets == ipv4.Octets ? 0 : -1));
         }
 
-        return ip;
+        return 1;
     }
 }
 
-binary get FlatAddress(this IPv4Address address)
+int get IPv4ToInt(this IPv4Address address)
 {
-    return address.Octets;
+    return ((address.Octets[3] as int) << 24) + 
+        ((address.Octets[2] as int) << 16) + 
+        ((address.Octets[1] as int) << 8) + 
+        (address.Octets[0] as int);
 }
 
-// WORKAROUND: Revert ipv6 adrress back to binary type for it's hard to check the address of variouse types for other protocols currently
-type IPv6Address
+bool IsIPv4Address(string address)
+{
+    if (address == null || address.Count == 0)
+    {
+        return false;
+    }
+
+    var arr = address.Split(['.']);
+    if (arr.Count != 4)
+    {
+        return false;
+    }
+    
+    return IsArrayItemWithinRange(arr, 0, 255, false);
+}
+
+// WORKAROUND: Revert ipv6 address back to binary type for it's hard to check the address of variouse types for other protocols currently
+type IPv6Address with SupportsAliasing{IsValid = IsIPv6Address} : IComparable
 {
     binary Octets with BinaryEncoding {Length = 16};
 
     override string ToString()
     {
         string ip = "";
-        array<byte> byteArr = Octets as array<byte>;
-        for (int index = 0; index < byteArr.Count; index += 2)
+        for (int index = 0; index < Octets.Count; index += 2)
         {
-            int b = (byteArr[index] << 8)  + byteArr[index + 1]; 
+            int b = (Octets[index] << 8) + Octets[index + 1];
             ip += (b == 0) ? "0:" : (Format("{0:X}", b) + ":");
         }    
         return ip.Segment(0, ip.Count - 1);
     }
+    
+    int CompareTo(any other)
+    {
+        if (other != null &&
+            other is ipv6:IPv6Address)
+        {
+            return (this.Octets > ipv6.Octets ? 1 : (this.Octets == ipv6.Octets ? 0 : -1));
+        }
+
+        return 1;
+    }
 }
 
-binary get FlatAddress(this IPv6Address address)
+bool IsIPv6Address(string address)
 {
-    return address.Octets;
+    if (address == null || address.Count == 0)
+    {
+        return false;
+    }
+
+    var arr = address.Split(["::"]);
+    if (arr.Count > 2)
+    {
+        return false;
+    }
+    else if (arr.Count == 2)
+    {
+        var arr1 = null;
+        var arr2 = null;
+        
+        if (arr[0] != "")
+        {
+            arr1 = arr[0].Split([':']);
+        }
+
+        if (arr[1] != "")
+        {
+            arr2 = arr[1].Split([':']);
+        }
+
+        if (arr1 != null && arr2 != null && arr1.Count + arr2.Count > 6)
+        {
+            return false;
+        }
+        else
+        {
+            if (arr1 != null)
+            {
+                if (arr1.Count > 6)
+                {
+                    return false;
+                }
+                
+                if (!IsArrayItemWithinRange(arr1, 0, 65535, true))
+                {
+                    return false;
+                }
+            }
+            
+            if (arr2 != null)
+            {
+                if (arr2.Count > 6)
+                {
+                    return false;
+                }
+                
+                if (!IsArrayItemWithinRange(arr2, 0, 65535, true))
+                {
+                    return false;
+                }
+            }
+        }
+    }
+    else
+    {
+        arr = address.Split([':']);
+        if (arr.Count != 8)
+        {
+            return false;
+        }
+
+        if (!IsArrayItemWithinRange(arr, 0, 65535, true))
+        {
+            return false;
+        }
+    }
+   
+    return true;
 }
 
-type MacAddress
+string GetOrgValue(MacAddress ma)
+{
+	uint macorg = ((ma.Octets[2] as uint) << 16) + 
+				  ((ma.Octets[1] as uint) << 8) + 
+				   (ma.Octets[0] as uint);
+
+	if(macorg in OrganizationCodeMap)
+	{
+		return ma.ToString() + " " + OrganizationCodeMap[macorg];
+	}
+	else
+	{
+		return ma.ToString();
+	}
+}
+
+type MacAddress with SupportsAliasing{IsValid = IsMacAddress} : IComparable
 {
     binary Octets with BinaryEncoding{Length = 6};
     
     override string ToString()
     {
-        array<byte> macBytes = Octets as array<byte>;
         string macFormated = "";
         int cnt = 0;
-        foreach (byte cur in macBytes)
+        foreach (byte cur in Octets)
         {
             macFormated += Utility.DecToHexFormat(2, cur).Segment(2) as string;
             if (cnt < Octets.Count - 1)
@@ -111,6 +260,44 @@ type MacAddress
         }
         return macFormated;
     }
+    
+    int CompareTo(any other)
+    {
+        if (other != null &&
+            other is mac:MacAddress)
+        {
+            return (this.Octets > mac.Octets ? 1 : (this.Octets == mac.Octets ? 0 : -1));
+        }
+
+        return 1;
+    }
+} with DisplayInfo{ToText = (any input) => GetOrgValue(this)};
+
+bool IsMacAddress(string address)
+{
+    if (address == null || address.Count == 0)
+    {
+        return false;
+    }
+
+    var arr = address.Split(['-']);
+    if (arr.Count != 6)
+    {
+        return false;
+    }
+
+    return IsArrayItemWithinRange(arr, 0, 255, true);
+}
+
+// FlatAddress properties below are used by Filtering Transformer
+binary get FlatAddress(this IPv4Address address)
+{
+    return address.Octets;
+}
+
+binary get FlatAddress(this IPv6Address address)
+{
+    return address.Octets;
 }
 
 binary get FlatAddress(this MacAddress address)
@@ -121,9 +308,16 @@ binary get FlatAddress(this MacAddress address)
 pattern ZeroUint = uint where value == 0;
 pattern ZeroByte = byte where value == 0;
 
+pattern StringNotNullOrEmpty = string where value != null && value.Count > 0;
+
 ushort MakeWord(byte highByte, byte lowByte)
 {
-    return ((highByte << 8)  + lowByte) as ushort;
+    return ((highByte << 8) + lowByte) as ushort;
+}
+
+uint MakeDWord(byte b0, byte b1, byte b2, byte b3)
+{
+    return ((b0 << 24) + (b1 << 16) + (b2 << 8) + b3) as uint;
 }
 
 // Inserts an element into a array which is sorted in ascending order
@@ -146,36 +340,67 @@ array<T> InsertSorted<T>(this array<T> $"array", int(T, T) comparer, T element)
     return $"array";
 }
 
+bool PeekByteCompare(this stream s, int bitOffset, array<byte> byteArr)
+{
+    int index = 0;
+    while (index < byteArr.Count && s.PeekByte(bitOffset + index * 8) == byteArr[index])
+    {
+        index++;
+    }
+    return index == byteArr.Count;
+}
+
 bool IsFragmentsSequentialCompleted<T>( array<T> fragments, // fragments
     bool(T) isFirst, // function to identify the first fragment
     bool(T) isLast, // function to identify the last fragment
     int(T) sequence, // function to get the sequence token of current fragment
     int(T) nextSequence) // function to get the expected next sequence token
 {
-    if (!isFirst(fragments[0]))
+    int fragmentsCount = fragments.Count;
+    
+    if (isFirst(fragments[0]) && isLast(fragments[fragmentsCount - 1]))
     {
-        return false;
-    }
-    if (!isLast(fragments[fragments.Count()-1]))
-    {
-        return false;
-    }
-
-    var currSeq = sequence(fragments[0]);
-
-    foreach ( var frag in fragments)
-    {
-        if (currSeq != sequence(frag))
+        int index = 0;
+        while (index < fragmentsCount - 1 && nextSequence(fragments[index]) == sequence(fragments[index + 1]))
         {
-            return false;
+            index++;
         }
-        currSeq = nextSequence(frag);
+        return index == fragmentsCount - 1;
     }
-
-    return true;
+    
+    return false;
 }
 
 type Empty{}
+
+// Functions to handle padding.
+optional binary AlignTo8Bytes(stream s)
+{
+    return AlignToNBytes(s, 8);
+}
+
+optional binary AlignTo4Bytes(stream s)
+{
+    return AlignToNBytes(s, 4);
+}
+
+optional binary AlignTo2Bytes(stream s)
+{
+    return AlignToNBytes(s, 2);
+}
+
+optional binary AlignToNBytes(stream s, int n)
+{
+    if (s.BytePosition % n is i:int && i != 0 && s.RemainingByteLength > n - i)
+    {
+        var v = BinaryDecoder<Blob[(n - i) as uint]>(s) as Blob;
+        return v.Data;
+    }
+    else 
+    {
+        return nothing;
+    }
+}
 
 type Blob[uint Bound]
 {
@@ -192,6 +417,18 @@ type Padding[byte Length]
     array<byte> Padding with BinaryEncoding{Length = Length};
 }
 
+// WORKAROUND for Feature 64443 : Support Encoding related attributes on patterns
+type UintInBigEndian
+{
+    uint Value with BinaryEncoding{Endian = Endian.Big};
+}
+
+// WORKAROUND for Feature 64443 : Support Encoding related attributes on patterns
+type ASCIIString
+{
+    string Value with BinaryEncoding{TextEncoding = TextEncoding.ASCII};
+}
+
 // all 16-bit words are summed using one's complement arithmetic
 bool ValidateCheckSum(binary parentPayload, ushort checksum)
 {
@@ -206,7 +443,7 @@ bool ValidateCheckSum(binary parentPayload, ushort checksum)
     // sum of Payload
     for (int i = 0; i < parentPayload.Count; i += 2)
     {
-        sum += MakeWord(parentPayload[i], parentPayload[i+1]);
+        sum += MakeWord(parentPayload[i], parentPayload[i + 1]);
     }
 
     // because we have added initial Checksum into 'sum', so we subtract it from 'sum'
@@ -230,50 +467,35 @@ bool ValidateTCPUDPChecksum(binary sourceAddress, binary destinationAddress, byt
 {
     if (originalChecksum == 0 && (sourceAddress.Count == 4))
     {
-        //taken as optional field in IPv4, so return true at the very beginning.
+        // taken as optional field in IPv4, so return true at the very beginning.
         return true;
     }
     long sum = 0;
-    binary temPayload = null ;
+    binary temPayload = null;
     int initialLength = parentPayload.Count;
 
     // sum of protocolNum (17 for udp and 6 for TCP)  and length of parentPayload
     sum += (protocolNum + initialLength);
 
     // add 16bit words of IPv4 sourceAddress to sum;
-    sum = Sum16bitWordsFromBinary(sum, sourceAddress);
+    for (int index = 0; index < sourceAddress.Count; index += 2)
+    {
+        sum += Utility.MakeWord(sourceAddress[index], sourceAddress[index + 1]);
+    }
     // add 16bit words of IPv4 destinationAddress to sum;
-    sum = Sum16bitWordsFromBinary(sum, destinationAddress);
-
-    temPayload = ConvertLongToBinary(sum, 64);
+    for (int index = 0; index < destinationAddress.Count; index += 2)
+    {
+        sum += Utility.MakeWord(destinationAddress[index], destinationAddress[index + 1]);
+    }
+    temPayload = sum.ToBinary();
     temPayload += parentPayload;
 
     return ValidateCheckSum(temPayload, originalChecksum);
 }
 
-binary ConvertLongToBinary(long val, int bitWidth)
-{
-    binary result = $[];
-    for (int i = 8; i <= bitWidth; i += 8)
-    {
-        result += [((val >> (bitWidth - i)) & 0xff) as byte] as binary;
-    }
-    return result;
-}
-
-long Sum16bitWordsFromBinary(long sum, binary octets)
-{
-    assert (octets.Count & 1) == 0;
-    for (int index = 0; index < octets.Count; index += 2)
-    {
-        sum += Utility.MakeWord(octets[index], octets[index + 1]);
-    }
-    return sum;
-}
-
 void DecodeBinaryWithErrorOnFail<T>(binary payload, string moduleName, string messageName, ref T decodedT)
 {
-    switch(payload)
+    switch (payload)
     {
         case t:T from BinaryDecoder =>
             decodedT = t;
@@ -284,45 +506,89 @@ void DecodeBinaryWithErrorOnFail<T>(binary payload, string moduleName, string me
 
 void ThrowDecodingException(string moduleName)
 {
-    throw Format(COMMON_STR_EXCEPTION, moduleName);
+    throw Format(UTILITY_STR_EXCEPTION, moduleName);
 }
 
 void ThrowDecodingException(string moduleName, string messageName)
 {
-    throw Format(COMMON_STR_EXCEPTION_MESSAGE, moduleName, messageName);
+    throw Format(UTILITY_STR_EXCEPTION_MESSAGE, moduleName, messageName);
 }
 
-void ThrowDecodingExceptionWithReason(string moduleName, string rootCause)
+void ThrowDecodingException(string moduleName, string reason, array<string> arg)
 {
-    throw Format(COMMON_STR_EXCEPTION_WITH_REASON, moduleName, rootCause);
-}
-
-void ThrowDecodingExceptionWithReason(string moduleName, string messageName, string rootCause)
-{
-    throw Format(COMMON_STR_EXCEPTION_MESSAGE_WITH_REASON, moduleName, messageName, rootCause);
-}
-
-void ThrowDecodingExceptionForTCP(string moduleName, string messageName, optional bool isIncomplete, optional bool segmentLost)
-{
-    ThrowDecodingExceptionWithReason(
-        moduleName, 
-        messageName, 
-        PrepareTCPRootCauseString(isIncomplete != nothing && (isIncomplete as bool), segmentLost != nothing && (segmentLost as bool)));
-}
-
-string PrepareTCPRootCauseString(bool isIncomplete, bool segmentLost)
-{
-    if (segmentLost)
+    switch (reason)
     {
-        return COMMON_STR_TCP_ROOT_CAUSE_SEGMENT_LOST;
+        case UTILITY_INVALID_DATA =>
+            if (arg.Count > 0)
+            {
+                throw Format(UTILITY_STR_EXCEPTION_WITH_REASON, moduleName, Format(reason, arg[0]));
+            }
+        case UTILITY_INVALID_DATA_WITH_VALUE =>
+            if (arg.Count > 1)
+            {
+                throw Format(UTILITY_STR_EXCEPTION_WITH_REASON, moduleName, Format(reason, arg[0], arg[1]));
+            }
+        case UTILITY_UNKNOWN_DATA =>
+            if (arg.Count > 0)
+            {
+                throw Format(UTILITY_STR_EXCEPTION_WITH_REASON, moduleName, Format(reason, arg[0]));
+            }
+        case UTILITY_UNDEFINED_DATA =>
+            if (arg.Count > 0)
+            {
+                throw Format(UTILITY_STR_EXCEPTION_WITH_REASON, moduleName, Format(reason, arg[0]));
+            }
+        case UTILITY_DECODE_FAIL_WITH_ENCODING =>
+            if (arg.Count > 1)
+            {
+                throw Format(UTILITY_STR_EXCEPTION_WITH_REASON, moduleName, Format(reason, arg[0], arg[1]));
+            }
+        case UTILITY_PARSE_ERROR =>
+            if (arg.Count > 0)
+            {
+                throw Format(UTILITY_STR_EXCEPTION_WITH_REASON, moduleName, Format(reason, arg[0]));
+            }
+        default =>
+            throw Format(UTILITY_STR_EXCEPTION_WITH_REASON, moduleName, reason);
     }
-    else if (isIncomplete)
+}
+
+void ThrowDecodingException(string moduleName, string messageName, string reason, array<string> arg)
+{
+    switch (reason)
     {
-        return COMMON_STR_TCP_ROOT_CAUSE_INCOMPLETE;
-    }
-    else 
-    {
-        return COMMON_STR_TCP_ROOT_CAUSE_MISMATCH;
+        case UTILITY_INVALID_DATA =>
+            if (arg.Count > 0)
+            {
+                throw Format(UTILITY_STR_EXCEPTION_MESSAGE_WITH_REASON, moduleName, messageName, Format(reason, arg[0]));
+            }
+        case UTILITY_INVALID_DATA_WITH_VALUE =>
+            if (arg.Count > 1)
+            {
+                throw Format(UTILITY_STR_EXCEPTION_MESSAGE_WITH_REASON, moduleName, messageName, Format(reason, arg[0], arg[1]));
+            }
+        case UTILITY_UNKNOWN_DATA =>
+            if (arg.Count > 0)
+            {
+                throw Format(UTILITY_STR_EXCEPTION_MESSAGE_WITH_REASON, moduleName, messageName, Format(reason, arg[0]));
+            }
+        case UTILITY_UNDEFINED_DATA =>
+            if (arg.Count > 0)
+            {
+                throw Format(UTILITY_STR_EXCEPTION_MESSAGE_WITH_REASON, moduleName, messageName, Format(reason, arg[0]));
+            }
+        case UTILITY_DECODE_FAIL_WITH_ENCODING =>
+            if (arg.Count > 1)
+            {
+                throw Format(UTILITY_STR_EXCEPTION_MESSAGE_WITH_REASON, moduleName, messageName, Format(reason, arg[0], arg[1]));
+            }
+        case UTILITY_PARSE_ERROR =>
+            if (arg.Count > 0)
+            {
+                throw Format(UTILITY_STR_EXCEPTION_MESSAGE_WITH_REASON, moduleName, messageName, Format(reason, arg[0]));
+            }
+        default =>
+            throw Format(UTILITY_STR_EXCEPTION_MESSAGE_WITH_REASON, moduleName, messageName, reason);
     }
 }
 
@@ -331,7 +597,7 @@ string PrepareTCPRootCauseString(bool isIncomplete, bool segmentLost)
 //       Input an ushort with value 17d, Out put is 0x11;
 static string DecToHexFormat(any dec)
 {
-    switch(dec)
+    switch (dec)
     {
         case (n:byte)=>
             return Format("0x{0:X2}", n);
@@ -361,7 +627,7 @@ static string DecToHexFormat(any dec)
 //       Input an ushort with value 17d, Out put is 0x0011;
 static string DecToHexFormat(int hexWidthWithLeadingZeros, any dec)
 {
-    switch(dec)
+    switch (dec)
     {
         case (byte | sbyte | ushort | short | uint | int | ulong | long)=>
             return Format("0x{0:X" + hexWidthWithLeadingZeros.ToString() + "}", dec);
@@ -370,74 +636,53 @@ static string DecToHexFormat(int hexWidthWithLeadingZeros, any dec)
     }
 }
 
-optional T GetEmbedded<T>(any message msg, string key)
+// used in ToString() for summaryline, it will return Enum meaningful value, for value out of enum range, it will return "Unknown(value)"
+string EnumToStringInSummary<T>(T t)
 {
-    if (msg#Embedded == nothing)
+    var valueAppended = EnumToString<T>(t, true);
+    var leftParentheseIndex = valueAppended.LastIndexOf("(");
+    if (leftParentheseIndex >= 0)
     {
-        return nothing;
+        return valueAppended.Segment(0, leftParentheseIndex);
     }
-
-    var embedded = msg#Embedded as map<string, any>;
-    if (!(key in embedded))
+    else
     {
-        return nothing;
+        return "Unknown(" + valueAppended + ")";
     }
-    if (!(embedded[key] is T))
-    {
-        throw Format(COMMON_STR_EMBEDDED_ANNOTATION_MISMATCH, key);
-    }
-
-    return embedded[key] as T;
-}
-
-void SetEmbedded<T>(any message msg, string key, optional T val)
-{
-    if (val == nothing)
-    {
-        return;
-    }
-
-    if (msg#Embedded == nothing)
-    {
-        map<string, any> m = {};
-        msg#Embedded = m;
-    }
-
-    var embedded = msg#Embedded as map<string, any>;
-    embedded[key] = val as T;
-    msg#Embedded = embedded;
-}
+} with DeclarationInfo {GenerateGenericTypeInfoAsParameter = true};
 
 string ConvertStringArrayToString(optional array<string> arr)
 {
-    if (arr == nothing)
+    if (arr is strArr:array<string> && strArr != null && strArr.Count > 0)
     {
-        return "";
+        return strArr.Accumulate((string t, string s) => s + t);
     }
-    string str = "";
-    array<string> arr2 = arr as array<string>;
-    foreach (string cur in arr2)
-    {
-        str += cur;
-    }
-    return str;
+    return "";
 }
 
-// Determin where a string contains a sub string, return true if it does, else false.
+string Array2String<T>(array<T> tArray, string separator)
+{
+    if (tArray != null && tArray.Count > 0)
+    {
+        string sum = "";
+        for (int i= 0; i < tArray.Count; i++)
+        {
+            sum += tArray[i] as string;
+            sum += separator;
+        }
+        return sum.Segment(0, sum.Count - 1);
+    }
+    return "";
+}
+
+// Determine whether a string contains a sub string, return true if it does, else false.
 bool Contains(this string str, string subStr)
 {
     if (str == null || subStr == null)
     {
         return false;
     }
-    if (str.IndexOf(subStr) >= 0)
-    {
-        return true;
-    }
-    else
-    {
-        return false;
-    }
+    return str.IndexOf(subStr) >= 0;
 }
 
 // Convert binary to IPv4/IPv6 address if input is feasible.
@@ -453,9 +698,8 @@ string BinaryToIP(binary binVal)
     // IPv4 address
     else if (binLen == 4)
     {
-        array<byte> byteArr = binVal as array<byte>;
         int counter = 0;
-        foreach (byte b in byteArr)
+        foreach (byte b in binVal)
         {
             counter += 1;
             ip = ip + (b as string);
@@ -469,73 +713,58 @@ string BinaryToIP(binary binVal)
     // IPv6 address
     else
     {
-        array<byte> byteArr = binVal as array<byte>;
         for (int index = 0; index < binLen; index += 2)
         {
-            int b = (byteArr[index] << 8)  + byteArr[index + 1];
+            int b = (binVal[index] << 8) + binVal[index + 1];
             ip += (b == 0) ? "0:" : (Format("{0:X}", b) + ":");
         }
         return ip.Segment(0, ip.Count - 1);
     }
 }
 
-// Convert string to binary, use for http tunneling.
-static binary ConvertStringToBinary(string str)
-{
-    if (str == null || str == "")
-    {
-        return $[];
-    }
-
-    binary bin = $[];
-    array<byte> byteArr = [];
-    foreach (char c in str)
-    {
-        byteArr += [(c as ushort) as byte];
-    }
-    bin = byteArr as binary;
-    return bin;
-}
-// Get and decode signle xml child element. 
-// Return nothing if the specified xml element doesn't exist. 
-optional T DecodeFromChildXmlElement<T>(xml parentXml, string namespace, string localName) 
-{ 
-    var childXml = parentXml.GetChild(new XmlName{NamespaceUri = namespace, LocalName = localName}); 
-    if (childXml == nothing)
-    { 
-        return nothing; 
-    }
-
-    var t = XmlDecoder<T>(childXml as xml);
-
-    if (t == nothing)
-    {
-        ThrowDecodingException(localName);
-    }
-
-    return t as T;
-}
-
-
-// Get the remaining bytes
+// Get the remaining bytes, bitOffset should be a relative value like StartBitPosition, which may not begin with zero.
 binary PeekBytes(this stream s, int bitOffset)
 {
-    return s.PeekBytes(bitOffset, (s.ByteLength - bitOffset / 8) as int);
+    return s.PeekBytes(bitOffset, (s.StartBitPosition + s.BitLength - bitOffset) >> 3);
 }
 
-// Get one byte from specific position
-byte PeekByte(this stream s, int bitOffset)
+// Peek Uint from the stream with Endian
+uint PeekUInt(this stream s, int bitOffset, Endian endian)
 {
-    return s.PeekBytes(bitOffset, 1)[0];
+    if (endian == Endian.Big)
+    {
+        return ((s.PeekByte(bitOffset) << 24) + (s.PeekByte(bitOffset + 8) << 16) +
+            (s.PeekByte(bitOffset + 16) << 8) + s.PeekByte(bitOffset + 24)) as uint;
+    }
+    return ((s.PeekByte(bitOffset + 24) << 24) + (s.PeekByte(bitOffset + 16) << 16) +
+        (s.PeekByte(bitOffset + 8) << 8) + s.PeekByte(bitOffset)) as uint;
 }
 
-int get RemainingLength(this stream s)
+// Peek Ushort from the stream with Endian
+ushort PeekUShort(this stream s, int bitOffset, Endian endian)
 {
-    return s.ByteLength - s.BytePosition;
+    if (endian == Endian.Big)
+    {
+        return ((s.PeekByte(bitOffset) << 8) + s.PeekByte(bitOffset + 8)) as ushort;
+    }
+    return ((s.PeekByte(bitOffset + 8) << 8) + s.PeekByte(bitOffset)) as ushort;
+}
+
+int get RemainingByteLength(this stream s)
+{
+    return s.RemainingBitLength >> 3;
+}
+
+// For almost cases and big endian stream, but do not use it when container type applied 'DecodeAsUnit' in case of little endian.
+int get RemainingBitLength(this stream s)
+{
+    // BitPosition and StartBitPosition may not initialized with zero when create stream instance, instead, it's relative value from its parent stream.
+    // BitLength is the exact bit count of current stream instance.
+    return s.BitLength - (s.BitPosition - s.StartBitPosition);
 }
 
 /*
- * Type Event here is similiar as C# events
+ * Type Event here is similar as C# events
  * This Event shouldn't be over-used, now it is only used
  * for HTTP endpoint register event to TCP endpoint to do
  * reassembly on TCP connection close
@@ -622,11 +851,7 @@ void AssociateFieldPosition(any type t, string fieldName, stream s, int beginBit
 {
     DataChunks dataChunk = new DataChunks();
     dataChunk.DataSource = s;
-    dataChunk.Chunks = [new BinaryChunk
-                            {
-                                BitPosition = beginBitPosition,
-                                BitLength = s.BitPosition - beginBitPosition
-                            }];
+    dataChunk.Chunks = [new BinaryChunk{BitPosition = beginBitPosition, BitLength = s.BitPosition - beginBitPosition}];
     t.AssociateField(fieldName, dataChunk);
 }
 
@@ -637,52 +862,17 @@ void AssociateFieldPosition(any type t, string fieldName, stream s, int beginBit
 {
     DataChunks dataChunk = new DataChunks();
     dataChunk.DataSource = s;
-    dataChunk.Chunks = [new BinaryChunk
-                            {
-                                BitPosition = beginBitPosition,
-                                BitLength = bitLength
-                            }];
+    dataChunk.Chunks = [new BinaryChunk{BitPosition = beginBitPosition, BitLength = bitLength}];
     t.AssociateField(fieldName, dataChunk);
 }
 
-// this is a work around to decode big endian numbers
-// !FIXME: but it doesn't work since current codec compiler can't
-// deal with generic types
-//type BigendianNumberContainer<T>
-//{
-//    T Number;
-//}
-
-//optional T DecodeBigendianNumber<T>(stream s)
-//{
-//    var container = BinaryDecoder<BigendianNumberContainer<T>>(s);
-//    if (container == nothing)
-//        return nothing;
-//    return container.Number;
-//}
-
-// For all soap protocols' extending summary. 
-annotation string MessageExtendingSummary;
-
-string get ExtendingSummary(this any message msg)
-{
-    if (msg#MessageExtendingSummary == nothing)
-    {
-        return "";
-    }
-    return (msg#MessageExtendingSummary as string);
-}       
-
-void AppendExtendingSummary(this any message msg, string text)
-{
-    if (msg#MessageExtendingSummary == nothing)
-        msg#MessageExtendingSummary = text;
-    else
-        msg#MessageExtendingSummary = (msg#MessageExtendingSummary as string) + text;
-}
+// Store extension summary prefix, usage examples:
+//      [DDP Extended by RDMA]
+//      [Reassembled]
+annotation string SummaryPrefix;
 
 // Browse origins of the message to find the lowest message and get #MessageNumber 
-optional uint get FrameSequenceNumber(this any message m)
+optional uint get FrameMessageNumber (this any message m)
 {
     while ((m.Origins).Count > 0)
     {
@@ -691,303 +881,297 @@ optional uint get FrameSequenceNumber(this any message m)
     return m#MessageNumber;
 }
 
-// Combine two ulong values as one double value
-double CombineAsDouble(ulong u1, ulong u2)
+pattern MessageDirection = enum int
 {
-    if (u2 == 0)
-    {
-        return (u1 as double);
-    }
-    else
-    {
-        return u1 + (1 / u2 as double);
-    }
-}
-
-string Array2String<T>(array<T> tArray, string separator)
-{
-    string oid = "";
-    int count = tArray.Count;
-    for (int i= 0; i< count; i++)
-    {
-        oid += tArray[i] as string;
-        if (i != count - 1)
-        {
-            oid += separator;
-        }
-    }
-    return oid;
-}
+    Accepts = 0,
+    Issues = 1
+};
 
 ///////////////////////////////////////////////
 // The enumeration to indicate whether the field is included in a type of a message.
-pattern ReferenceType = enum ushort
+pattern ReferenceType = enum string
 {
-    Type = 1,
-    Message = 2,
+    Type = INFRASTRUCTURE_STR_TYPE,
+    Message = INFRASTRUCTURE_STR_MESSAGE,
 };
-
-string GetReferenceTypeValue(ReferenceType messageType)
-{
-    if (messageType == ReferenceType.Type)
-    {
-        return COMMON_STR_TYPE;
-    }
-    else
-    {
-        return COMMON_STR_MESSAGE;
-    }
-}
 
 // Pattern to accept parameters
 pattern DescriptionParams = AnyNumber | bool | char | string | binary;
 
 ///////////////////////////////////////////////
-// Validation check decoding failed
-bool ValidationCheckDecodingMessageFailedWithReason(any message context, string moduleName, string fieldName, string rootCause)
+
+// Use this funciton when decode structure failed, but will not abort parsing.
+void ValidationCheckDecodingFailure(any message msg, string moduleName, string fieldName)
 {
-    return ValidationCheck(false, context, () => Format(COMMON_STR_EXCEPTION_MESSAGE_WITH_REASON, [moduleName, fieldName, rootCause]));
+    ValidationCheck(false, msg, Format(UTILITY_STR_EXCEPTION_MESSAGE, moduleName, fieldName));
+}
+
+// Validation check decoding failed
+bool ValidationCheckDecodingMessageFailedWithReason(any message msg, string moduleName, string fieldName, string rootCause)
+{
+    return ValidationCheck(false, msg, () => Format(UTILITY_STR_EXCEPTION_MESSAGE_WITH_REASON, [moduleName, fieldName, rootCause]));
+}
+
+string DiagnosticIntegerString(any integer)
+{
+    if (integer is (byte | sbyte | ushort | short | uint | int | ulong | long))
+    {
+        return integer.ToString() + " (" + DecToHexFormat(integer) + ")";
+    }
+    return integer.ToString();
 }
 
 // Validation check values
 // If the type of parameter "actualValue" is integer, it will be shown as the format such as 10 (0x0A).
 // Or, e.g. string or double, it will be shown as its original format, such as "Text", "1.1". 
-bool ValidationCheckValue(bool condition, any message context, bool isMustBehavior, ReferenceType messageType,
+bool ValidationCheckValue(bool condition, any message msg, bool isMustBehavior, ReferenceType typeOrMessage,
                     string moduleName, string fieldName, string structureName, any expectValue, any actualValue)
 {
-    if (condition)
+    if (!condition)
     {
-        return true;
+        var description = Format(INFRASTRUCTURE_STR_CHECK_VALUE, [moduleName, fieldName, typeOrMessage, structureName, isMustBehavior ? INFRASTRUCTURE_STR_MUST : INFRASTRUCTURE_STR_SHOULD, expectValue, DiagnosticIntegerString(actualValue)]);
+        return ValidationCheck(condition, msg, isMustBehavior ? DiagnosisLevel.Error : DiagnosisLevel.Warning, description);
     }
-    if (actualValue is (byte | sbyte | ushort | short | uint | int | ulong | long))
-    {
-        actualValue = actualValue.ToString() + " (" + DecToHexFormat(actualValue) + ")";
-    }
-    return ValidationCheck(condition, context, isMustBehavior ? DiagnosisLevel.Error : DiagnosisLevel.Warning, () => Format(COMMON_STR_CHECK_VALUE, 
-        [moduleName, fieldName, GetReferenceTypeValue(messageType), structureName, isMustBehavior ? COMMON_STR_MUST : COMMON_STR_SHOULD, expectValue, actualValue]));
+    return true;
 }
 
 // If the type of parameter "actualValue" is integer, it will be shown as the format such as 10 (0x0A).
 // Or, e.g. string or double, it will be shown as its original format, such as "Text", "1.1". 
-bool ValidationCheckGreaterThan(bool condition, any message context, bool isMustBehavior, ReferenceType messageType,
+bool ValidationCheckGreaterThan(bool condition, any message msg, bool isMustBehavior, ReferenceType typeOrMessage,
                     string moduleName, string fieldName, string structureName, any greaterThanValue, any actualValue)
 {
-    if (condition)
+    if (!condition)
     {
-        return true;
+        var description = Format(INFRASTRUCTURE_STR_CHECK_VALUE_GREATER_THAN, [moduleName, fieldName, typeOrMessage, structureName, isMustBehavior ? INFRASTRUCTURE_STR_MUST : INFRASTRUCTURE_STR_SHOULD, greaterThanValue, DiagnosticIntegerString(actualValue)]);
+        return ValidationCheck(condition, msg, isMustBehavior ? DiagnosisLevel.Error : DiagnosisLevel.Warning, description);
     }
-    if (actualValue is (byte | sbyte | ushort | short | uint | int | ulong | long))
-    {
-        actualValue = actualValue.ToString() + " (" + DecToHexFormat(actualValue) + ")";
-    }
-    return ValidationCheck(condition, context, isMustBehavior ? DiagnosisLevel.Error : DiagnosisLevel.Warning, () => Format(COMMON_STR_CHECK_VALUE_GREATER_THAN,
-        [moduleName, fieldName, GetReferenceTypeValue(messageType), structureName, isMustBehavior ? COMMON_STR_MUST : COMMON_STR_SHOULD, greaterThanValue, actualValue]));
+    return true;
 }
 
 // If the type of parameter "actualValue" is integer, it will be shown as the format such as 10 (0x0A).
 // Or, e.g. string or double, it will be shown as its original format, such as "Text", "1.1". 
-bool ValidationCheckGreaterThanOrEqualTo(bool condition, any message context, bool isMustBehavior, ReferenceType messageType,
+bool ValidationCheckGreaterThanOrEqualTo(bool condition, any message msg, bool isMustBehavior, ReferenceType typeOrMessage,
                     string moduleName, string fieldName, string structureName, any greaterThanOrEqualToValue, any actualValue)
 {
-    if (condition)
+    if (!condition)
     {
-        return true;
+        var description = Format(INFRASTRUCTURE_STR_CHECK_VALUE_GREATER_THAN_OR_EQUAL_TO, [moduleName, fieldName, typeOrMessage, structureName, isMustBehavior ? INFRASTRUCTURE_STR_MUST : INFRASTRUCTURE_STR_SHOULD, greaterThanOrEqualToValue, DiagnosticIntegerString(actualValue)]);
+        return ValidationCheck(condition, msg, isMustBehavior ? DiagnosisLevel.Error : DiagnosisLevel.Warning, description);
     }
-    if (actualValue is (byte | sbyte | ushort | short | uint | int | ulong | long))
-    {
-        actualValue = actualValue.ToString() + " (" + DecToHexFormat(actualValue) + ")";
-    }
-    return ValidationCheck(condition, context, isMustBehavior ? DiagnosisLevel.Error : DiagnosisLevel.Warning, Format(COMMON_STR_CHECK_VALUE_GREATER_THAN_OR_EQUAL_TO, 
-        [moduleName, fieldName, GetReferenceTypeValue(messageType), structureName, isMustBehavior ? COMMON_STR_MUST : COMMON_STR_SHOULD, greaterThanOrEqualToValue, actualValue]));
+    return true;
 }
 
 // If the type of parameter "actualValue" is integer, it will be shown as the format such as 10 (0x0A).
 // Or, e.g. string or double, it will be shown as its original format, such as "Text", "1.1". 
-bool ValidationCheckLessThanOrEqualTo(bool condition, any message context, bool isMustBehavior, ReferenceType messageType,
+bool ValidationCheckLessThanOrEqualTo(bool condition, any message msg, bool isMustBehavior, ReferenceType typeOrMessage,
                     string moduleName, string fieldName, string structureName, any lessThanOrEqualToValue, any actualValue)
 {
-    if (condition)
+    if (!condition)
     {
-        return true;
+        var description = Format(INFRASTRUCTURE_STR_CHECK_VALUE_LESS_THAN_OR_EQUAL_TO, [moduleName, fieldName, typeOrMessage, structureName, isMustBehavior ? INFRASTRUCTURE_STR_MUST : INFRASTRUCTURE_STR_SHOULD, lessThanOrEqualToValue, DiagnosticIntegerString(actualValue)]);
+        return ValidationCheck(condition, msg, isMustBehavior ? DiagnosisLevel.Error : DiagnosisLevel.Warning, description);
     }
-    if (actualValue is (byte | sbyte | ushort | short | uint | int | ulong | long))
-    {
-        actualValue = actualValue.ToString() + " (" + DecToHexFormat(actualValue) + ")";
-    }
-    return ValidationCheck(condition, context, isMustBehavior ? DiagnosisLevel.Error : DiagnosisLevel.Warning, () => Format(COMMON_STR_CHECK_VALUE_LESS_THAN_OR_EQUAL_TO, 
-        [moduleName, fieldName, GetReferenceTypeValue(messageType), structureName, isMustBehavior ? COMMON_STR_MUST : COMMON_STR_SHOULD, lessThanOrEqualToValue, actualValue]));
+    return true;
 }
 
-bool ValidationCheckValid(bool condition, any message context, bool isMustBehavior, ReferenceType messageType,
-                    string moduleName, string fieldName, string structureName, any description)
+bool ValidationCheckLessThan(bool condition, any message msg, bool isMustBehavior, ReferenceType typeOrMessage,
+                    string moduleName, string fieldName, string structureName, any lessThanValue, any actualValue)
 {
-    if (condition)
+    if (!condition)
     {
-        return true;
+        var description = Format(INFRASTRUCTURE_STR_CHECK_VALUE_LESS_THAN, [moduleName, fieldName, typeOrMessage, structureName, isMustBehavior ? INFRASTRUCTURE_STR_MUST : INFRASTRUCTURE_STR_SHOULD, lessThanValue, DiagnosticIntegerString(actualValue)]);
+        return ValidationCheck(condition, msg, isMustBehavior ? DiagnosisLevel.Error : DiagnosisLevel.Warning, description);
     }
-    return ValidationCheck(condition, context, isMustBehavior ? DiagnosisLevel.Error : DiagnosisLevel.Warning, () => Format(COMMON_STR_CHECK_VALUE_IS_NOT_A_VALID, 
-        [moduleName, fieldName, GetReferenceTypeValue(messageType), structureName, description]));
+    return true;
+}
+
+bool ValidationCheckValid(bool condition, any message msg, bool isMustBehavior, ReferenceType typeOrMessage,
+                    string moduleName, string fieldName, string structureName, any expectation)
+{
+    if (!condition)
+    {
+        var description = Format(INFRASTRUCTURE_STR_CHECK_VALUE_IS_NOT_A_VALID, [moduleName, fieldName, typeOrMessage, structureName, expectation]);
+        return ValidationCheck(condition, msg, isMustBehavior ? DiagnosisLevel.Error : DiagnosisLevel.Warning, description);
+    }
+    return true;
 }
 
 // If the type of parameter "actualValue" is integer, it will be shown as the format such as 10 (0x0A).
 // Or, e.g. string or double, it will be shown as its original format, such as "Text", "1.1". 
-bool ValidationCheckZero(bool condition, any message context, bool isMustBehavior, ReferenceType messageType,
+bool ValidationCheckZero(bool condition, any message msg, bool isMustBehavior, ReferenceType typeOrMessage,
                     string moduleName, string fieldName, string structureName, any actualValue)
 {
-    if (condition)
+    if (!condition)
     {
-        return true;
+        var description = Format(INFRASTRUCTURE_STR_CHECK_VALUE, [moduleName, fieldName, typeOrMessage, structureName, isMustBehavior ? INFRASTRUCTURE_STR_MUST : INFRASTRUCTURE_STR_SHOULD, INFRASTRUCTURE_STR_ZERO, DiagnosticIntegerString(actualValue)]);
+        return ValidationCheck(condition, msg, isMustBehavior ? DiagnosisLevel.Error : DiagnosisLevel.Warning, description);
     }
-    if (actualValue is (byte | sbyte | ushort | short | uint | int | ulong | long))
-    {
-        actualValue = actualValue.ToString() + " (" + DecToHexFormat(actualValue) + ")";
-    }
-    return ValidationCheck(condition, context, isMustBehavior ? DiagnosisLevel.Error : DiagnosisLevel.Warning, () => Format(COMMON_STR_CHECK_VALUE, 
-        [moduleName, fieldName, GetReferenceTypeValue(messageType), structureName, isMustBehavior ? COMMON_STR_MUST : COMMON_STR_SHOULD, COMMON_STR_ZERO, actualValue]));
+    return true;
 }
 
 // If the type of parameter "actualValue" is integer, it will be shown as the format such as 10 (0x0A).
 // Or, e.g. string or double, it will be shown as its original format, such as "Text", "1.1". 
-bool ValidationCheckReservedZero(bool condition, any message context, bool isMustBehavior, ReferenceType messageType,
+bool ValidationCheckReservedZero(bool condition, any message msg, bool isMustBehavior, ReferenceType typeOrMessage,
                     string moduleName, string fieldName, string structureName, any actualValue)
 {
-    if (condition)
+    if (!condition)
     {
-        return true;
+        var description = Format(INFRASTRUCTURE_STR_CHECK_RESERVED_ZERO, [moduleName, fieldName, typeOrMessage, structureName, isMustBehavior ? INFRASTRUCTURE_STR_MUST : INFRASTRUCTURE_STR_SHOULD, INFRASTRUCTURE_STR_ZERO, DiagnosticIntegerString(actualValue)]);
+        return ValidationCheck(condition, msg, isMustBehavior ? DiagnosisLevel.Error : DiagnosisLevel.Warning, description);
     }
-    if (actualValue is (byte | sbyte | ushort | short | uint | int | ulong | long))
-    {
-        actualValue = actualValue.ToString() + " (" + DecToHexFormat(actualValue) + ")";
-    }
-    return ValidationCheck(condition, context, isMustBehavior ? DiagnosisLevel.Error : DiagnosisLevel.Warning, () => Format(COMMON_STR_CHECK_RESERVED_ZERO, 
-        [moduleName, fieldName, GetReferenceTypeValue(messageType), structureName, isMustBehavior ? COMMON_STR_MUST : COMMON_STR_SHOULD, COMMON_STR_ZERO, actualValue]));
+    return true;
 }
 
 // If the type of parameter "actualValue" is integer, it will be shown as the format such as 10 (0x0A).
 // Or, e.g. string or double, it will be shown as its original format, such as "Text", "1.1". 
-bool ValidationCheckEnumValue(bool condition, any message context, bool isMustBehavior, ReferenceType messageType,
+bool ValidationCheckEnumValue(bool condition, any message msg, bool isMustBehavior, ReferenceType typeOrMessage,
                     string moduleName, string fieldName, string structureName, any enumValueArray, any actualValue)
 {
-    if (condition)
+    if (!condition)
     {
-        return true;
+        var description = Format(INFRASTRUCTURE_STR_CHECK_ENUM_VALUE, [moduleName, fieldName, typeOrMessage, structureName, isMustBehavior ? INFRASTRUCTURE_STR_MUST : INFRASTRUCTURE_STR_SHOULD, enumValueArray, DiagnosticIntegerString(actualValue)]);
+        return ValidationCheck(condition, msg, isMustBehavior ? DiagnosisLevel.Error : DiagnosisLevel.Warning, description);
     }
-    if (actualValue is (byte | sbyte | ushort | short | uint | int | ulong | long))
+    return true;
+}
+
+// If the number of valid values defined in the enum pattern is greater than 4, please use this function for validation check.
+bool ValidationCheckEnumValueTooManyItems(bool condition, any message msg, bool isMustBehavior, ReferenceType typeOrMessage,
+                    string moduleName, string fieldName, string structureName, string keywords, string tdName)
+{
+    if (!condition)
     {
-        actualValue = actualValue.ToString() + " (" + DecToHexFormat(actualValue) + ")";
+        var description = Format(INFRASTRUCTURE_STR_CHECK_ENUM_VALUE_TOO_MANY_ITEMS, [moduleName, fieldName, typeOrMessage, structureName, keywords, tdName]);
+        return ValidationCheck(condition, msg, isMustBehavior ? DiagnosisLevel.Error : DiagnosisLevel.Warning, description);
     }
-    return ValidationCheck(condition, context, isMustBehavior ? DiagnosisLevel.Error : DiagnosisLevel.Warning, () => Format(COMMON_STR_CHECK_ENUM_VALUE, 
-        [moduleName, fieldName, GetReferenceTypeValue(messageType), structureName, isMustBehavior ? COMMON_STR_MUST : COMMON_STR_SHOULD, enumValueArray, actualValue]));
+    return true;
 }
 
 // If the type of parameter "actualValue" is integer, it will be shown as the format such as 10 (0x0A).
 // Or, e.g. string or double, it will be shown as its original format, such as "Text", "1.1". 
-bool ValidationCheckCombinationValue(bool condition, any message context, bool isMustBehavior, ReferenceType messageType,
+bool ValidationCheckCombinationValue(bool condition, any message msg, bool isMustBehavior, ReferenceType typeOrMessage,
                     string moduleName, string fieldName, string structureName, any combinationValueArray, any actualValue)
 {
-    if (condition)
+    if (!condition)
     {
-        return true;
+        var description = Format(INFRASTRUCTURE_STR_CHECK_COMBINATION_VALUE, [moduleName, fieldName, typeOrMessage, structureName, isMustBehavior ? INFRASTRUCTURE_STR_MUST : INFRASTRUCTURE_STR_SHOULD, combinationValueArray, actualValue.ToString() + " (" + DecToHexFormat(actualValue) + ")"]);
+        return ValidationCheck(condition, msg, isMustBehavior ? DiagnosisLevel.Error : DiagnosisLevel.Warning, description);
     }
-    if (actualValue is (byte | sbyte | ushort | short | uint | int | ulong | long))
+    return true;
+}
+
+// If the number of valid values defined in the flags pattern is greater than 4, please use this function for validation check.
+bool ValidationCheckCombinationValueTooManyItems(bool condition, any message msg, bool isMustBehavior, ReferenceType typeOrMessage,
+                    string moduleName, string fieldName, string structureName, string keywords, string tdName)
+{
+    if (!condition)
     {
-        actualValue = actualValue.ToString() + " (" + DecToHexFormat(actualValue) + ")";
+        var description = Format(INFRASTRUCTURE_STR_CHECK_COMBINATION_VALUE_TOO_MANY_ITEMS, [moduleName, fieldName, typeOrMessage, structureName, keywords, tdName]);
+        return ValidationCheck(condition, msg, isMustBehavior ? DiagnosisLevel.Error : DiagnosisLevel.Warning, description);
     }
-    return ValidationCheck(condition, context, isMustBehavior ? DiagnosisLevel.Error : DiagnosisLevel.Warning, () => Format(COMMON_STR_CHECK_COMBINATION_VALUE, 
-        [moduleName, fieldName, GetReferenceTypeValue(messageType), structureName, isMustBehavior ? COMMON_STR_MUST : COMMON_STR_SHOULD, combinationValueArray, actualValue.ToString() + " (" + DecToHexFormat(actualValue) + ")"]));
+    return true;
 }
 
 // If the type of parameter "actualValue" is integer, it will be shown as the format such as 10 (0x0A).
 // Or, e.g. string or double, it will be shown as its original format, such as "Text", "1.1". 
-bool ValidationCheckCombinationValueIncludeZero(bool condition, any message context, bool isMustBehavior, ReferenceType messageType,
+bool ValidationCheckCombinationValueIncludeZero(bool condition, any message msg, bool isMustBehavior, ReferenceType typeOrMessage,
                     string moduleName, string fieldName, string structureName, any combinationValueArray, any actualValue)
 {
-    if (condition)
+    if (!condition)
     {
-        return true;
+        var description = Format(INFRASTRUCTURE_STR_CHECK_COMBINATION_VALUE_INCLUDE_ZERO, [moduleName, fieldName, typeOrMessage, structureName, isMustBehavior ? INFRASTRUCTURE_STR_MUST : INFRASTRUCTURE_STR_SHOULD, INFRASTRUCTURE_STR_ZERO, combinationValueArray, DiagnosticIntegerString(actualValue)]);
+        return ValidationCheck(condition, msg, isMustBehavior ? DiagnosisLevel.Error : DiagnosisLevel.Warning, description);
     }
-    if (actualValue is (byte | sbyte | ushort | short | uint | int | ulong | long))
+    return true;
+}
+
+// If the number of valid values defined in the flags pattern is greater than 4, please use this function for validation check.
+bool ValidationCheckCombinationValueIncludeZeroTooManyItems(bool condition, any message msg, bool isMustBehavior, ReferenceType typeOrMessage,
+                    string moduleName, string fieldName, string structureName, string keywords, string tdName)
+{
+    if (!condition)
     {
-        actualValue = actualValue.ToString() + " (" + DecToHexFormat(actualValue) + ")";
+        var description = Format(INFRASTRUCTURE_STR_CHECK_COMBINATION_VALUE_INCLUDE_ZERO_TOO_MANY_ITEMS, [moduleName, fieldName, typeOrMessage, structureName, keywords, tdName]);
+        return ValidationCheck(condition, msg, isMustBehavior ? DiagnosisLevel.Error : DiagnosisLevel.Warning, description);
     }
-    return ValidationCheck(condition, context, isMustBehavior ? DiagnosisLevel.Error : DiagnosisLevel.Warning, () => Format(COMMON_STR_CHECK_COMBINATION_VALUE_INCLUDE_ZERO, 
-        [moduleName, fieldName, GetReferenceTypeValue(messageType), structureName, isMustBehavior ? COMMON_STR_MUST : COMMON_STR_SHOULD, COMMON_STR_ZERO, combinationValueArray, actualValue]));
+    return true;
 }
 
 // If the type of parameter "actualValue" is integer, it will be shown as the format such as 10 (0x0A).
 // Or, e.g. string or double, it will be shown as its original format, such as "Text", "1.1". 
-bool ValidationCheckValueSame(bool condition, any message context, bool isMustBehavior, ReferenceType currentMessageType,
+bool ValidationCheckValueSame(bool condition, any message msg, bool isMustBehavior, ReferenceType currentMessageType,
                     string moduleName, string currentFieldName, string currentFieldStructureName, ReferenceType pivotMessageType, string pivotFieldName, string pivotFieldStructureName, any actualValue)
 {
-    if (condition)
+    if (!condition)
     {
-        return true;
+        var description = Format(INFRASTRUCTURE_STR_CHECK_VALUE_SAME, [moduleName, currentFieldName, currentMessageType, currentFieldStructureName, isMustBehavior ? INFRASTRUCTURE_STR_MUST : INFRASTRUCTURE_STR_SHOULD, pivotFieldName, pivotMessageType, pivotFieldStructureName, DiagnosticIntegerString(actualValue)]);
+        return ValidationCheck(condition, msg, isMustBehavior ? DiagnosisLevel.Error : DiagnosisLevel.Warning, description);
     }
-    if (actualValue is (byte | sbyte | ushort | short | uint | int | ulong | long))
-    {
-        actualValue = actualValue.ToString() + " (" + DecToHexFormat(actualValue) + ")";
-    }
-    return ValidationCheck(condition, context, isMustBehavior ? DiagnosisLevel.Error : DiagnosisLevel.Warning, () => Format(COMMON_STR_CHECK_VALUE_SAME, 
-        [moduleName, currentFieldName, GetReferenceTypeValue(currentMessageType), currentFieldStructureName, isMustBehavior ? COMMON_STR_MUST : COMMON_STR_SHOULD, pivotFieldName, GetReferenceTypeValue(pivotMessageType), pivotFieldStructureName, actualValue]));
+    return true;
 }
 
 // If the type of parameter "actualValue" is integer, it will be shown as the format such as 10 (0x0A).
 // Or, e.g. string or double, it will be shown as its original format, such as "Text", "1.1". 
-bool ValidationCheckValueInRange(bool condition, any message context, bool isMustBehavior, ReferenceType messageType,
+bool ValidationCheckValueInRange(bool condition, any message msg, bool isMustBehavior, ReferenceType typeOrMessage,
                     string moduleName, string fieldName, string structureName, any expectLowerValue, any expectUpperValue, any actualValue)
 {
-    if (condition)
+    if (!condition)
     {
-        return true;
+        var description = Format(INFRASTRUCTURE_STR_CHECK_VALUE_IN_RANGE, [moduleName, fieldName, typeOrMessage, structureName, isMustBehavior ? INFRASTRUCTURE_STR_MUST : INFRASTRUCTURE_STR_SHOULD, expectLowerValue, expectUpperValue, DiagnosticIntegerString(actualValue)]);
+        return ValidationCheck(condition, msg, isMustBehavior ? DiagnosisLevel.Error : DiagnosisLevel.Warning, description);
     }
-    if (actualValue is (byte | sbyte | ushort | short | uint | int | ulong | long))
-    {
-        actualValue = actualValue.ToString() + " (" + DecToHexFormat(actualValue) + ")";
-    }
-    return ValidationCheck(condition, context, isMustBehavior ? DiagnosisLevel.Error : DiagnosisLevel.Warning, () => Format(COMMON_STR_CHECK_VALUE_IN_RANGE, 
-        [moduleName, fieldName, GetReferenceTypeValue(messageType), structureName, isMustBehavior ? COMMON_STR_MUST : COMMON_STR_SHOULD, expectLowerValue, expectUpperValue, actualValue]));
+    return true;
 }
 
 // If the type of parameter "actualValue" is integer, it will be shown as the format such as 10 (0x0A).
 // Or, e.g. string or double, it will be shown as its original format, such as "Text", "1.1". 
-bool ValidationCheckLength(bool condition, any message context, bool isMustBehavior, ReferenceType messageType,
+bool ValidationCheckLength(bool condition, any message msg, bool isMustBehavior, ReferenceType typeOrMessage,
                     string moduleName, string fieldName, string structureName, any expectValue, any actualValue)
 {
-    if (condition)
+    if (!condition)
     {
-        return true;
+        var description = Format(INFRASTRUCTURE_STR_CHECK_LENGTH_EQUAL, [moduleName, fieldName, typeOrMessage, structureName, isMustBehavior ? INFRASTRUCTURE_STR_MUST : INFRASTRUCTURE_STR_SHOULD, expectValue, DiagnosticIntegerString(actualValue)]);
+        return ValidationCheck(condition, msg, isMustBehavior ? DiagnosisLevel.Error : DiagnosisLevel.Warning, description);
     }
-    if (actualValue is (byte | sbyte | ushort | short | uint | int | ulong | long))
-    {
-        actualValue = actualValue.ToString() + " (" + DecToHexFormat(actualValue) + ")";
-    }
-    return ValidationCheck(condition, context, isMustBehavior ? DiagnosisLevel.Error : DiagnosisLevel.Warning, () => Format(COMMON_STR_CHECK_LENGTH_EQUAL, 
-        [moduleName, fieldName, GetReferenceTypeValue(messageType), structureName, isMustBehavior ? COMMON_STR_MUST : COMMON_STR_SHOULD, expectValue, actualValue]));
+    return true;
 }
 
 ///////////////////////////////////////////////
 // Report insufficient data
-void ReportInsufficientData(any message context, DiagnosisLevel level, ReferenceType messageType,
+void ReportInsufficientData(any message msg, DiagnosisLevel level, ReferenceType typeOrMessage,
                     string moduleName, string fieldName, string structureName)
 {
-    array<any> descParams = [moduleName, fieldName, GetReferenceTypeValue(messageType), structureName];
-    ReportInsufficientData(context, level, Format(COMMON_STR_REPORT_INSUFFICIENT_DATA, descParams));
+    array<any> descParams = [moduleName, fieldName, typeOrMessage, structureName];
+    ReportInsufficientData(msg, level, Format(UTILITY_STR_REPORT_INSUFFICIENT_DATA, descParams));
+}
+
+// Report incsufficient data in case operation misses request or request.
+void ReportInsufficientOperation(any message msg, string moduleName, string opName, bool missRequest)
+{
+    if (missRequest)
+    {
+        ReportInsufficientData(msg, DiagnosisLevel.Error, Format(UTILITY_OPERATION_MISSING_REQUEST, moduleName, opName));
+    }
+    else
+    {
+        ReportInsufficientData(msg, DiagnosisLevel.Error, Format(UTILITY_OPERATION_MISSING_RESPONSE, moduleName, opName));
+    }
 }
 
 ///////////////////////////////////////////////
 // Report insufficient data, 
 // If trancated is true, indicates the traffic is truncated.
 // If trancated is false, indicates the traffic is missing some segments.
-void ReportInsufficientData(any message m, string moduleName, string fieldName, string messageName,  bool truncated)
+void ReportInsufficientTruncation(any message m, string moduleName, string fieldName, string messageName, bool truncated)
 {
     array<any> descParams = [moduleName, fieldName, messageName];
     if (truncated)
     {
-        ValidationCheck(false, m, DiagnosisLevel.Information, Format(COMMON_STR_REPORT_INSUFFICIENT_DATA_TRUNCATED, descParams));    
+        ValidationCheck(false, m, DiagnosisLevel.Information, Format(UTILITY_STR_REPORT_INSUFFICIENT_DATA_TRUNCATED, descParams));
     }
     else 
     {
-        ReportInsufficientData(m, DiagnosisLevel.Error, Format(COMMON_STR_REPORT_INSUFFICIENT_DATA_MISSING_SEGMENT, descParams));
+        ReportInsufficientData(m, DiagnosisLevel.Error, Format(UTILITY_STR_REPORT_INSUFFICIENT_DATA_MISSING_SEGMENT, descParams));
     }
 }
 
@@ -1001,15 +1185,11 @@ bool IsZeroValue((binary | array<byte>) val)
     else
     {
         var bin = val as binary;
-        if (bin.Count > 0)
+        foreach (byte b in bin)
         {
-            int i = GetIterator(bin);
-            while (MoveNext(bin, ref i))
+            if (b != 0)
             {
-                if (GetCurrent(bin, i) != 0)
-                {
-                    return false;
-                }
+                return false;
             }
         }
         return true;
@@ -1042,4 +1222,255 @@ void DisplayTopLevelMessage(any message msg, string diagnosisWarningStr)
         ReportInsufficientData(msg, DiagnosisLevel.Warning, diagnosisWarningStr);
         dispatch endpoint TopLevelDisplay accepts msg;
     }
+}
+
+bool IsTrue(optional bool x)
+{
+    return (x == nothing) ? false : x as bool;
+}
+
+// A simple Segmented Most Recent Cache
+// Holds at most Limit * 2 items
+type SMRCache<K,T>
+{
+    uint Limit;
+    map<K, T> Cache1 = {};
+    map<K, T> Cache2 = {};
+    
+    void Add(K k, T t)
+    {
+        if(Cache1.Count >= Limit)
+        {
+            Cache2 = Cache1;
+            Cache1 = {};
+        }
+        
+        // Make sure there are duplicated key in the cache
+        if(k in Cache2)
+        {
+            Cache2[k] = t;
+        }
+        else
+        {
+            Cache1[k] = t;
+        }
+    }
+    
+    optional T Get(K k)
+    {
+        if(k in Cache1)
+        {
+            return Cache1[k];
+        }
+        if(k in Cache2)
+        {
+            return Cache2[k];
+        }
+        return nothing;
+    }
+    
+    optional Pair<K, T> FindFirst(bool(K, T) f)
+    {
+        foreach (var c in Cache1)
+        {
+            if(f(c.Key, c.Value))
+            {
+                return c;
+            }
+        }
+        foreach (var c in Cache2)
+        {
+            if(f(c.Key, c.Value))
+            {
+                return c;
+            }
+        }
+        return nothing;
+    }
+    
+    uint Count()
+    {
+        return (Cache1.Count + Cache2.Count) as uint;
+    }
+    
+    void Clear()
+    {
+        Cache1 = {};
+        Cache2 = {};
+    }
+}
+
+// This function is used in RPC type protocol to make the display value more meaningful
+// Make sure that the input can be convert to type T
+optional T PatternDecoder<T>(any input)
+{
+    if (input is t:T) 
+    {
+        return t;
+    }
+    else 
+    {
+        return nothing;
+    }
+}
+
+optional T DecodeElementInAnyElement<T>(string namespace, string name, xml xmlValue)
+{
+    if (!(xmlValue.NamespaceUri == namespace && xmlValue.Name is xmlName:XmlName && xmlName.LocalName == name))
+    {
+        return nothing;
+    }
+    
+    return XmlDecoder<T>(xmlValue);
+}
+
+/* 
+ * Calculate the length which is ASN.1 BER decoder.
+ * So far it only support to decode when the length of length is 1, 2, 3 or 4.
+ * 
+ * param offsetBitPosition: offest to current bit position in stream.
+ */ 
+optional uint CalculateAsn1BerLength(stream s, int offsetBitPosition)
+{
+    assert offsetBitPosition >= 0;
+    
+    if (s.RemainingByteLength() - (offsetBitPosition >> 3) <= 2)
+    {
+        return nothing;
+    }
+    
+    // Second Byte, the Length or the length of the Length
+    byte secondByte = s.PeekByte(s.BitPosition + offsetBitPosition + 8);
+    
+    uint length = 2; // tag and the length tag is not included in the length value
+    if ((secondByte & 0x80) == 0x80)
+    {
+        // flag is set, and get the length of the binary, which represents the Length
+        secondByte = (secondByte & 0x7F) as byte;
+        if (s.RemainingByteLength() <= 2 + secondByte + (offsetBitPosition >> 3))
+        {
+            return nothing;
+        }
+        switch (secondByte)
+        {
+            case 0x01 =>
+                length += s.PeekByte(s.BitPosition + offsetBitPosition + 16) as uint;
+            case 0x02 =>
+                length += s.PeekUShort(s.BitPosition + offsetBitPosition + 16, Endian.Big) as uint;
+            case 0x03 =>
+                length += (s.PeekUInt(s.BitPosition + offsetBitPosition + 16, Endian.Big) >> 8) as uint;
+            case 0x04 =>
+                length += s.PeekUInt(s.BitPosition + offsetBitPosition + 16, Endian.Big);
+            default =>
+                return nothing;
+        }
+    }
+    length += (secondByte as uint);
+    return length;
+}
+
+/* 
+ * Calculate the length which is ASN.1 BER decoder.
+ * So far it only support to decode when the length of length is 1, 2, 3 or 4.
+ */
+optional uint CalculateAsn1BerLength(stream s)
+{
+    return CalculateAsn1BerLength(s, 0);
+}
+
+// Generic implementation of sorted linked list.
+type SortedLinkedList<T>
+{
+    // Head is the head of the list
+    SortedLinkedListNode<T> Head = null;
+    // Rear point to the last node in the list
+    SortedLinkedListNode<T> Rear = null;
+    // The Comparer function used for sorting in Insert function
+    int(T, T) Comparer;
+    // Count of node in the linked list
+    int Count = 0;
+
+    // Insert a segment in the sorted list
+    void Insert(T v)
+    {
+        var newNode = new SortedLinkedListNode<T>{Value = v};
+        Count++;
+
+        // Insert the node into an empty list
+        if (Head == null)
+        {
+            Head = newNode;
+            Rear = newNode;
+            return;
+        }
+
+        if (Comparer(Rear.Value, v) <= 0)
+        {
+            // Add the segment to the rear of the list since it is sequential
+            Rear.Next = newNode;
+            newNode.Previous = Rear;
+            Rear = newNode;
+            return;
+        }
+        else
+        {
+            // Find the proper position and insert
+            var temp = Rear.Previous;
+            // Move forward till the head or find the place to insert
+            while (temp != null && Comparer(temp.Value, v) > 0)
+            {
+                temp = temp.Previous;
+            }
+            // Insert
+            if (temp == null)
+            {
+                // Reached the head of the list
+                Head.Previous = newNode;
+                newNode.Next = Head;
+                Head = newNode;
+            }
+            else
+            {
+                // Insert the new node in current position, which is in the middle of the list
+                newNode.Next = temp.Next;
+                temp.Next = newNode;
+                newNode.Previous = temp;
+                var nextNode = newNode.Next;
+                nextNode.Previous = newNode;
+            }
+        }
+    }
+
+    void RemoveHead()
+    {
+        if (Head == null)
+        {
+            Count = 0;
+            return;
+        }
+        Head = Head.Next;
+        if (Head == null)
+        {
+            Rear = null;
+        }
+        else
+        {
+            Head.Previous = null;
+        }
+        Count--;
+    }
+
+    void Clear()
+    {
+        Head = null;
+        Rear = null;
+        Count = 0;
+    }
+}
+
+type SortedLinkedListNode<T>
+{
+    T Value;
+    SortedLinkedListNode<T> Previous;
+    SortedLinkedListNode<T> Next;
 }

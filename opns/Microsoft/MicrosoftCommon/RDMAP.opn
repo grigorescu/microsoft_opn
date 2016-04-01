@@ -15,16 +15,15 @@ OPNAuthoring
         ],
     RevisionSummary = 
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "04/28/2012"}
+            new Revision{Class = RevisionClass.Major, Version = "366681", Date = "07/24/2014"}
         ]
 };
 
 using Standard;
 using DDP;
-using IANA;
 using Utility;
 
-annotation byte Msg#OpCode;
+annotation byte Msg#MessageOpCode;
 
 // Endpoints
 endpoint Server 
@@ -35,104 +34,92 @@ client endpoint Client connected to Server;
 
 autostart actor RDMAPOverDDP(DDP.Server server)
 {
-    bool t; // "t": DDP.Segment.bufferModel is TagedBufferModel or UntagedBufferModel.
-    byte version; // "version": RDMAP's version which is from DDP.Segment.RsvdULP.
-    byte opCode; // "opCode": RDMAP's opCode which is to diff the header type of RDMAP.
+    bool isTagged; // "t": DDP.Segment.bufferModel is TaggedBufferModel or UntaggedBufferModel.
+    OpCode opCode; // "opCode": RDMAP's opCode which is to diff the header type of RDMAP.
     
+    observe server accepts s:DDP.Segment
+    {
+        ExtendDDP(s);
+    }
+    observe server issues s:DDP.Segment
+    {
+        ExtendDDP(s);
+    }
+
+    void ExtendDDP(DDP.Segment s)
+    {
+        if (s.BufferModel is untagged:UntaggedBufferModel)
+        {
+            var rsvdBin = untagged.RsvdULP.Value;
+            RdmapControlOverUntaggedBufferModel control = BinaryDecoder<RdmapControlOverUntaggedBufferModel>(rsvdBin) as RdmapControlOverUntaggedBufferModel; // decoding always succeeds.
+            isTagged = false;
+            opCode = control.OpCode;
+            untagged.RsvdULP = control;
+        }
+        else
+        {
+            var tagged = s.BufferModel as TaggedBufferModel;
+            var rsvdBin = tagged.RsvdULP.Value;
+            RdmapControlOverTaggedBufferMode control = BinaryDecoder<RdmapControlOverTaggedBufferMode>(rsvdBin) as RdmapControlOverTaggedBufferMode; // decoding always succeeds.
+            isTagged = false;
+            opCode = control.OpCode;
+            tagged.RsvdULP = control;
+        }
+    }
+
     process server accepts s:DDP.Segment where s.Payload.Count > 0
     {
-        t = CalculateTag(s);
-        version = CalculateVersion(s);
-        opCode =CalculateOpCode(s);
-        
-        RDMAPDecoder(t, version, opCode, s, true);
+        switch (s.Payload)
+        {
+            case m:Msg from BinaryDecoder<Msg[isTagged, opCode]> =>
+                m#MessageOpCode = opCode;
+                dispatch (endpoint Server over server) accepts m;
+            default =>
+                ThrowDecodingException("RDMAP", "Msg");
+        }
     }
     
     process server issues s:DDP.Segment where s.Payload.Count > 0
     {
-        t = CalculateTag(s);
-        version = CalculateVersion(s);
-        opCode = CalculateOpCode(s);
-        
-        RDMAPDecoder(t, version, opCode, s, false);
-    }
-    
-    bool CalculateTag(DDP.Segment s)
-    {
-        return (s.bufferModel is TagedBufferModel) ? (s.bufferModel as TagedBufferModel).T : (s.bufferModel as UntagedBufferModel).T;
-    }
-    
-    byte CalculateVersion(DDP.Segment s)
-    {
-        return (s.bufferModel is TagedBufferModel) ? 
-                        (((s.bufferModel as TagedBufferModel).RsvdULP & 0xC0) as byte)
-                         : (((((s.bufferModel as UntagedBufferModel).RsvdULP >> 32) as byte) & 0xC0) as byte);
-    }
-    
-    byte CalculateOpCode(DDP.Segment s)
-    {
-        return (s.bufferModel is TagedBufferModel) ?
-                     (((s.bufferModel as TagedBufferModel).RsvdULP & 0x0F) as byte)
-                      : (((((s.bufferModel as UntagedBufferModel).RsvdULP >> 32) as byte) & 0x0F) as byte);
-    }
-    
-    void RDMAPDecoder(bool tagged, byte version, byte opCode, DDP.Segment s, bool isAccepted)
-    {
-        // Set embedded control flag to DDP message.
-        var controlFlag = new ControlFlag { Version = version, Reserved = 0, OpCode = opCode};
-        map<string, any> embedded = {"RDMA Control" -> (controlFlag as any)};
-        s#Embedded = embedded;
-        s.AppendExtendingSummary("[DDP Extended by RDMA] ");
-                
-        var m = BinaryDecoder<Msg[tagged, opCode]>(s.Payload);
-        
-        if (m != nothing)
+        switch (s.Payload)
         {
-            Msg tm = m as Msg;
-            tm#OpCode = opCode;
-            if (isAccepted)
-            {
-                dispatch (endpoint Server over server) accepts tm;
-            }
-            else
-            {
-                dispatch (endpoint Server over server) issues tm;
-            }
-        }
-        else
-        {
-            ThrowDecodingException("RDMAP", "Msg");
+            case m:Msg from BinaryDecoder<Msg[isTagged, opCode]> =>
+                m#MessageOpCode = opCode;
+                dispatch (endpoint Server over server) issues m;
+            default =>
+                ThrowDecodingException("RDMAP", "Msg");
         }
     }
 }
 
-message Msg[bool T, byte OpCode]
+const set<byte> OpCodeHavingPayload = {OpCode.RDMAWrite, OpCode.RDMAReadResponse, OpCode.Send, OpCode.SendWithInvalidate, OpCode.SendWithSE, OpCode.SendWithSEAndInvalidate};
+message Msg[bool IsTagged, byte Code]
 {
     // header part
-    optional [|OpCode == MessageTypeBasedOpCode.RDMAReadRequest|] ReadRequestHeader ReadRequestHeader;
-    optional [|OpCode == MessageTypeBasedOpCode.Terminate|] TerminateHeader[T] TerminateHeader;
+    optional [|Code == OpCode.RDMAReadRequest|] ReadRequestHeader ReadRequestHeader;
+    optional [|Code == OpCode.Terminate|] TerminateHeader[IsTagged] TerminateHeader;
     
     // message part
-    optional [|OpCode in {0, 2, 3, 4, 5, 6}|] binary ULPPayload;
+    optional [|Code in OpCodeHavingPayload|] binary ULPPayload;
     
     override string ToString()
     {
-        switch (this#OpCode)
+        switch (this#MessageOpCode)
         {
-           case MessageTypeBasedOpCode.RDMAWrite               => return "RDMA Write";
-            case MessageTypeBasedOpCode.RDMAReadRequest         => return "RDMA Read Request";
-            case MessageTypeBasedOpCode.RDMAReadResponse        => return "RDMA Read Response";
-            case MessageTypeBasedOpCode.Send                    => return "RDMA Send";
-            case MessageTypeBasedOpCode.SendWithInvalidate      => return "RDMA Send With Invalidate";
-            case MessageTypeBasedOpCode.SendWithSE              => return "RDMA Send With SE";
-            case MessageTypeBasedOpCode.SendWithSEAndInvalidate => return "RDMA Send With SE and Invalidate";
-            case MessageTypeBasedOpCode.Terminate               => return "RDMA Terminate";
-            default                                             => return "OpCode: Unknown (" + (this#OpCode as string) + ")";
+            case OpCode.RDMAWrite               => return "RDMA Write";
+            case OpCode.RDMAReadRequest         => return "RDMA Read Request, RDMARDSZ: " + ((ReadRequestHeader as ReadRequestHeader).RDMARDSZ as string);
+            case OpCode.RDMAReadResponse        => return "RDMA Read Response";
+            case OpCode.Send                    => return "Send";
+            case OpCode.SendWithInvalidate      => return "Send With Invalidate";
+            case OpCode.SendWithSE              => return "Send With SE";
+            case OpCode.SendWithSEAndInvalidate => return "Send With SE and Invalidate";
+            case OpCode.Terminate               => return "Terminate, Error Code: " + EnumToString<RDMAP.ErrorCode>((TerminateHeader as TerminateHeader).ErrorCode, false);
+            default                              => return "Unknown(" + Utility.DecToHexFormat(this#MessageOpCode) + ")";
         }
     }
 }
 
-pattern MessageTypeBasedOpCode = enum byte
+pattern OpCode = enum byte
 {
     RDMAWrite = 0,
     RDMAReadRequest = 1,
@@ -182,18 +169,18 @@ pattern MessageTypeBasedOpCode = enum byte
    -------+-----------+-------------------+-------------------------
 */
 
-//4.4.  RDMA Read Request Header
+// 4.4.  RDMA Read Request Header
 type ReadRequestHeader
 {
-    uint SinkSTag; //Data Sink Steering Tag
-    ulong SinkTO;  //Data Sink Tagged Offset
-    uint RDMARDSZ; //RDMA Read Message Size.
-    uint SrcSTag;  //Data Source Steering Tag
-    ulong SrcTO;   //Data Source Tagged Offset
+    uint SinkSTag; // Data Sink Steering Tag
+    ulong SinkTO;  // Data Sink Tagged Offset
+    uint RDMARDSZ; // RDMA Read Message Size.
+    uint SrcSTag;  // Data Source Steering Tag
+    ulong SrcTO;   // Data Source Tagged Offset
 }
 
-//4.8.  Terminate Header
-type TerminateHeader[bool Taged]
+// 4.8.  Terminate Header
+type TerminateHeader[bool Tagged]
 {
     // Terminate Control: 19 bits
     LayerPattern Layer with BinaryEncoding{Width = 4};
@@ -208,8 +195,8 @@ type TerminateHeader[bool Taged]
     
     optional [|(Layer == LayerPattern.DDP) && D|] ushort DDPSegmentLength;
     
-    optional [|D|] ([|(EType != ErrorType.LocalCatastrophicError) && Taged|] DDP.TagedBufferModel 
-        | [|(EType != ErrorType.LocalCatastrophicError) && !Taged|] DDP.UntagedBufferModel) TerminatedDDPHeader;
+    optional [|D|] ([|(EType != ErrorType.LocalCatastrophicError) && Tagged|] DDP.TaggedBufferModel 
+        | [|(EType != ErrorType.LocalCatastrophicError) && !Tagged|] DDP.UntaggedBufferModel) TerminatedDDPHeader;
     
     optional [|R|] ReadRequestHeader TerminatedRDMAHeader;
 }
@@ -247,5 +234,23 @@ type ControlFlag
 {
     byte Version with BinaryEncoding{Width = 2};
     byte Reserved with BinaryEncoding{Width = 2};
-    MessageTypeBasedOpCode OpCode with BinaryEncoding{Width = 4};
+    OpCode OpCode with BinaryEncoding{Width = 4};
+}
+
+type RdmapControlOverTaggedBufferMode : DDP.RsvdULPType
+{
+    new optional binary Value with Encoding{Ignore = true};
+    byte Version with BinaryEncoding{Width = 2};
+    byte Reserved with BinaryEncoding{Width = 2};
+    OpCode OpCode with BinaryEncoding{Width = 4};
+}
+
+type RdmapControlOverUntaggedBufferModel : DDP.RsvdULPType
+{
+    new optional binary Value with Encoding{Ignore = true};
+    byte Version with BinaryEncoding{Width = 2};
+    byte Reserved with BinaryEncoding{Width = 2};
+    OpCode OpCode with BinaryEncoding{Width = 4};
+    optional [|OpCode in {4, 6}|] uint InvalidateSTag;
+    optional [|!(OpCode in {4, 6})|] uint RsvdULP;
 }

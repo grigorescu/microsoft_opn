@@ -36,8 +36,8 @@ type EndpointReferenceType
     optional AttributedQName PortType with XmlEncoding{Name = "PortType"};
     optional ServiceNameType ServiceName with XmlEncoding{Name = "ServiceName"};
     optional xml Policy with XmlEncoding{Name = "Policy", Namespace = WSAddressing2004Policy};
-    optional array<xml> anyElement with XmlEncoding{IsAny = true, Kind = XmlKind.Element, Namespace = XmlNamespaceIndicator.Other};
-    optional array<xml> anyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+    optional array<xml> AnyElements with XmlEncoding{IsAny = true, Kind = XmlKind.Element, Namespace = XmlNamespaceIndicator.Other};
+    optional array<xml> AnyAttributes with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
 }
 
 type EndpointReferenceType03
@@ -46,8 +46,8 @@ type EndpointReferenceType03
     optional xml ReferenceProperties with XmlEncoding{Name = "ReferenceProperties", Namespace = WSAddressing200403Namespace};
     optional AttributedQName PortType with XmlEncoding{Name = "PortType", Namespace = WSAddressing200403Namespace};
     optional ServiceNameType ServiceName with XmlEncoding{Name = "ServiceName", Namespace = WSAddressing200403Namespace};
-    optional array<xml> anyElement with XmlEncoding{IsAny = true, Kind = XmlKind.Element, Namespace = XmlNamespaceIndicator.Other};
-    optional array<xml> anyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+    optional array<xml> AnyElements with XmlEncoding{IsAny = true, Kind = XmlKind.Element, Namespace = XmlNamespaceIndicator.Other};
+    optional array<xml> AnyAttributes with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
 }
 
 type AttributedURI
@@ -65,7 +65,7 @@ type ServiceNameType
 {
     XSNCName PortName with XmlEncoding{Kind = XmlKind.Attribute};
     XSQName Name with XmlEncoding{Kind = XmlKind.Text};
-    optional array<xml> anyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+    optional array<xml> AnyAttributes with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
 }
 
 pattern MessageID = AttributedURI with XmlEncoding{Name = "MessageID"};
@@ -77,7 +77,7 @@ type Relationship
     XSAnyURI Base with XmlEncoding{Kind =  XmlKind.Text};
     optional RelationshipType RelationshipType = RelationshipTypeValues.Reply
         with XmlEncoding{Name = "RelationshipType", Kind = XmlKind.Attribute};
-    optional array<xml> anyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+    optional array<xml> AnyAttributes with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
 }
 
 pattern RelationshipType = RelationshipTypeValues | XSQName;
@@ -103,7 +103,7 @@ pattern ReplyAfter = ReplyAfterType with XmlEncoding{Name = "ReplyAfter"};
 type ReplyAfterType
 {
     XSNonNegativeInteger Base with XmlEncoding{Kind =  XmlKind.Text};
-    optional array<xml> anyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+    optional array<xml> AnyAttributes with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
 }
 
 pattern RetryAfter = RetryAfterType with XmlEncoding{Name = "RetryAfter"};
@@ -111,7 +111,7 @@ pattern RetryAfter = RetryAfterType with XmlEncoding{Name = "RetryAfter"};
 type RetryAfterType
 {
     XSNonNegativeInteger Base with XmlEncoding{Kind =  XmlKind.Text};
-    optional array<xml> anyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
+    optional array<xml> AnyAttributes with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
 }
 
 pattern FaultSubcodeValues = enum XSQName

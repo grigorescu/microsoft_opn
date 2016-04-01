@@ -16,99 +16,112 @@ OPNAuthoring
         ],
     RevisionSummary =
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "11/22/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "363368", Date = "05/05/2014"}
         ]
 };
 
 using Utility;
 using Standard;
-using TCP;
 using IANA;
-using VirtualTransport;
-using Reassembly;
+using TCP;
 
-endpoint Server over VirtualTransport.Server accepts Datagram issues Datagram;
+endpoint Server over TCP.Server accepts Datagram issues Datagram;
 client endpoint Client connected to Server;
 
-autostart actor PPTPOverTCP(VirtualTransport.Server server)
+autostart actor PPTPOverTCP(TCP.Server server)
 {
-    DecodingCache inboundCache = null;
-    DecodingCache outboundCache = null;
-    DecodingCache inboundCacheForTCPMistake = null;
-    DecodingCache outboundCacheForTCPMistake = null;
-    
-    process server issues s:VirtualTransport.VirtualDataSegment where s.SourcePort == Port.PPTP
+    TCPDecodingHelper decodingHelper = null;
+
+    process server issues s:TCP.Segment where s.SourcePort == Port.PPTP
     {
-        if (outboundCache == null)
+        if (decodingHelper == null)
         {
-            outboundCache = new DecodingCache{ Dispatcher = IssueDispatcher };
+            decodingHelper = new TCPDecodingHelper();
+            decodingHelper.Initialize(new TCPDecodingCache(), new TCPDecodingCache(),
+                                    "PPTP", endpoint Server over server, 
+                                    IsPPTP, 
+                                    IsSufficientForPPTP,
+                                    (stream s) => BinaryDecoder<Datagram>(s) as optional any message, 
+                                    (binary b) => BinaryDecoder<PartialPPTP>(b) as optional any message);
         }
-        
-        outboundCache.Add(s);
-        outboundCache.TryDecodeMsgAndDispatch();
+        decodingHelper.TryDecode(s, MessageDirection.Issues);
     }
-    process server accepts s:VirtualTransport.VirtualDataSegment where s.DestinationPort == Port.PPTP
+    process server accepts s:TCP.Segment where s.DestinationPort == Port.PPTP
     {
-        if (inboundCache == null)
+        if (decodingHelper == null)
         {
-            inboundCache = new DecodingCache{ Dispatcher = AcceptDispatcher };
+            decodingHelper = new TCPDecodingHelper();
+            decodingHelper.Initialize(new TCPDecodingCache(), new TCPDecodingCache(),
+                                    "PPTP", endpoint Server over server, 
+                                    IsPPTP, 
+                                    IsSufficientForPPTP,
+                                    (stream s) => BinaryDecoder<Datagram>(s) as optional any message, 
+                                    (binary b) => BinaryDecoder<PartialPPTP>(b) as optional any message);
         }
-        
-        inboundCache.Add(s);
-        inboundCache.TryDecodeMsgAndDispatch();
+        decodingHelper.TryDecode(s, MessageDirection.Accepts);
     }
-    
+
     // Below rules are added in case that TCP mistakes the Client for Server by port number for the trace without TCP 3-way handshake.
-    process server accepts s:VirtualTransport.VirtualDataSegment where server.isMissingThreeWayHandshake && s.SourcePort == Port.PPTP
+    process server accepts s:TCP.Segment where server.isMissingThreeWayHandshake && s.SourcePort == Port.PPTP
     {
-        if (inboundCacheForTCPMistake == null)
+        if (decodingHelper == null)
         {
-            inboundCacheForTCPMistake = new DecodingCache{ Dispatcher = IssueDispatcher };
+            decodingHelper = new TCPDecodingHelper();
+            decodingHelper.Initialize(new TCPDecodingCache(), new TCPDecodingCache(),
+                                    "PPTP", endpoint Server over server, 
+                                    IsPPTP, 
+                                    IsSufficientForPPTP,
+                                    (stream s) => BinaryDecoder<Datagram>(s) as optional any message, 
+                                    (binary b) => BinaryDecoder<PartialPPTP>(b) as optional any message);
         }
-        
-        inboundCacheForTCPMistake.Add(s);
-        inboundCacheForTCPMistake.TryDecodeMsgAndDispatch();
+        decodingHelper.TryDecode(s, MessageDirection.Issues);
     }
-    process server issues s:VirtualTransport.VirtualDataSegment where server.isMissingThreeWayHandshake && s.DestinationPort == Port.PPTP
+    process server issues s:TCP.Segment where server.isMissingThreeWayHandshake && s.DestinationPort == Port.PPTP
     {
-        if (outboundCacheForTCPMistake == null)
+        if (decodingHelper == null)
         {
-            outboundCacheForTCPMistake = new DecodingCache{ Dispatcher = AcceptDispatcher };
+            decodingHelper = new TCPDecodingHelper();
+            decodingHelper.Initialize(new TCPDecodingCache(), new TCPDecodingCache(),
+                                    "PPTP", endpoint Server over server, 
+                                    IsPPTP, 
+                                    IsSufficientForPPTP,
+                                    (stream s) => BinaryDecoder<Datagram>(s) as optional any message, 
+                                    (binary b) => BinaryDecoder<PartialPPTP>(b) as optional any message);
         }
-        
-        outboundCacheForTCPMistake.Add(s);
-        outboundCacheForTCPMistake.TryDecodeMsgAndDispatch();
-    }
-    
-    void AcceptDispatcher(Datagram datagram)
-    {
-        dispatch endpoint Server over server accepts datagram;
-    }
-    
-    void IssueDispatcher(Datagram datagram)
-    {
-        dispatch endpoint Server over server issues datagram;
+        decodingHelper.TryDecode(s, MessageDirection.Accepts);
     }
     
-    ~endpoint(VirtualTransport.Server server)
+    ~endpoint(TCP.Server server)
     {
-        if (inboundCache != null)
+        if (decodingHelper != null)
         {
-            inboundCache.Clear();
-        }
-        if (outboundCache != null)
-        {
-            outboundCache.Clear();
-        }
-        if (inboundCacheForTCPMistake != null)
-        {
-            inboundCacheForTCPMistake.Clear();
-        }
-        if (outboundCacheForTCPMistake != null)
-        {
-            outboundCacheForTCPMistake.Clear();
+            decodingHelper.ClearInDestructor();
+            decodingHelper = null;
         }
     }
+}
+
+bool? IsPPTP(binary b)
+{
+    if (b.Count < 8)
+        return null;
+
+    if (b[4] == 0x1A && b[5] == 0x2B && b[6] == 0x3C && b[7] == 0x4D) // RFC 2637 section 1.4: The Magic Cookie is always sent as the constant 0x1A2B3C4D.
+        return true;
+    else
+        return false;
+}
+
+uint? IsSufficientForPPTP(binary b)
+{
+    if (b.Count < 2)
+        return null;
+    var length = (((b[0] as ushort) << 8) + b[1]) as uint;
+
+    if (length <= b.Count)
+        return 0;
+    else
+        return length;
 }
 
 message Datagram
@@ -120,38 +133,39 @@ message Datagram
     
     override string ToString()
     {
-        string displayStr = "PPTP: ";
+        string displayStr = "";
         switch (PPTPHead.MessageType)
         {
             case 1 => 
-                displayStr += "Control Message, ";
                 var msg = Message as ControlMessage;
-                switch (msg.ControlMessageType)
-                {
-                    case 1 => displayStr += "Start Control Connection Request";
-                    case 2 => displayStr += "Start Control Connection Reply";
-                    case 3 => displayStr += "Stop Control Connection Request";
-                    case 4 => displayStr += "Stop Control Connections Reply";
-                    case 5 => displayStr += "Echo Request";
-                    case 6 => displayStr += "Echo Reply";
-                    case 7 => displayStr += "Outgoing Call Request";
-                    case 8 => displayStr += "Outgoing Call Reply";
-                    case 9 => displayStr += "Incoming Call Request";
-                    case 10 => displayStr += "Incoming Call Reply";
-                    case 11 => displayStr += "Incoming Call Connected";
-                    case 12 => displayStr += "Call Clear Request";
-                    case 13 => displayStr += "Call Disconnect Notify";
-                    case 14 => displayStr += "WAN Error Notify";
-                    case 15 => displayStr += "Set Link Info";
-                    default => 
-                        displayStr += "Unknown Control Message Type (" + (msg.ControlMessageType as string) + ")";
-                }
+                displayStr += ((InRange<ControlMessagePattern>(msg.ControlMessageType)) ? "Control Message: " : "Unknown Control Message Type: ") + EnumToString<PPTP.ControlMessagePattern>(msg.ControlMessageType, false);
             case 2 => displayStr += "Management Message";
             default => 
-                displayStr += "Unknown Message Type (" + (PPTPHead.MessageType as string) + ")";
+                displayStr += "Unknown Message Type(" + (PPTPHead.MessageType as string) + ")";
         }
+        displayStr += ", Length: " + (PPTPHead.Length.ToString());
         return displayStr;
     }
+};
+
+pattern ControlMessagePattern = enum ushort
+{
+    $"Start-Control-Connection-Request" = 1,
+    $"Start-Control-Connection-Reply" = 2,
+    $"Stop-Control-Connection-Request" = 3,
+    $"Stop-Control-Connections-Reply" = 4,
+    $"Echo-Request" = 5,
+    $"Echo-Reply" = 6,
+    $"Outgoing-Call-Request" = 7,
+    $"Outgoing-Call-Reply" = 8,
+    $"Incoming-Call-Request" = 9,
+    $"Incoming-Call-Reply" = 10,
+    $"Incoming-Call-Connected" = 11,
+    $"Call-Clear-Request" = 12,
+    $"Call-Disconnect-Notify" = 13,
+    $"WAN-Error-Notify" = 14,
+    $"Set-Link-Info" = 15,
+    ...
 };
 
 // Only define to handle partial message parsing.
@@ -162,14 +176,15 @@ message PartialPPTP
     
     override string ToString()
     {
-        string displayStr = "PPTP Partial Message: ";
+        string displayStr = "[Incomplete Message] ";
         switch (PPTPHead.MessageType)
         {
             case 1 => displayStr += "Control Message";
             case 2 => displayStr += "Management Message";
             default => 
-                displayStr += "Unknown Message Type (" + (PPTPHead.MessageType as string) + ")";
+                displayStr += "Unknown Message Type(" + (PPTPHead.MessageType as string) + ")";
         }
+        displayStr += ", Length: " + (PPTPHead.Length as string);
         return displayStr;
     }
 };
@@ -181,14 +196,14 @@ type PPTPHead
     uint MagicCookie;
 }
 
-type ManagementMessage[ushort len]
+type ManagementMessage[ushort Len]
 {
-    string Message with BinaryEncoding{Length = len, TextEncoding = TextEncoding.ASCII};
+    string Message with BinaryEncoding{Length = Len, TextEncoding = TextEncoding.ASCII};
 }
 
 type ControlMessage
 {
-    ushort ControlMessageType;
+    ControlMessagePattern ControlMessageType;
     ushort Reserved0 where ValidationCheck(value == 0, null, DiagnosisLevel.Error, "PPTP: Reserved0 in type ControlMessage must be zero.");
     ([|ControlMessageType == 1|] StartControlConnectionRequest
         | [|ControlMessageType == 2|] StartControlConnectionReply
@@ -375,55 +390,5 @@ type BearerCapabilities
 {
     uint Reserved with BinaryEncoding{Width = 30};
     byte DigitalAccessSupported with BinaryEncoding{Width = 1};
-    byte AnalogAccessSupported with BinaryEncoding{Width = 1}; 
-}
-
-type DecodingCache : DecodingCacheBase
-{
-    void(Datagram) Dispatcher;
-    
-    uint BufferCount()
-    {
-        if (Buffer == null)
-            return 0;
-        return Buffer.Count as uint;
-    }
-    
-    void TryDecodeMsgAndDispatch()
-    {
-        while(BufferCount() >= 8)
-        {
-            stream s = Buffer;
-            ushort msgLength = ((Buffer[0] as ushort) << 8) + Buffer[1] as ushort;
-            if (msgLength > s.ByteLength)
-            {
-                return;
-            }
-            // Guarantee never decode failed.
-            Datagram datagram = BinaryDecoder<Datagram>(s) as Datagram;
-            if (datagram != nothing)
-            {
-                Dispatcher(datagram);
-            }
-            else
-            {
-                ThrowDecodingException("PPTP");
-            }
-            Reset(s);
-        }
-    }
-    
-    override optional any message DecodePartialMessage()
-    {
-        if (BufferCount() < 8)
-        {
-            return nothing;
-        }
-        // Guarantee partial message always decode successfuly.
-        PartialPPTP partial = BinaryDecoder<PartialPPTP>(Buffer) as PartialPPTP;
-        ReportInsufficientData(partial, DiagnosisLevel.Warning, 
-                "PPTP: Incomplete PPTP payload for full reassembly, missing continuous message. Expected length: " + 
-                partial.PPTPHead.Length.ToString() + ", Actual length: " + (partial.IncompleteData.Count + 8).ToString() + ".");
-        return partial;
-    }
+    byte AnalogAccessSupported with BinaryEncoding{Width = 1};
 }

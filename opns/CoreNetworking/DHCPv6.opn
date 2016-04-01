@@ -10,7 +10,7 @@ OPNAuthoring
 {
     Copyright = "(c) Microsoft Corporation",
     References =
-       [
+        [
             new Reference{Name = "RFC 3315"},
             new Reference{Name = "RFC 3319"},
             new Reference{Name = "RFC 3646"},
@@ -23,23 +23,22 @@ OPNAuthoring
             new Reference{Name = "RFC 4704"},
             new Reference{Name = "RFC 4649"},
             new Reference{Name = "RFC 4580"},
-            new Reference{Name = "MS-DHCPE"},
         ],
     RevisionSummary = 
         [
-             new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "09/02/2011"}
+             new Revision{Class = RevisionClass.Major, Version = "371926", Date = "12/05/2014"}
         ]
 };
 
 using Standard;
-using Ethernet;
 using IPv6;
 using UDP;
 using Utility;
 using IANA;
+using CoreNetworkingResources;
 
 endpoint Server
-    over UDP.Host provides Messages consumes Messages
+    over UDP.Host provides mutable Messages consumes Messages
 {
     // ToCheck the RelayMessage MUST include a Relay Message option
     observe this accepts m:Messages.RelayMessage
@@ -47,66 +46,76 @@ endpoint Server
         bool hasRelayMsgOption = false;
         foreach (var op in m.Options)
         {
-            if (op is RelayMsgOption)
+            if (op is RelayMessageOption)
             {
                 hasRelayMsgOption = true;
                 break;
             }
-            ValidationCheck(hasRelayMsgOption, m, "DHCPv6: The operation must include a relay message option.");
         }
+        
+        ValidationCheck(hasRelayMsgOption, m, REPAY_MESSAGE_OPTION_CHECK);
     }
 };
 
 client endpoint Client connected to Server;
 
-// Since Bug 36618, change all the "binding" to actor temporarily.
-//binding ServerOverUDP:DHCPv6.Server over host:UDP.Host
-//{
-    //rule host accepts UDP.Datagram{SourcePort is Port.DHCPv6S, DestinationPort is Port.DHCPv6C, Payload is m:Messages.Message from MessageDecoder}
-        //=> DHCPv6.Server issues m;
-    //rule host accepts UDP.Datagram{SourcePort is Port.DHCPv6C, DestinationPort is Port.DHCPv6S, Payload is m:Messages.Message from MessageDecoder}
-        //=> DHCPv6.Server accepts m;
-    //rule host accepts UDP.Datagram{SourcePort is Port.DHCPv6S, DestinationPort is Port.DHCPv6C, Payload is m:Messages.RelayMessage from RelayMessageDecoder}
-        //=> DHCPv6.Server issues m;
-    //rule host accepts UDP.Datagram{SourcePort is Port.DHCPv6C, DestinationPort is Port.DHCPv6S, Payload is m:Messages.RelayMessage from RelayMessageDecoder}
-        //=> DHCPv6.Server accepts m;
-//}
-
 autostart actor ServerOverUDP(UDP.Host host)
 {
     process host accepts d:UDP.Datagram where d.SourcePort == Port.DHCPv6S && d.DestinationPort == Port.DHCPv6C
     {
-        switch (d.Payload)
-        {
-            case m:Messages.Message from BinaryDecoder =>
-            dispatch (endpoint DHCPv6.Server over host) issues m;
-            case m:Messages.RelayMessage from BinaryDecoder =>
-            dispatch (endpoint DHCPv6.Server over host) issues m;
-            default => 
-            ThrowDecodingException("DHCPv6");
-        }
+        DecodingDhcpv6Message(d.Payload, false);
     }
+
     process host accepts d:UDP.Datagram where d.SourcePort == Port.DHCPv6C && d.DestinationPort == Port.DHCPv6S
     {
-        switch (d.Payload)
-        {
-            case m:Messages.Message from BinaryDecoder =>
-            dispatch (endpoint DHCPv6.Server over host) accepts m;
-            case m:Messages.RelayMessage from BinaryDecoder =>
-            dispatch (endpoint DHCPv6.Server over host) accepts m;
-            default => 
-            ThrowDecodingException("DHCPv6");
-        }
+        DecodingDhcpv6Message(d.Payload, true);
     }
+
     process host accepts d:UDP.Datagram where d.SourcePort == Port.DHCPv6S && d.DestinationPort == Port.DHCPv6S
     {
         switch (d.Payload)
         {
             case m:Messages.RelayMessage from BinaryDecoder =>
-            dispatch (endpoint DHCPv6.Server over host) accepts m;
+                dispatch (endpoint DHCPv6.Server over host) accepts m;
             default => 
-            ThrowDecodingException("DHCPv6");
+                ThrowDecodingException("DHCPv6");
         }
+    }
+
+    void DecodingDhcpv6Message(binary payload, bool isAccepts)
+    {
+        if (payload.Count > 1 && (payload[0] == MsgType.RELAYFORW || payload[0] == MsgType.RELAYREPL))
+        {
+            if (BinaryDecoder<Messages.RelayMessage>(payload) is relayMessage:Messages.RelayMessage)
+            {
+                if (isAccepts)
+                {
+                    dispatch (endpoint DHCPv6.Server over host) accepts relayMessage;
+                }
+                else
+                {
+                    dispatch (endpoint DHCPv6.Server over host) issues relayMessage;
+                }
+                return;
+            }
+        }
+        else
+        {
+            if (BinaryDecoder<Messages.Message>(payload) is m:Messages.Message)
+            {
+                if (isAccepts)
+                {
+                    dispatch (endpoint DHCPv6.Server over host) accepts m;
+                }
+                else
+                {
+                    dispatch (endpoint DHCPv6.Server over host) issues m;
+                }
+                return;
+            }
+        }
+
+        ThrowDecodingException("DHCPv6");
     }
 }
 
@@ -115,28 +124,61 @@ contract Messages
     // RFC 3315 Client/Server Message Formats
     message Message
     {
-        MsgType Type where value != MsgType.RELAYFORW && value != MsgType.RELAYREPL;
+        MsgType Type where ValidationCheckEnumValue(InRange<MsgType>(value) && value != MsgType.RELAYFORW && value != MsgType.RELAYREPL, this, true, ReferenceType.Message,
+            "DHCPv6", "Type", "RelayMessage", "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11", value);
         uint TransactionId with BinaryEncoding{Width = 24};
         array<DHCPOption> Options;
+
         override string ToString()
         {
-            return EnumToString(Type, "DHCPv6.MsgType") + ", TransID: " + DecToHexFormat(TransactionId);
+            return EnumToStringInSummary<DHCPv6.MsgType>(Type) + ", TransID: " + DecToHexFormat(TransactionId);
         }
     }
 
     // RFC 3315  Relay Agent/Server Message
     message RelayMessage
     {
-        MsgType Type where value == MsgType.RELAYFORW  || value == MsgType.RELAYREPL;
+        MsgType Type where ValidationCheckEnumValue(value == MsgType.RELAYFORW || value == MsgType.RELAYREPL, this, true, ReferenceType.Message,
+            "DHCPv6", "Type", "RelayMessage", "12, 13", value);
         byte hopcount;
-        (GlobalUnicastAddress |SiteLocalUnicastAddress) LinkAddress;
+        ([|((stream.PeekUShort(stream.BitPosition, Endian.Big) as uint) & (0xFFF0 as uint)) == 0xFEC0|] SiteLocalUnicastAddress | GlobalUnicastAddress) LinkAddress;
         IPv6Address PeerAddress;
         array<DHCPOption> Options;
+
         override string ToString()
         {
-            return EnumToString(Type, "DHCPv6.MsgType");
+            return EnumToStringInSummary<DHCPv6.MsgType>(Type);
         } 
     }
+}
+
+// define for the message embedded in the type
+type Dhcpv6Message
+{
+    MsgType Type where ValidationCheckEnumValue(InRange<MsgType>(value) && value != MsgType.RELAYFORW && value != MsgType.RELAYREPL, null, true, ReferenceType.Type,
+        "DHCPv6", "Type", "RelayMessage", "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11", value);
+    uint TransactionId with BinaryEncoding{Width = 24};
+    array<DHCPOption> Options;
+
+    override string ToString()
+    {
+        return EnumToStringInSummary<DHCPv6.MsgType>(Type) + ", TransID: " + DecToHexFormat(TransactionId);
+    }
+}
+
+type Dhcpv6RelayMessage
+{
+    MsgType Type where ValidationCheckEnumValue(value == MsgType.RELAYFORW || value == MsgType.RELAYREPL, null, true, ReferenceType.Type,
+        "DHCPv6", "Type", "RelayMessage", "12, 13", value);
+    byte hopcount;
+    ([|((stream.PeekUShort(stream.BitPosition, Endian.Big) as uint) & (0xFFF0 as uint)) == 0xFEC0|] SiteLocalUnicastAddress | GlobalUnicastAddress) LinkAddress;
+    IPv6Address PeerAddress;
+    array<DHCPOption> Options;
+
+    override string ToString()
+    {
+        return EnumToStringInSummary<DHCPv6.MsgType>(Type);
+    } 
 }
 
 // RFC 3315 DHCP Message Types
@@ -154,187 +196,320 @@ pattern MsgType = enum byte
     RECONFIGURE = 10,
     INFORMATIONREQUEST = 11,
     RELAYFORW = 12,
-    RELAYREPL = 13
+    RELAYREPL = 13,
+    ...
 };
 
+pattern DHCPOption = [|stream.RemainingByteLength() >= 4|] (SubDHCPOption | UnknownOption);
 // RFC 3315 DHCP Options
-pattern DHCPOption = ( ClientIdentifierOption
-                         | ServerIdentifierOption   
-                         | IANAOption
-                         | IATAOption               
-                         | IAAOption                
-                         | RequestOption            
-                         | PreferenceOption         
-                         | ElapsedTimeOption        
-                         | RelayMsgOption           
-                         | AutherticationOption 
-                         | ServerUnicastOption      
-                         | StatusCodeOption         
-                         | RapidCommitOption        
-                         | DHCPEUserClassOption
-                         | UserClassOption          
-                         | DHCPEVendorClass
-                         | VendorClassOption        
-                         | DHCPEVendorSpecificInfoOption
-                         | VendorSpecificInfoOption 
-                         | InterfaceIDOption        
-                         | ReconfigureMsgOption     
-                         | ReconfigureAcceptOption
-                         | SIPServerDomainOption
-                         | SIPServerAddrOption
-                         | DNSServersOption
-                         | DomainSearchListOption
-                         | IAPrefixDelegationOption
-                         | IAPrefixOption
-                         | NetworkInformationServerOption
-                         | NetworkInformationServerV2Option
-                         | NetworkInformationServerDomainNameOption
-                         | NetworkInformationServerV2DomainNameOption
-                         | SNTPServerListOption
-                         | OptionFormat
-                         | BCMCSControllerDomainNamelist
-                         | BCMCSControllerIPv6addresslist
-                         | RelayAgentRemoteIDOption
-                         | RelayAgentSubscriberIDOption
-                         | ClientFQDN);
+pattern SubDHCPOption = [|stream.PeekUShort(stream.BitPosition, Endian.Big) == 1|] ClientIdentifierOption |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Big) == 2|] ServerIdentifierOption |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Big) == 3 && stream.PeekUShort(stream.BitPosition + 16, Endian.Big) >= 12|] IANAOption |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Big) == 4 && stream.PeekUShort(stream.BitPosition + 16, Endian.Big) >= 4|] IATAOption |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Big) == 5 && stream.PeekUShort(stream.BitPosition + 16, Endian.Big) >= 24|] IAAOption |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Big) == 6 && stream.PeekUShort(stream.BitPosition + 16, Endian.Big) % 2 == 0|] OptionRequestOption |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Big) == 7 && stream.PeekUShort(stream.BitPosition + 16, Endian.Big) == 1|] PreferenceOption |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Big) == 8 && stream.PeekUShort(stream.BitPosition + 16, Endian.Big) == 2|] ElapsedTimeOption |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Big) == 9|] RelayMessageOption |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Big) == 11 && stream.PeekUShort(stream.BitPosition + 16, Endian.Big) >= 11|] AuthenticationOption |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Big) == 12 && stream.PeekUShort(stream.BitPosition + 16, Endian.Big) == 16|] ServerUnicastOption |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Big) == 13 && stream.PeekUShort(stream.BitPosition + 16, Endian.Big) >= 2|] StatusCodeOption |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Big) == 14 && stream.PeekUShort(stream.BitPosition + 16, Endian.Big) == 0|] RapidCommitOption |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Big) == 15|] UserClassOption |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Big) == 16 && stream.PeekUShort(stream.BitPosition + 16, Endian.Big) >= 4|] VendorClassOption |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Big) == 17 && stream.PeekUShort(stream.BitPosition + 16, Endian.Big) >= 4|] VendorSpecificInformationOption |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Big) == 18|] InterfaceIDOption |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Big) == 19 && stream.PeekUShort(stream.BitPosition + 16, Endian.Big) == 1|] ReconfigureMessageOption |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Big) == 20 && stream.PeekUShort(stream.BitPosition + 16, Endian.Big) == 0|] ReconfigureAcceptOption |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Big) == 21|] SIPServersDomainNameListOption |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Big) == 22 && stream.PeekUShort(stream.BitPosition + 16, Endian.Big) % 16 == 0|] SIPServersIPv6AddressLitsOption |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Big) == 23 && stream.PeekUShort(stream.BitPosition + 16, Endian.Big) % 16 == 0|] DNSRecursiveNameServerOption |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Big) == 24|] DomainSearchListOption |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Big) == 25 && stream.PeekUShort(stream.BitPosition + 16, Endian.Big) >= 12|] IAPrefixDelegationOption |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Big) == 26 && stream.PeekUShort(stream.BitPosition + 16, Endian.Big) >= 25|] IAPDPrefixOption |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Big) == 27 && stream.PeekUShort(stream.BitPosition + 16, Endian.Big) % 16 == 0|] NISServerOption |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Big) == 28 && stream.PeekUShort(stream.BitPosition + 16, Endian.Big) % 16 == 0|] NISv2ServerOption |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Big) == 29|] NISDomainNameOption |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Big) == 30|] NISv2DomainNameOption |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Big) == 31 && stream.PeekUShort(stream.BitPosition + 16, Endian.Big) % 16 == 0|] SNTPServersOption |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Big) == 32 && stream.PeekUShort(stream.BitPosition + 16, Endian.Big) == 4|] OptionFormat |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Big) == 33|] BCMCSControllerDomainNamelist |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Big) == 34 && stream.PeekUShort(stream.BitPosition + 16, Endian.Big) % 16 == 0|] BCMCSControllerIPv6AddressList |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Big) == 36 && stream.PeekUShort(stream.BitPosition + 16, Endian.Big) >= 3|] CivicLocationOption |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Big) == 37 && stream.PeekUShort(stream.BitPosition + 16, Endian.Big) >= 4|] RelayAgentRemoteIDOption |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Big) == 38|] RelayAgentSubscriberIDOption |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Big) == 39 && stream.PeekUShort(stream.BitPosition + 16, Endian.Big) >= 1|] ClientFQDNOption;
+
+// option base type
+type BaseOption
+{
+    // Not add validation check on field "OptionCode" for the consideration of option extension
+    OptionType OptionCode;
+    ushort OptionLen;
+}
+
+type UnknownOption : BaseOption
+{
+    binary Value with BinaryEncoding{Length = OptionLen};
+}
 
 // RFC 3315 DHCP Options
 pattern OptionType = enum ushort
 {
-    OptionClientID = 1,
-    OptionServerID = 2,
-    OptionIANA = 3,
-    OptionIATA = 4,
-    OptionIAADDR = 5,
-    OptionORO = 6,
-    OptionPreference = 7,
-    OptionElapsedTime = 8,
-    OptionRelayMsg = 9,
-    OptionAUTH = 11,
-    OptionUniCast = 12,
-    OptionStatusCode = 13,
-    OptionRapidCommit = 14,
-    OptionUserClass = 15,
-    OptionVendorClass = 16,
-    OptionVendorOPTS = 17,
-    OptionInterfaceID = 18,
-    OptionReconfMsg = 19,
-    OptionReconfAccept = 20,
-    OptionClientFQDN =39
+    ClientIdentifierOption = 1,
+    ServerIdentifierOption = 2,
+    IANAOption = 3,
+    IATAOption = 4,
+    IAAOption = 5,
+    OptionRequestOption = 6,
+    PreferenceOption = 7,
+    ElapsedTimeOption = 8,
+    RelayMessageOption = 9,
+    AuthenticationOption = 11,
+    ServerUnicastOption = 12,
+    StatusCodeOption = 13,
+    RapidCommitOption = 14,
+    UserClassOption = 15,
+    VendorClassOption = 16,
+    VendorSpecificInformationOption = 17,
+    InterfaceIDOption = 18,
+    ReconfigureMessageOption = 19,
+    ReconfigureAcceptOption = 20,
+    SIPServersDomainNameListOption = 21,
+    SIPServersIPv6AddressLitsOption = 22,
+    DNSRecursiveNameServerOption = 23,
+    DomainSearchListOption = 24,
+    IAPrefixDelegationOption = 25,
+    IAPDPrefixOption = 26,
+    NISServerOption = 27,
+    NISv2ServerOption = 28,
+    NISDomainNameOption = 29,
+    NISv2DomainNameOption = 30,
+    SNTPServersOption = 31,
+    OptionFormat = 32,
+    BCMCSControllerDomainNamelist = 33,
+    BCMCSControllerIPv6AddressList = 34,
+    CivicLocationOption = 36,
+    RelayAgentRemoteIDOption = 37,
+    RelayAgentSubscriberIDOption = 38,
+    ClientFQDNOption =39,
+    ...
 };
 
 // RFC 3315 Client Identifier Option
-type ClientIdentifierOption
+// OptionCode = 1
+type ClientIdentifierOption : BaseOption
 {
-    (OptionType where value == 1) OptionCode; // OptionCode = 1
-    ushort OptionLen;
-    DUIDContents[OptionLen] DUID with BinaryEncoding{Length = OptionLen};
+    DUIDContents DUID with BinaryEncoding{WidthForComposedType = OptionLen * 8};
+    
+    override string ToString()
+    {
+        return "Client Identifier";
+    }
 }
 
 // RFC 3315 Server Identifier Option
-type ServerIdentifierOption
+// OptionCode = 2
+type ServerIdentifierOption : BaseOption
 {
-    (OptionType where value == 2) OptionCode; // OptionCode = 2
-    ushort OptionLen;
-   DUIDContents[OptionLen] DUID with BinaryEncoding{Length = OptionLen};
+    DUIDContents DUID with BinaryEncoding{WidthForComposedType = OptionLen * 8};
+    
+    override string ToString()
+    {
+        return "Server Identifier";
+    }
 }
 
 // RFC 3315 Identity Association for Non-temporary Addresses Option
-type IANAOption
+// OptionCode = 3
+type IANAOption : BaseOption
 {
-    (OptionType where value == 3) OptionCode; // OptionCode = 3
-    ushort OptionLen;
     uint IAID;
     uint T1;
     uint T2;
-    optional [|OptionLen > 12|] (IAAOption | StatusCodeOption | FlatOption[(OptionLen - 12) as ushort]) IANAOptions;
-}
-
-// Define a type as default
-type FlatOption[ushort Len]
-{
-    string Option with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = Len as uint};
+    array<[|stream.RemainingByteLength() > 2 && stream.PeekUShort(stream.BitPosition, Endian.Big) == 5|] IAAOption |
+        [|stream.RemainingByteLength() > 2 && stream.PeekUShort(stream.BitPosition, Endian.Big) == 13|] StatusCodeOption |
+        UnknownOption> IANAOptions with BinaryEncoding{WidthForComposedType = (OptionLen - 12) * 8};
+        
+    override string ToString()
+    {
+        return "IANA: " + DecToHexFormat(IAID);
+    }
 }
 
 // RFC 3315 Identity Association for Temporary Addresses Option
-type IATAOption
+// OptionCode = 4
+type IATAOption : BaseOption
 {
-    (OptionType where value == 4) OptionCode; // OptionCode = 4
-    ushort OptionLen;
     uint IAIDL;
-    optional [|OptionLen > 4|] (IAAOption | StatusCodeOption | FlatOption[(OptionLen - 4) as ushort]) IATAOptions;
+    array<[|stream.RemainingByteLength() > 2 && stream.PeekUShort(stream.BitPosition, Endian.Big) == 5|] IAAOption |
+        [|stream.RemainingByteLength() > 2 && stream.PeekUShort(stream.BitPosition, Endian.Big) == 13|] StatusCodeOption |
+        UnknownOption> IATAOptions with BinaryEncoding{WidthForComposedType = (OptionLen - 4) * 8};
+   
+    override string ToString()
+    {
+        return "IATA: " + DecToHexFormat(IAIDL);
+    }
 }
 
 // RFC 3315 IA IPv6Address Option
-type IAAOption
+// OptionCode = 5
+type IAAOption : BaseOption
 {
-    (OptionType where value == 5) OptionCode; // OptionCode = 5
-    ushort OptionLen;
     IPv6Address IPv6Address;
     uint PreferredLifeTime;
     uint ValidLifeTime;
-    optional [|OptionLen > 24|] (StatusCodeOption | FlatOption[(OptionLen - 24) as ushort]) IAAddrOptions;
+    array<[|stream.RemainingByteLength() > 2 && stream.PeekUShort(stream.BitPosition, Endian.Big) == 13|] StatusCodeOption |
+        UnknownOption> IAAddrOptions with BinaryEncoding{WidthForComposedType = (OptionLen - 24) * 8};
+    
+    override string ToString()
+    {
+        return "IA Address: " + IPv6Address.ToString();
+    }
 }
 
 // RFC 3315 Option Request Option
-type RequestOption
+// OptionCode = 6
+type OptionRequestOption : BaseOption
 {
-    (OptionType where value == 6) OptionCde; // OptionCode = 6
-    ushort OptionLen;
-    array<ushort> ReqOptCode with BinaryEncoding{Length = OptionLen / 2 as uint}; // Future Reference: Use Enum pattern instead.
+    array<OptionType> RequestedOptionCodes with BinaryEncoding{WidthForComposedType = OptionLen * 8};
+    
+    override string ToString()
+    {
+        return "Option Request: " + RequestedOptionCodes.ToString();
+    }
 }
 
 // RFC 3315 Preference Option
-type PreferenceOption
+// OptionCode = 7
+type PreferenceOption : BaseOption
 {
-    (OptionType where value == 7) OptionCode; // OptionCode = 7
-    ushort OptionLen where ValidationCheck(value == 1, null, "DHCPv6: The Length field in type PreferenceOption must be set to 1, not " + DecToHexFormat(value) + ".");
     byte PreValue;
+    
+    override string ToString()
+    {
+        return "Preference: " + PreValue.ToString();
+    }
 }
 
 // RFC 3315 Elapsed Time Option
-type ElapsedTimeOption
+// OptionCode = 8
+type ElapsedTimeOption : BaseOption
 {
-    (OptionType where value == 8) OptionCode; // OptionCode = 8
-    ushort OptionLen where ValidationCheck(value == 2, null, "DHCPv6: The Length field in type ElapsedTimeOption must be set to 2, not " + DecToHexFormat(value) + ".");
     ushort ElapsedTime;
+    
+    override string ToString()
+    {
+        // This time is expressed in  hundredths of a second (10^-2 seconds)
+        return "Elapsed Time: " + (ElapsedTime * 10).ToString() + "ms";
+    }
 }
 
 // RFC 3315 Relay Message Option
-type RelayMsgOption
+// OptionCode = 9
+type RelayMessageOption : BaseOption
 {
-    (OptionType where value == 9) OptionCode;   // OptionCode = 9
-    ushort OptionLen;
-    binary DHCPRelayMessage;
+    ([|stream.RemainingByteLength() > 1 && stream.CurrentByte == 12 || stream.CurrentByte == 13|] Dhcpv6RelayMessage |
+        Dhcpv6Message | binary) DHCPRelayMessage with BinaryEncoding{Length = OptionLen, WidthForComposedType = OptionLen * 8};
+        
+    override string ToString()
+    {
+        return "Relay Message";
+    }
 }
 
 // RFC 3315 Authentication Option
-type AutherticationOption
+// OptionCode = 11
+type AuthenticationOption : BaseOption
 {
-    (OptionType where value == 11) OptionCode; // OptionCode = 11
-    ushort OptionLen;
-    byte Protocol;
+    ProtocolField Protocol;
     byte Algorithm;
     byte RDM;
     ulong ReplayDetection;
-    binary AuthInfo with BinaryEncoding{Length = (OptionLen -11) as uint};
+    (DelayedAuthenticationProtocol | ReconfigureKeyAuthenticationProtocol | binary) AuthenticationInformation with BinaryEncoding{Length = (OptionLen - 11)},
+        Encoding{Decoder = AuthenticationInformationDecoder, SourcePattern = TypeOf<binary>()};
+    
+    override string ToString()
+    {
+        return "Authentication";
+    }
+    
+    // According to RFC 3315, section 21
+    optional (DelayedAuthenticationProtocol | ReconfigureKeyAuthenticationProtocol | binary) AuthenticationInformationDecoder(binary bin)
+    {
+        if (Protocol == ProtocolField.DelayedAuthentication && bin.Count > 20)
+        {
+            return BinaryDecoder<DelayedAuthenticationProtocol[bin.Count as uint]>(bin);
+        }
+        else if (Protocol == ProtocolField.ConfigurationToken && Algorithm == 1 && RDM == 0 && bin.Count > 1)
+        {
+            return BinaryDecoder<ReconfigureKeyAuthenticationProtocol>(bin);
+        }
+        
+        return bin;
+    }
 }
 
-// RFC 3315 Server Unicast Option
-type ServerUnicastOption
+// RFC 3315, 21.4.1. Use of the Authentication Option in the Delayed Authentication Protocol
+type DelayedAuthenticationProtocol[uint Length]
 {
-    (OptionType where value == 12) OptionCode; // OptionCode = 12
-    ushort OptionLen where ValidationCheck(value == 16, null, "DHCPv6: The Length field in type ServerUnicastOption must be set to 16, not " + DecToHexFormat(value) + ".");
+    binary DHCPRealm with BinaryEncoding{Length = Length - 20};
+    uint KeyID;
+    binary HMAC_MD5 with BinaryEncoding{Length = 16};
+}
+
+// 21.5.1. Use of the Authentication Option in the Reconfigure Key Authentication Protocol
+type ReconfigureKeyAuthenticationProtocol
+{
+    ReconfigureKeyAuthenticationProtocolType Type;
+    binary Value;
+}
+
+pattern ReconfigureKeyAuthenticationProtocolType = enum byte
+{
+    ReconfigureKeyValue = 1,
+    HMAC_MD5Digest = 2,
+    ...
+};
+
+pattern ProtocolField = enum byte
+{
+    ConfigurationToken = 3,
+    DelayedAuthentication = 2,
+    ...
+};
+
+// RFC 3315 Server Unicast Option
+// OptionCode = 12
+type ServerUnicastOption : BaseOption
+{
     IPv6Address ServerAddress;
+    
+    override string ToString()
+    {
+        return "Server Unicast: " + ServerAddress.ToString();
+    }
 }
 
 // RFC 3315 Status Code Option
-type StatusCodeOption
+// OptionCode = 13
+type StatusCodeOption : BaseOption
 {
-    (OptionType where value == 13) OptionCode; // OptionCode = 13
-    ushort OptionLen where value == 16;
-    StatusCode statusCode;
-    string StatusMsg where ValidationCheck(value.IndexOf("\0") != 0, null, "DHCPv6: The StatusMsg field in type StatusCodeOption must not be null.") with BinaryEncoding{TextEncoding = TextEncoding.UTF8,Length = (OptionLen - 2) as uint};
+    StatusCode StatusCode where ValidationCheckEnumValue(InRange<StatusCode>(value), null, true, ReferenceType.Type,
+        "DHCPv6", "statusCode", "StatusCodeOption", "0, 1, 2, 3, 4, 5", value);
+    string StatusMessage where ValidationCheck(value.IndexOf("\0") != 0, null, STATUSMESSAGE_NOT_NULL)
+        with BinaryEncoding{TextEncoding = TextEncoding.UTF8, WidthForComposedType = (OptionLen - 2) * 8};
+        
+    override string ToString()
+    {
+        string summary = "Status Code: " + EnumToStringInSummary<StatusCode>(StatusCode);
+        if (StatusMessage.Count > 0)
+        {
+            summary += ", " + StatusMessage;
+        }
+        
+        return summary;
+    }
 }
 
 // Status Codes
@@ -345,217 +520,355 @@ pattern StatusCode = enum ushort
     NoAddrsAvail = 2,
     NoBinding = 3,
     NotOnLink  = 4,
-    UseMulticast = 5
+    UseMulticast = 5,
+    ...
 };
 
 // RFC 3315 Rapid Commit Option
-type RapidCommitOption
+// OptionCode = 14
+type RapidCommitOption : BaseOption
 {
-    (OptionType where value == 14) OptionCode; // OptionCode = 14
-    ushort OptionLen where ValidationCheck(value == 0, null, "DHCPv6: The Length field in type RapidCommitOption must be set to zero, not " + DecToHexFormat(value) + ".");
+    override string ToString()
+    {
+        return "Rapid Commit";
+    }
 }
 
 // RFC 3315 User Class Option
-type UserClassOption
+// OptionCode = 15
+type UserClassOption : BaseOption
 {
-    (OptionType where value == 15) OptionCode; // OptionCode = 15
-    ushort OptionLen;
-    array<UserClassData> UserClassdata with BinaryEncoding{WidthForComposedType = OptionLen * 8 as int};
+    array<UserClassData> UserClassData with BinaryEncoding{WidthForComposedType = OptionLen * 8};
+    
+    override string ToString()
+    {
+        return "User Class";
+    }
 }
 
 type UserClassData
 {
     ushort UserClassLen;
-    (binary | any) OpaqueData with BinaryEncoding{MaxLength = UserClassLen as uint};
+    binary OpaqueData with BinaryEncoding{Length = UserClassLen};
 }
 
 // RFC 3315 Vendor Class Option
-type VendorClassOption
+// OptionCode = 16
+type VendorClassOption : BaseOption
 {
-    (OptionType where value == 16) OptionCode; // OptionCode = 16
-    ushort OptionLen;
     uint EnterpriseNum;
-    array<VendorClassData> VendorClassdata with BinaryEncoding{WidthForComposedType = (OptionLen - 4) * 8 as int};
+    array<VendorClassData> VendorClassData with BinaryEncoding{WidthForComposedType = (OptionLen - 4) * 8};
+    
+    override string ToString()
+    {
+        return "Vendor Class";
+    }
 }
 
 type VendorClassData
 {
     ushort VendorClassLen;
-    (binary | any) OpaqueData with BinaryEncoding{MaxLength = VendorClassLen as uint};
+    binary OpaqueData with BinaryEncoding{Length = VendorClassLen};
 }
 
 // RFC 3315 Vendor-specific Information Option
-type VendorSpecificInfoOption
+// OptionCode = 17
+type VendorSpecificInformationOption : BaseOption
 {
-    (OptionType where value == 17) OptionCode; // OptionCode = 17
+    uint EnterpriseNum;
+    array<EncapsulatedVendorSpecificInfoOption> OptionData with BinaryEncoding{WidthForComposedType = (OptionLen - 4) * 8};
+    
+    override string ToString()
+    {
+        return "Vendor Specific Information";
+    }
+}
+
+type EncapsulatedVendorSpecificInfoOption
+{
+    ushort OptCode;
     ushort OptionLen;
-    ulong EnterpriseNum;
-    (binary | any) OptionData with BinaryEncoding{Length = (OptionLen - 4) as uint};
+    binary OptionData with BinaryEncoding{Length = OptionLen};
 }
 
 // RFC 3315 Interface-Id Option
-type InterfaceIDOption
+// OptionCode = 18
+type InterfaceIDOption : BaseOption
 {
-    (OptionType where value == 18) OptionCode; // OptionCode = 18
-    ushort OptionLen;
-    binary InterfaceId;
+    binary InterfaceId with BinaryEncoding{Length = OptionLen};
+    
+    override string ToString()
+    {
+        return "Interface ID";
+    }
 }
 
 // RFC 3315 Reconfigure Message Option
-type ReconfigureMsgOption
+// OptionCode = 19
+type ReconfigureMessageOption : BaseOption
 {
-    (OptionType where value == 19) OptionCode; // OptionCode = 19
-    ushort OptionLen where ValidationCheck(value == 1, null, "DHCPv6: The Length field in type ReconfigureMsgOption must be set to 1, not " + DecToHexFormat(value) + ".");
-    byte MsgType where value == 5 || value == 11;
+    ReconfigureMessageType MsgType where ValidationCheckEnumValue(InRange<ReconfigureMessageType>(value), null, true, ReferenceType.Type,
+        "DHCPv6", "MsgType", "ReconfigureMsgOption", "5, 11", value);
+        
+    override string ToString()
+    {
+        return "Reconfigure Message: " + EnumToStringInSummary<ReconfigureMessageType>(MsgType);
+    }
 }
 
-// RFC 3315 Reconfigure Accept Option
-type ReconfigureAcceptOption
+pattern ReconfigureMessageType = enum byte
 {
-    (OptionType where value == 20) OptionCode; // OptionCode = 20
-    ushort OptionLen where ValidationCheck(value == 0, null, "DHCPv6: The Length field in type ReconfigureAcceptOption must be set to zero, not " + DecToHexFormat(value) + ".");
+    RenewMessage = 5,
+    InformationRequestMessage = 11,
+    ...
+};
+
+// RFC 3315 Reconfigure Accept Option
+// OptionCode = 20
+type ReconfigureAcceptOption : BaseOption
+{
+    override string ToString()
+    {
+        return "Reconfigure Accept";
+    }
 }
 
 // RFC 3319 SIP Servers Domain Name List
-type SIPServerDomainOption
+// OptionCode = 21
+type SIPServersDomainNameListOption : BaseOption
 {
-    (ushort where value == 21) OptionCode; // OptionCode = 21
-    ushort OptionLen;
-    DomainName DomainName;
+    // TDI: windows implementation does not contains NULL byte at the end of DNSString
+    array<DNSString> SPIServerDomainNameList with BinaryEncoding{WidthForComposedType = OptionLen * 8};
+    
+    override string ToString()
+    {
+        return "SIP Servers Domain Name List: " + SPIServerDomainNameList.ToString();
+    }
 }
 
 // RFC 3319 SIP Servers IPv6 IPv6Address List
-type SIPServerAddrOption
+// OptionCode = 22
+type SIPServersIPv6AddressLitsOption : BaseOption
 {
-    (ushort where value == 22) OptionCode;  // OptionCode = 22
-    ushort OptionLen;
-    IPv6Address IPAddress;
+    array<IPv6Address> SIPServers with BinaryEncoding{WidthForComposedType = OptionLen * 8};
+    
+    override string ToString()
+    {
+        return "SIP Servers Address List: " + SIPServers.ToString();
+    }
 }
 
-// RFC 3646 DNS Recursive Name Server option 
-type DNSServersOption
+// RFC 3646 DNS Recursive Name Server option
+// OptionCode = 23
+type DNSRecursiveNameServerOption : BaseOption
 {
-    (ushort where value == 23) OptionCode; // OptionCode = 23
-    ushort OptionLen;
-    IPv6Address DNSServerAddr with BinaryEncoding{Length = (OptionLen / 16) as uint};
+    array<IPv6Address> DNSRecursiveNameServers with BinaryEncoding{WidthForComposedType = OptionLen * 8};
+    
+    override string ToString()
+    {
+        return "DNS Recursive Name Server: " + DNSRecursiveNameServers.ToString();
+    }
 }
 
 // RFC  3646  Domain Search List option
-type DomainSearchListOption
+// OptionCode = 24
+type DomainSearchListOption : BaseOption
 {
-    (ushort where value == 24) OptionCode; // OptionCode = 24
-    ushort OptionLen;
-    DomainName DomainName;
+    array<DNSString> SearchList with BinaryEncoding{WidthForComposedType = OptionLen * 8};
+    
+    override string ToString()
+    {
+        return "Domain Search List: " + SearchList.ToString();
+    }
 }
 
 // RFC 3633 Identity Association for Prefix Delegation Option
-type IAPrefixDelegationOption
+// OptionCode = 25
+type IAPrefixDelegationOption : BaseOption
 {
-    (ushort where value == 25) OptionCode; // OptionCode = 25
-    ushort OptionLen;
+    uint IAID;
     uint T1;
     uint T2;
-    binary IAPDOptions with BinaryEncoding{Length =(OptionLen - 12) as uint};
+    array<[|stream.RemainingByteLength() > 4 && stream.PeekUShort(stream.BitPosition, Endian.Big) == 16 && stream.PeekUShort(stream.BitPosition, Endian.Big) >= 25|] IAPDPrefixOption |
+        [|stream.RemainingByteLength() > 2 && stream.PeekUShort(stream.BitPosition, Endian.Big) == 13|] StatusCodeOption |
+        UnknownOption> IAPDOptions with BinaryEncoding{WidthForComposedType = (OptionLen - 12) * 8};
+    
+    override string ToString()
+    {
+        return "IA Prefix Delegation: " + IAID.ToString();
+    }
 }
 
 // RFC 3633  IA_PD Prefix option
-type IAPrefixOption
+// OptionCode = 26
+type IAPDPrefixOption : BaseOption
 {
-    (ushort where value == 26) OptionCode;  //OptionCode = 26
-    ushort OptionLen;
     uint PreferredLifeTime;
     uint ValidLifeTime;
     byte PrefixLen;
     IPv6Address Ipv6Prefix;
+    array<[|stream.RemainingByteLength() > 2 && stream.PeekUShort(stream.BitPosition, Endian.Big) == 13|] StatusCodeOption |
+        UnknownOption> IAPDOptions with BinaryEncoding{WidthForComposedType = (OptionLen - 25) * 8};
+        
+    override string ToString()
+    {
+        return "IA_PD Prefix: " + Ipv6Prefix.ToString();
+    }
 }
 
 // RFC 3898 Network Information Service (NIS) Servers Option
-type NetworkInformationServerOption
+// OptionCode = 27
+type NISServerOption : BaseOption
 {
-    (ushort where value == 27) OptionCode; // OptionCode = 27
-    ushort OptionLen;
-    IPv6Address DNSServerAddr with BinaryEncoding{Length = (OptionLen / 16) as uint};
+    array<IPv6Address> NISServer with BinaryEncoding{WidthForComposedType = OptionLen * 8};
+    
+    override string ToString()
+    {
+        return "NIS Server: " + NISServer.ToString();
+    }
 }
 
 // RFC 3898 Network Information Service V2 (NIS+) Servers Option
-type NetworkInformationServerV2Option
+// OptionCode = 28
+type NISv2ServerOption : BaseOption
 {
-    (ushort where value == 28) OptionCode; // OptionCode = 28
-    ushort OptionLen;
-    IPv6Address DNSServerAddr with BinaryEncoding{Length = (OptionLen / 16) as uint};
+    array<IPv6Address> NISPlusServer with BinaryEncoding{WidthForComposedType = OptionLen * 8};
+    
+    override string ToString()
+    {
+        return "NIS V2 Server: " + NISPlusServer.ToString();
+    }
 }
 
 // RFC 3898 Network Information Service (NIS) Domain Name Option
-type NetworkInformationServerDomainNameOption
+// OptionCode = 29
+type NISDomainNameOption : BaseOption
 {
-    (ushort where value == 29) OptionCode; // OptionCode = 29
-    ushort OptionLen;
-    DomainName DomainName;
+    DNSString NISDomainName with BinaryEncoding{WidthForComposedType = OptionLen * 8};
+    
+    override string ToString()
+    {
+        return "NIS Domain Name: " + NISDomainName;
+    }
 }
  
 // RFC 3898  Network Information Service V2 (NIS+) Domain Name Option
-type NetworkInformationServerV2DomainNameOption
+// OptionCode = 30
+type NISv2DomainNameOption : BaseOption
 {
-    (ushort where value == 30) OptionCode; // OptionCode = 30
-    ushort OptionLen;
-    DomainName DomainName;
+    DNSString NISPlusDomainName with BinaryEncoding{WidthForComposedType = OptionLen * 8};
+    
+    override string ToString()
+    {
+        return "NIS V2 Domain Name: " + NISPlusDomainName;
+    }
 }
 
 // RFC 4075 Simple Network Time Protocol (SNTP) Servers Option
-type SNTPServerListOption
+// OptionCode = 31
+type SNTPServersOption : BaseOption
 {
-    (ushort where value == 31) OptionCode; // OptionCode = 31
-    ushort OptionLen;
-    IPv6Address SNTPServerAddr with BinaryEncoding{Length = (OptionLen / 16) as uint};
+    array<IPv6Address> SNTPServerAddr with BinaryEncoding{WidthForComposedType = OptionLen * 8};
+    
+    override string ToString()
+    {
+        return "SNTP Servers: " + SNTPServerAddr.ToString();
+    }
 }
 
 // RFC 4242 Option Format
-type OptionFormat
+// OptionCode = 32
+type OptionFormat : BaseOption
 {
-    (ushort where value == 32) OptionCode; // OptionCode = 32
-    ushort OptionLen where ValidationCheck(value == 4, null, "DHCPv6: The field of Length in type OptionFormat must be set to 4, not " + DecToHexFormat(value) + ".");
     uint InformationRefreshTime;
+    
+    override string ToString()
+    {
+        return "Option Format: " + InformationRefreshTime.ToString();
+    }
 }
 
 // RFC 4280 Broadcast and Multicast Service Controller Domain Name List Option
-type BCMCSControllerDomainNamelist
+// OptionCode = 33
+type BCMCSControllerDomainNamelist : BaseOption
 {
-    (ushort where value == 33) OptionCode; // OptionCode = 33
-    ushort OptionLen;
-    string InformationRefreshTime with BinaryEncoding{TextEncoding = TextEncoding.ASCII};
+    array<DNSString> BCMCSControlServerDomainNameList with BinaryEncoding{WidthForComposedType = OptionLen * 8};
+    
+    override string ToString()
+    {
+        return "BCMCS Controller Domain Name List: " + BCMCSControlServerDomainNameList.ToString();
+    }
 }
 
 // RFC 4280 Broadcast and Multicast Service Controller Domain Name List Option
-type BCMCSControllerIPv6addresslist
+// OptionCode = 34
+type BCMCSControllerIPv6AddressList : BaseOption
 {
-    (ushort where value == 34) OptionCode; // OptionCode = 34
-    ushort OptionLen;
-    IPv6Address BCMCSControllerIPv6address;
+    array<IPv6Address> BCMCSControllerIPv6address with BinaryEncoding{WidthForComposedType = OptionLen * 8};
+    
+    override string ToString()
+    {
+        return "BCMCS Controller IPv6 Address: " + BCMCSControllerIPv6address.ToString();
+    }
+}
+
+// RFC 4776
+// OptionCode = 36
+type CivicLocationOption : BaseOption
+{
+    byte What;
+    string CountryCode with BinaryEncoding{TextEncoding = TextEncoding.ASCII, WidthForComposedType = 16};
+    array<CivicAddress> Address with BinaryEncoding{WidthForComposedType = (OptionLen - 3) << 3};
+    
+    override string ToString()
+    {
+        return "Civic Location: " + CountryCode;
+    }
+}
+
+type CivicAddress
+{
+    byte CAtype;
+    byte CALength;
+    string CAValue with BinaryEncoding{TextEncoding = TextEncoding.UTF8, WidthForComposedType = CALength << 3};
 }
 
 // RFC 4649 The Relay Agent Remote-ID Option
-type RelayAgentRemoteIDOption
+// OptionCode = 37
+type RelayAgentRemoteIDOption : BaseOption
 {
-    (ushort where value == 37) OptionCode; // OptionCode = 37
-    ushort OptionLen;
     uint EnterpriseNumber;
-    string RemoteID with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = (OptionLen - 4) as uint};
+    binary RemoteID with BinaryEncoding{Length = (OptionLen - 4)};
+    
+    override string ToString()
+    {
+        return "Relay Agent Remote ID";
+    }
 }
 
 // RFC 4580 The Relay Agent Subscriber-ID Option
-type RelayAgentSubscriberIDOption
+// OptionCode = 38
+type RelayAgentSubscriberIDOption : BaseOption
 {
-    (ushort where value == 38) OptionCode; // OptionCode = 38
-    ushort OptionLen;
-    string RemoteID with BinaryEncoding{TextEncoding = TextEncoding.ASCII,Length = OptionLen  as uint};
+    binary RemoteID with BinaryEncoding{Length = OptionLen};
+    
+    override string ToString()
+    {
+        return "Relay Agent Subscriber ID";
+    }
 }
+
 // RFC 4704 The DHCPv6 Client FQDN Option
-type ClientFQDN
+// OptionCode = 39
+type ClientFQDNOption : BaseOption
 {
-    (ushort where value == 39) OptionCode; // OptionCode = 39
-    ushort OptionLen;
     Flags Flags;
-    string DomainName with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = (OptionLen -1) as uint};
+    DNSString DomainName with BinaryEncoding{TextEncoding = TextEncoding.ASCII, WidthForComposedType = (OptionLen - 1) * 8};
+    
+    override string ToString()
+    {
+        return "Client FQDN: " + DomainName;
+    }
 }
 
 // RFC 4704 The Flags Field
@@ -570,132 +883,60 @@ type Flags
 // RFC 3315 DUID Based on Link-layer IPv6Address Plus Time [DUID-LLT]
 type DUIDLLT
 {
-    ushort Type where value == 1;
-    HardwareTypeEnum HardwareType;
-    uint Time;
-    (AddressMappingUnicast |MacAddress) LinklayerAddress;
+    ushort Type;
+    HardwareType HardwareType where ValidationCheckEnumValueTooManyItems(InRange<HardwareType>(value), null, true, ReferenceType.Type,
+        "DHCPv6", "HardwareType", "DUIDLLT", "DUIDLLT", "RFC 3315");
+    uint Time with DisplayInfo{ToText = DUIDLLTimeToText};
+    (AddressMappingUnicast | MacAddress) LinklayerAddress;
+    
+    override string ToString()
+    {
+        return "DUID-LLT: " + LinklayerAddress.ToString() + ", " + DUIDLLTimeToText(Time);
+    }
+}
+
+string DUIDLLTimeToText(any input)
+{
+    if (input is num:uint)
+    {
+        return CreateDateTime(2000, 1, 1).AddSeconds(num as double).ToLocalTime().ToString();
+    }
+    
+    return "";
 }
 
 // RFC 3315 DUID Assigned by Vendor Based on Enterprise Number [DUID-EN]
 type DUIDEN
 {
-    ushort Type where value == 2;
+    ushort Type;
     uint EnterpriseNumber;
+    binary Identifier;
+    
+    override string ToString()
+    {
+        return "DUID-EN: " + EnterpriseNumber.ToString();
+    }
 }
 
 // RFC 3315 DUID Based on Link-layer IPv6Address [DUID-LL]
 type DUIDLL
 {
-    ushort Type where value == 3;
-    HardwareTypeEnum HardwareType;
-    (AddressMappingUnicast |MacAddress) LinklayerAddress;
-}
-
-// http://www.iana.org/assignments/arp-parameters/arp-parameters.xml
-pattern HardwareTypeEnum = enum ushort
-{
-    Ethernet = 1,
-    Experimental = 2,
-    AmateurRadio = 3,
-    ProteonProNETTokenRing = 4,
-    Chaos = 5,
-    IEEE802 = 6,
-    ARCNET = 7,
-    Hyperchannel = 8,
-    Lanstar = 9,
-    AutonetShortAddress = 10,
-    LocalTalk = 11,
-    LocalNet = 12,
-    Ultralink = 13,
-    SMDS = 14,
-    FrameRelay = 15,
-    ATM1 = 16,
-    HDLC = 17,
-    FibreChannel = 18,
-    ATM2 = 19,
-    SerialLine = 20,
-    ATM3 = 21,
-    MILSTD188220 = 22,
-    Metricom = 23,
-    IEEE13941995 = 24,
-    MAPOS = 25,
-    Twinaxial = 26,
-    EUI64 = 27,
-    HIPARP = 28,
-    IPandARPoverISO = 29,
-    ARPSec = 30,
-    IPsectunneL = 31,
-    Infiniband = 32,
-    CAI = 33
-};
-
-type DUIDString[ushort OptionLen] 
-{
-    string DUID with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = OptionLen as uint};
+    ushort Type;
+    HardwareType HardwareType where ValidationCheckEnumValueTooManyItems(InRange<HardwareType>(value), null, true, ReferenceType.Type,
+        "DHCPv6", "HardwareType", "DUIDLL", "DUIDLL", "RFC 3315");
+    (AddressMappingUnicast | MacAddress) LinklayerAddress;
+    
+    override string ToString()
+    {
+        return "DUID-LL: " + LinklayerAddress.ToString();
+    }
 }
 
 // RFC 3315 DUID Contents
-type DUIDContents[ushort OptionLen]
-{
-    (DUIDLLT |
-     DUIDEN  |
-     DUIDLL  |
-     DUIDString[OptionLen]) DUID;
-}
+// pattern DUIDContents = SubDUIDContents | binary;
 
+pattern DUIDContents = ([|stream.RemainingByteLength() > 2|]
+    ([|stream.PeekUShort(stream.BitPosition, Endian.Big) == 1|] DUIDLLT |
+        [|stream.PeekUShort(stream.BitPosition, Endian.Big) == 2|] DUIDEN |
+        [|stream.PeekUShort(stream.BitPosition, Endian.Big) == 3|] DUIDLL)) | binary;
 
-// rfc1035 Name space definitions
-type DomainName
-{
-    byte NameLength;
-    string DomainName with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = (NameLength + 1) as uint};
-}
-
-// MS-DHCPE User Class Option
-type DHCPEUserClassOption
-{
-    (ushort where value == 15) OptionCode; // OptionCode = 15
-    ushort OptionLength;
-    ushort UserClassDataLength;
-    ushort UserClassBinaryDataLength;
-    binary UserClassBinaryData with BinaryEncoding{Length = UserClassBinaryDataLength as uint};
-    optional [| UserClassBinaryDataLength % 4 != 0 |] array<byte> Padding with BinaryEncoding{Length = 4 - UserClassBinaryDataLength % 4 as uint};
-    ushort UserClassNameLength;
-    binary UserClassName with BinaryEncoding{Length = UserClassNameLength as uint};
-    ushort UserClassDescriptionLength;
-    binary UserClassDescription with BinaryEncoding{Length = UserClassDescriptionLength as uint};
-}
-
-// MS-DHCPE Vendor Class Option
-type DHCPEVendorClass
-{
-    (ushort where value == 16) OptionCode; // OptionCode = 16
-    (ushort where value == 14) OptionLength;
-    (uint where value == 311) EnterpriseNumber;
-    ushort VendorClassDataLength where ValidationCheckValue(value == 0x0008, null, true, ReferenceType.Type, "DHCPv6", "Vendor_Class_Data_Length", "DHCPEVendorClass", 0x0008, value);
-    string VendorClassDataString where ValidationCheckValue(value == "MSFT 5.0", null, true, ReferenceType.Type, "DHCPv6", "Vendor_Class_Data_String", "DHCPEVendorClass", "\"MSFT 5.0\"", value) with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = VendorClassDataLength as uint};
-}
-
-// MS-DHCPE Vendor Specific Information Option
-type DHCPEVendorSpecificInfoOption
-{
-    (ushort where value == 17) OptionCode; // OptionCode = 16
-    ushort OptionLength;
-    (uint where value == 311) EnterpriseNumber;
-    (DHCPERogueDectionRequest | DHCPERogueDectionReply) VendorSpecificOption;
-}
-
-// MS-DHCPE Vendor-Specific Option - Rogue Detection Request Option
-type DHCPERogueDectionRequest
-{
-    (ushort where value == 94) VendorSpecificOptionCode;
-    ushort VendorSpecificOptionLength where ValidationCheckValue(value == 0, null, true, ReferenceType.Type, "DHCPv6", "VendorSpecificOptionLength", "DHCPERogueDectionRequest", "0x00", value);
-}
-
-// MS-DHCPE Vendor-Specific Option - Rogue Detection Reply Option
-type DHCPERogueDectionReply
-{
-    (ushort where value == 95) VendorSpecificOptionCode;
-    ushort VendorSpecificOptionLength;
-    string VendorSpecificOptionData with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = VendorSpecificOptionLength as uint};
-}

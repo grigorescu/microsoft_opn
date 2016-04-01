@@ -1,4 +1,4 @@
-﻿protocol RIP with 
+protocol RIP with 
 BinaryEncodingDefaults{Endian = Endian.Big},
 Documentation
 {
@@ -20,16 +20,14 @@ OPNAuthoring
         ],
     RevisionSummary =
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "10/26/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "360482", Date = "03/21/2014"}
         ]
 };
 
 using Standard;
-using IANA;
 using Utility;
-using IPv4;
-using IPv6;
 using UDP;
+using IANA;
 
 endpoint Server over UDP.Host accepts RIPMessage issues RIPMessage accepts RIPOnIpv6 issues RIPOnIpv6;
 client endpoint Client connected to Server;
@@ -83,7 +81,7 @@ autostart actor RIPOverUDP(UDP.Host host)
 
 message RIPMessage
 {
-    byte Command;
+    Command Command;
     byte Version;
     
     optional [|Version == 1|] ushort Unused;
@@ -97,23 +95,22 @@ message RIPMessage
     
     override string ToString()
     {
-        string summary = CommandString(Command);
-        if (Entry != nothing)
+        string summary = (InRange<Command>(Command) ? "" : "Unkown Command: ") + EnumToString<RIP.Command>(Command, false) + ", Count: ";
+        if (Entry is arr:array<RIPEntry>)
         {
-            var entryCount = (Entry as array<RIPEntry>).Count;
-            summary = summary + ", " + (entryCount as string)+" Entries";
+            summary += (arr.Count as string) + ", ";
         }
         else 
         {
-            summary = summary + ", " + "0 Entries";
+            summary += "0, ";
         }
         if (Version == 1)
         {
-            summary += "(Version 1)";
+            summary += "Version: 1";
         }
         else if (Version == 2)
         {
-            summary += "(Version 2)";
+            summary += "Version: 2";
         }
         else 
         {
@@ -125,14 +122,14 @@ message RIPMessage
 
 message RIPOnIpv6
 {
-    byte Command;
+    Command Command;
     byte Version;
     ushort Unused where ValidationCheck(value == 0, null, "RIP: The Unused in message RIPOnIpv6 must be zero.");
     optional array<RouteTableEntry> RouteTableEntrise with Encoding{Ignore = true};
     
     override string ToString()
     {
-        return CommandString(Command) + "(Version NG)";
+        return(InRange<Command>(Command) ? "" : "Unkown Command: ") + EnumToString<RIP.Command>(Command, false) + ", Version: RIPNG for IPv6";
     }
 }
 
@@ -301,21 +298,18 @@ optional RIPOnIpv6 RIPOnIpv6Decoder(stream s)
     return msg;
 }
 
-string CommandString(byte command)
+pattern Command = enum byte
 {
-    switch (command)
-    {
-        case  1 => return"Request";
-        case  2 => return"Response";
-        case  3 => return"Trace on";
-        case  4 => return"Trace off";
-        case  5 => return"SUN reserved";
-        case  6 => return"Triggered request";
-        case  7 => return"Triggered response";
-        case  8 => return"Triggered acknowledgement";
-        case  9 => return"Update Request";
-        case 10 => return"Update response";
-        case 11 => return"Update acknowledgement";
-        default => return"Unknown Command";
-    }
-}
+    $"Request" = 1,
+    $"Response" = 2,
+    $"Trace On" = 3,
+    $"Trace Off" = 4,
+    $"SUN Reserved" = 5,
+    $"Triggered Request" = 6,
+    $"Triggered Response" = 7,
+    $"Triggered Acknowledgement" = 8,
+    $"Update Request" = 9,
+    $"Update Response" = 10,
+    $"Update Acknowledgement" = 11,
+    ...
+};

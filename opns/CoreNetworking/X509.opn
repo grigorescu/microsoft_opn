@@ -1,4 +1,4 @@
-﻿module X509 with
+module X509 with
 Asn1EncodingDefaults{EncodingRule = Asn1EncodingRule.BER},
 Documentation
 {
@@ -14,32 +14,121 @@ OPNAuthoring
             new Reference{Name = "RFC 3280"},
             new Reference{Name = "RFC 3279"},
             new Reference{Name = "RFC 3709"},
+            new Reference{Name = "RFC 4211"},
+            new Reference{Name = "RFC 5755"},
         ],
     RevisionSummary = 
         [
-            new Revision{Class=RevisionClass.Major, Version="1.0.0", Date="1/29/2012"}
+            new Revision{Class=RevisionClass.Major, Version="369482", Date="10/15/2014"}
         ]
 };
     
 using Standard;
-using ASN1;
+using Technologies.ASN1;
+using Utility;
+
+// rfc3280
+const array<int> idAtOID = [2, 5, 4];
+const array<int> idAtNameAttrType = idAtOID + [41];
+const array<int> idAtCommonNameAttrType = idAtOID + [3];
+const array<int> idAtLocalityNameAttrType = idAtOID + [7];
+const array<int> idAtStateOrProvinceNameAttrType = idAtOID + [8];
+const array<int> idAtOrganizationNameAttrType = idAtOID + [10];
+const array<int> idAtOrganizationUnitNameAttrType = idAtOID + [11];
+const array<int> idAtTitleAttrType = idAtOID + [12];
+const array<int> idAtDnQualifierAttrType = idAtOID + [46];
+const array<int> idAtCountryNameAttrType = idAtOID + [6];
+const array<int> idAtSerialNumberAttrType = idAtOID + [5];
+const array<int> idAtPseudonymAttrType = idAtOID + [65];
+const array<int> idDomainComponentAttrType = [0, 9, 2342, 19200300, 100, 1, 25];
+// rfc2985
+const array<int> pkcs9OID = [1, 2, 840, 113549, 1, 9];
+const array<int> pkcs9moOID = pkcs9OID + [0];
+const array<int> pkcs9ocOID = pkcs9OID + [24];
+const array<int> pkcs9atOID = pkcs9OID + [25];
+const array<int> pkcs9sxOID = pkcs9OID + [26];
+const array<int> pkcs9mrOID = pkcs9OID + [27];
+// WCCE
+const array<int> szOID_OS_VERSION = [1, 3, 6, 1, 4, 1, 311, 13, 2, 3];
+const array<int> szOID_ENROLLMENT_CSP_PROVIDER = [1, 3, 6, 1, 4, 1, 311, 13, 2, 2];
+const array<int> szOID_RENEWAL_CERTIFICATE = [1, 3, 6, 1, 4, 1, 311, 13, 1];
+const array<int> szOID_REQUEST_CLIENT_INFO = [1, 3, 6, 1, 4, 1, 311, 21, 20];
+const array<int> szOID_NT_PRINCIPAL_NAME = [1, 3, 6, 1, 4, 1, 311, 20, 2, 3];
+const array<int> szOID_NTDS_REPLICATION = [1, 3, 6, 1, 4, 1, 311, 25, 1];
+const array<int> szOID_ENROLLMENT_NAME_VALUE_PAIR = [1, 3, 6, 1, 4, 1, 311, 13, 2, 1];
+
+// CMC
+const array<int> idExtensionReq = [1, 2, 840, 113549, 1, 9, 14];
+
+const array<int> idPkcsEntityOID = pkcs9ocOID + [1];
+const array<int> idNaturalPersonOID = pkcs9ocOID + [2];
+
+const array<int> idEmailAddressOID = pkcs9OID + [1];
+const array<int> idUnstructuredNameOID = pkcs9OID + [2];
+const array<int> idContentTypeOID = pkcs9OID + [3];
+const array<int> idMessageDigestOID = pkcs9OID + [4];
+const array<int> idSigningTimeOID = pkcs9OID + [5];
+const array<int> idCounterSignatureOID = pkcs9OID + [6];
+const array<int> idChallengePasswordOID = pkcs9OID + [7];
+const array<int> idUnstructuredAddressOID = pkcs9OID + [8];
+const array<int> idExtendedCertificateAttributesOID = pkcs9OID + [9];
+const array<int> idSigningDescriptionOID = pkcs9OID + [13];
+const array<int> idExtensionRequestOID = pkcs9OID + [14];
+const array<int> idSmimeCapabilitiesOID = pkcs9OID + [15];
+const array<int> idFriendlyNameOID = pkcs9OID + [20];
+const array<int> idLocalKeyIdOID = pkcs9OID + [21];
+const array<int> idUserPKCS12OID = [2, 16, 840, 1, 113730, 3, 1, 216];
+const array<int> idPkcs15TokenOID = pkcs9atOID + [1];
+const array<int> idEncryptedPrivateKeyInfoOID = pkcs9atOID + [2];
+const array<int> idRandomNonceOID = pkcs9atOID + [3];
+const array<int> idSequenceNumberOID = pkcs9atOID + [4];
+const array<int> idPkcs7PDUOID = pkcs9atOID + [5];
+const array<int> ietfatOID = [1, 3, 6, 1, 5, 5, 7, 9];
+const array<int> idDateOfBirthOID = ietfatOID + [1];
+const array<int> idPlaceOfBirthOID = ietfatOID + [2];
+const array<int> idGenderOID = ietfatOID + [3];
+const array<int> idCountryOfCitizenshipOID = ietfatOID + [4];
+const array<int> idCountryOfResidenceOID = ietfatOID + [5];
+const array<int> idsxPkcs9StringOID = pkcs9sxOID + [1];
+const array<int> idsxSigningTimeOID = pkcs9sxOID + [2];
+const array<int> idmrCaseIgnoreMatchOID = pkcs9mrOID + [1];
+const array<int> idmrSigningTimeMatchOID = pkcs9mrOID + [2];
+const array<int> idSmimeOID = pkcs9OID + [16];
+const array<int> idCertTypesOID = pkcs9OID + [22];
+const array<int> idCrlTypesOID = pkcs9OID + [23];
+const array<int> idPseudonymOID = idAtOID + [65];
 
 type Attribute
 {
-    AttributeType Type;
-    set<([|Type == [2, 5, 4, 41]|] X520Name
-        | [|Type == [2, 5, 4, 3]|] X520CommonName 
-        | [|Type == [2, 5, 4, 7]|] X520LocalityName 
-        | [|Type == [2, 5, 4, 8]|] X520StateOrProvinceName 
-        | [|Type == [2, 5, 4, 10]|] X520OrganizationName 
-        | [|Type == [2, 5, 4, 11]|] X520OrganizationalUnitName 
-        | [|Type == [2, 5, 4, 12]|] X520Title 
-        | [|Type == [2, 5, 4, 46]|] X520DnQualifier 
-        | [|Type == [2, 5, 4, 6]|] X520CountryName 
-        | [|Type == [2, 5, 4, 5]|] X520SerialNumber 
-        | [|Type == [2, 5, 4, 65]|] X520Pseudonym 
-        | [|Type == [0, 9, 2342, 19200300, 100, 1, 25]|] DomainComponent 
-        | [|Type == [1, 2, 840, 113549, 1, 9, 1]|] EmailAddress
+    AttributeType Type with DisplayInfo{ToText = ObjectIdentifierToString};
+    // Future Reference: Decode the unknown Attribute as any
+    optional set<([|Type == idAtNameAttrType|] X520Name
+        | [|Type == idAtCommonNameAttrType|] X520CommonName 
+        | [|Type == idAtLocalityNameAttrType|] X520LocalityName 
+        | [|Type == idAtStateOrProvinceNameAttrType|] X520StateOrProvinceName 
+        | [|Type == idAtOrganizationNameAttrType|] X520OrganizationName 
+        | [|Type == idAtOrganizationUnitNameAttrType|] X520OrganizationalUnitName 
+        | [|Type == idAtTitleAttrType|] X520Title 
+        | [|Type == idAtDnQualifierAttrType|] X520DnQualifier 
+        | [|Type == idAtCountryNameAttrType|] X520CountryName 
+        | [|Type == idAtSerialNumberAttrType|] X520SerialNumber 
+        | [|Type == idAtPseudonymAttrType|] X520Pseudonym 
+        | [|Type == idDomainComponentAttrType|] DomainComponent 
+        //rfc2985
+        | [|Type == idEmailAddressOID|] EmailAddress
+        | [|Type == idContentTypeOID|] ContentType
+        // CMS
+        | [|Type == idMessageDigestOID|] OctetString
+        // WCCE
+        | [|Type == szOID_ENROLLMENT_NAME_VALUE_PAIR|] EnrollmentNameValuePair
+        | [|Type == szOID_ENROLLMENT_CSP_PROVIDER|] CSPProvider
+        | [|Type == szOID_OS_VERSION|] WCCEAnyString
+        | [|Type == szOID_REQUEST_CLIENT_INFO|] RequestClientInfo
+        | [|Type == szOID_RENEWAL_CERTIFICATE|] X509.Certificate
+        | [|Type == szOID_NT_PRINCIPAL_NAME|] UTF8String
+        | [|Type == szOID_NTDS_REPLICATION|] OctetString
+        // CMC
+        | [|Type == idExtensionReq|] ExtensionReq
         | DirectoryString)> Value;
 }
 
@@ -48,20 +137,20 @@ pattern AttributeType = ObjectIdentifier;
 
 type AttributeTypeAndValue
 {
-    AttributeType Type;
-    ([|Type == [2, 5, 4, 41]|] X520Name
-        | [|Type == [2, 5, 4, 3]|] X520CommonName 
-        | [|Type == [2, 5, 4, 7]|] X520LocalityName 
-        | [|Type == [2, 5, 4, 8]|] X520StateOrProvinceName 
-        | [|Type == [2, 5, 4, 10]|] X520OrganizationName 
-        | [|Type == [2, 5, 4, 11]|] X520OrganizationalUnitName 
-        | [|Type == [2, 5, 4, 12]|] X520Title 
-        | [|Type == [2, 5, 4, 46]|] X520DnQualifier 
-        | [|Type == [2, 5, 4, 6]|] X520CountryName 
-        | [|Type == [2, 5, 4, 5]|] X520SerialNumber 
-        | [|Type == [2, 5, 4, 65]|] X520Pseudonym 
-        | [|Type == [0, 9, 2342, 19200300, 100, 1, 25]|] DomainComponent 
-        | [|Type == [1, 2, 840, 113549, 1, 9, 1]|] EmailAddress
+    AttributeType Type with DisplayInfo{ToText = ObjectIdentifierToString};
+    ([|Type == idAtNameAttrType|] X520Name
+        | [|Type == idAtCommonNameAttrType|] X520CommonName 
+        | [|Type == idAtLocalityNameAttrType|] X520LocalityName 
+        | [|Type == idAtStateOrProvinceNameAttrType|] X520StateOrProvinceName 
+        | [|Type == idAtOrganizationNameAttrType|] X520OrganizationName 
+        | [|Type == idAtOrganizationUnitNameAttrType|] X520OrganizationalUnitName 
+        | [|Type == idAtTitleAttrType|] X520Title 
+        | [|Type == idAtDnQualifierAttrType|] X520DnQualifier 
+        | [|Type == idAtCountryNameAttrType|] X520CountryName 
+        | [|Type == idAtSerialNumberAttrType|] X520SerialNumber 
+        | [|Type == idAtPseudonymAttrType|] X520Pseudonym 
+        | [|Type == idDomainComponentAttrType|] DomainComponent 
+        | [|Type == idEmailAddressOID|] EmailAddress
         | DirectoryString) Value;
 }
 
@@ -76,8 +165,8 @@ pattern X520DnQualifier = PrintableString;
 pattern X520CountryName = PrintableString;
 pattern X520SerialNumber = PrintableString;
 pattern X520Pseudonym = TeletexString | PrintableString | UniversalString | UTF8String | BMPString;
-pattern DomainComponent = IA5String;
-pattern EmailAddress = IA5String;
+pattern DomainComponent = IA5String with Asn1Encoding{Flags = Asn1EncodingFlags.OctetStringIsString};
+pattern EmailAddress = IA5String with Asn1Encoding{Flags = Asn1EncodingFlags.OctetStringIsString};
 pattern Name = RdnSequence;
 
 pattern RdnSequence = array<RelativeDistinguishedName>;
@@ -109,7 +198,7 @@ type TbsCertificate
 }
 
 pattern Version = enum Integer {V1 = 0, V2 = 1, V3 = 2};
-pattern CertificateSerialNumber = Integer;
+pattern CertificateSerialNumber = BigInteger;
 
 type Validity
 {
@@ -128,75 +217,124 @@ type SubjectPublicKeyInfo
 
 pattern Extensions = array<Extension>;
 
+// rfc3280
+const array<int> idCeOID = [2, 5, 29];
+const array<int> idCeAuthorityKeyIdentifierOID = idCeOID + [35];
+const array<int> idCeSubjectKeyIdentifierOID = idCeOID + [14];
+const array<int> idCeKeyUsageOID = idCeOID + [15];
+const array<int> idCePrivateKeyUsagePeriodOID = idCeOID + [16];
+const array<int> idCeCertificatePoliciesOID = idCeOID + [32];
+const array<int> idCePolicyMappingsOID = idCeOID + [33];
+const array<int> idCeSubjectAltNameOID = idCeOID + [17];
+const array<int> idCeIssuerAltNameOID = idCeOID + [18];
+const array<int> idCeSubjectDirectoryAttributesOID = idCeOID + [9];
+const array<int> idCeBasicConstraintsOID = idCeOID + [19];
+const array<int> idCeNameConstraintsOID = idCeOID + [30];
+const array<int> idCePolicyConstraintsOID = idCeOID + [36];
+const array<int> idCeExtKeyUsageOID = idCeOID + [37];
+const array<int> idCeCRLDistributionPointsOID = idCeOID + [31];
+const array<int> idCeInhibitAnyPolicyOID = idCeOID + [54];
+const array<int> idCeFreshestCRLOID = idCeOID + [46];
+const array<int> idCeCRLNumberOID = idCeOID + [20];
+const array<int> idCeDeltaCRLIndicatorOID = idCeOID + [27];
+const array<int> idCeIssuingDistributionPointOID = idCeOID + [28];
+const array<int> idCeCRLReasonOID = idCeOID + [21];
+const array<int> idCeHoldInstructionCodeOID = idCeOID + [23];
+const array<int> idCeInvalidityDataOID = idCeOID + [24];
+const array<int> idCeCertificateIssuerOID = idCeOID + [29];
+const array<int> idPkixOID = [1, 3, 6, 1, 5, 5, 7];
+const array<int> idPeAutorityInfoAccessOID = idPkixOID + [1, 1];
+const array<int> idPeSubjectInfoAccessOID = idPkixOID + [1, 11];
+const array<int> idKpOID = idPkixOID + [1];
+
+// rfc3709
+const array<int> idPeLogotypeOID = idPkixOID + [1, 12];
+const array<int> CertificateTemplateOID = [1, 3, 6, 1, 4, 1, 311, 21, 7];
+// Application Policies extension 
+const array<int> MsApplicationPoliciesOID = [1, 3, 6, 1, 4, 1, 311, 21, 10];
+
+// RFC 2459
+const array<int> idAdOID = idPkixOID + [48];
+const array<int> idAdOcspOID = idAdOID + [1];
+// RFC 2560
+const array<int> idPkixOcspOID = idAdOcspOID;
+const array<int> idPkixOcspBasicOID = idPkixOcspOID + [1];
+const array<int> idPkixOcspNonceOID = idPkixOcspOID + [2];
+const array<int> idPkixOcspCrlOID = idPkixOcspOID + [3];
+const array<int> idPkixOcspResponseOID = idPkixOcspOID + [4];
+const array<int> idPkixOcspNocheckOID = idPkixOcspOID + [5];
+const array<int> idPkixOcspArchiveCutOffOID = idPkixOcspOID + [6];
+const array<int> idPkixOcspServiceLocatorOID = idPkixOcspOID + [7];
+
 type Extension
 {
-    ObjectIdentifier ExtnID;
+    ObjectIdentifier ExtnID with DisplayInfo{ToText = ObjectIdentifierToString};
     optional Boolean Critical;
     ([|ExtnID in 
         {
-            [2, 5, 29, 9],
-            [2, 5, 29, 14],
-            [2, 5, 29, 15],
-            [2, 5, 29, 16],
-            [2, 5, 29, 17],
-            [2, 5, 29, 18],
-            [2, 5, 29, 19],
-            [2, 5, 29, 20],
-            [2, 5, 29, 21],
-            [2, 5, 29, 23],
-            [2, 5, 29, 24],
-            [2, 5, 29, 27],
-            [2, 5, 29, 28],
-            [2, 5, 29, 29],
-            [2, 5, 29, 30],
-            [2, 5, 29, 31],
-            [2, 5, 29, 32],
-            [2, 5, 29, 33],
-            [2, 5, 29, 35],
-            [2, 5, 29, 36],
-            [2, 5, 29, 37],
-            [2, 5, 29, 46],
-            [2, 5, 29, 54],
-            [1, 3, 6, 1, 5, 5, 7, 1, 1],
-            [1, 3, 6, 1, 5, 5, 7, 1, 11],
-            [1, 3, 6, 1, 5, 5, 7, 1, 12],
-            [1, 2, 840, 113549, 1, 9, 15],
-            [1, 3, 6, 1, 4, 1, 311, 21, 7],
-            [1, 3, 6, 1, 4, 1, 311, 21, 10]
+            idCeSubjectDirectoryAttributesOID,                 
+            idCeSubjectKeyIdentifierOID,
+            idCeKeyUsageOID,
+            idCePrivateKeyUsagePeriodOID,
+            idCeSubjectAltNameOID,
+            idCeIssuerAltNameOID, 
+            idCeBasicConstraintsOID,  
+            idCeCRLNumberOID,                  
+            idCeCRLReasonOID,                        
+            idCeHoldInstructionCodeOID,
+            idCeInvalidityDataOID,                
+            idCeDeltaCRLIndicatorOID,                      
+            idCeIssuingDistributionPointOID,           
+            idCeCertificateIssuerOID,                
+            idCeNameConstraintsOID,                  
+            idCeCRLDistributionPointsOID,             
+            idCeCertificatePoliciesOID,                 
+            idCePolicyMappingsOID,                     
+            idCeAuthorityKeyIdentifierOID,             
+            idCePolicyConstraintsOID,                  
+            idCeExtKeyUsageOID,              
+            idCeFreshestCRLOID,                      
+            idCeInhibitAnyPolicyOID,          
+            idPeAutorityInfoAccessOID,
+            idPeSubjectInfoAccessOID,
+            idPeLogotypeOID,   
+            idSmimeCapabilitiesOID,   
+            CertificateTemplateOID,
+            MsApplicationPoliciesOID
         }|] ExtnValueExtension[ExtnID] | OctetString) ExtnValue;
 }
 
 type ExtnValueExtension[ObjectIdentifier extnID]
 {
-    ([|extnID == [2, 5, 29, 9]|] SubjectDirectoryAttributes                 |
-        [|extnID == [2, 5, 29, 14]|] SubjectKeyIdentifier                   |
-        [|extnID == [2, 5, 29, 15]|] KeyUsage                               |
-        [|extnID == [2, 5, 29, 16]|] PrivateKeyUsagePeriod                  |
-        [|extnID == [2, 5, 29, 17]|] SubjectAltName                         |
-        [|extnID == [2, 5, 29, 18]|] IssuerAltName                          |
-        [|extnID == [2, 5, 29, 19]|] BasicConstraints                       |
-        [|extnID == [2, 5, 29, 20]|] CrlNumber                              |
-        [|extnID == [2, 5, 29, 21]|] CrlReason                              |
-        [|extnID == [2, 5, 29, 23]|] HoldInstructionCode                    |
-        [|extnID == [2, 5, 29, 24]|] InvalidityDate                         |
-        [|extnID == [2, 5, 29, 27]|] BaseCrlNumber                          |
-        [|extnID == [2, 5, 29, 28]|] IssuingDistributionPoint               |
-        [|extnID == [2, 5, 29, 29]|] CertificateIssuer                      |
-        [|extnID == [2, 5, 29, 30]|] NameConstraints                        |
-        [|extnID == [2, 5, 29, 31]|] CrlDistributionPoints                  |
-        [|extnID == [2, 5, 29, 32]|] CertificatePolicies                    |
-        [|extnID == [2, 5, 29, 33]|] PolicyMappings                         |
-        [|extnID == [2, 5, 29, 35]|] AuthorityKeyIdentifier                 |
-        [|extnID == [2, 5, 29, 36]|] PolicyConstraints                      |
-        [|extnID == [2, 5, 29, 37]|] ExtKeyUsageSyntax                      |
-        [|extnID == [2, 5, 29, 46]|] FreshestCrl                            |
-        [|extnID == [2, 5, 29, 54]|] InhibitAnyPolicy                       |
-        [|extnID == [1, 3, 6, 1, 5, 5, 7, 1, 1]|] AuthorityInfoAccessSyntax |
-        [|extnID == [1, 3, 6, 1, 5, 5, 7, 1, 11]|] SubjectInfoAccessSyntax  |
-        [|extnID == [1, 3, 6, 1, 5, 5, 7, 1, 12]|] LogotypeExtn             |
-        [|extnID == [1, 2, 840, 113549, 1, 9, 15]|] SmimeCapabilities       |
-        [|extnID == [1, 3, 6, 1, 4, 1, 311, 21, 7]|] CertificateTemplate    |
-        [|extnID == [1, 3, 6, 1, 4, 1, 311, 21, 10]|] MSApplicationPolicies) ExtnValue;
+    ([|extnID == idCeSubjectDirectoryAttributesOID|] SubjectDirectoryAttributes                 
+        | [|extnID == idCeSubjectKeyIdentifierOID|] SubjectKeyIdentifier
+        | [|extnID == idCeKeyUsageOID|] KeyUsage
+        | [|extnID == idCePrivateKeyUsagePeriodOID|] PrivateKeyUsagePeriod
+        | [|extnID == idCeSubjectAltNameOID|] SubjectAltName  
+        | [|extnID == idCeIssuerAltNameOID|] IssuerAltName 
+        | [|extnID == idCeBasicConstraintsOID|] BasicConstraints  
+        | [|extnID == idCeCRLNumberOID|] CrlNumber                   
+        | [|extnID == idCeCRLReasonOID|] CrlReason                        
+        | [|extnID == idCeHoldInstructionCodeOID|] HoldInstructionCode  
+        | [|extnID == idCeInvalidityDataOID|] InvalidityDate                  
+        | [|extnID == idCeDeltaCRLIndicatorOID|] BaseCrlNumber                      
+        | [|extnID == idCeIssuingDistributionPointOID|] IssuingDistributionPoint            
+        | [|extnID == idCeCertificateIssuerOID|] CertificateIssuer                 
+        | [|extnID == idCeNameConstraintsOID|] NameConstraints                     
+        | [|extnID == idCeCRLDistributionPointsOID|] CrlDistributionPoints                
+        | [|extnID == idCeCertificatePoliciesOID|] CertificatePolicies                  
+        | [|extnID == idCePolicyMappingsOID|] PolicyMappings                     
+        | [|extnID == idCeAuthorityKeyIdentifierOID|] AuthorityKeyIdentifier             
+        | [|extnID == idCePolicyConstraintsOID|] PolicyConstraints                     
+        | [|extnID == idCeExtKeyUsageOID|] ExtKeyUsageSyntax                  
+        | [|extnID == idCeFreshestCRLOID|] FreshestCrl                         
+        | [|extnID == idCeInhibitAnyPolicyOID|] InhibitAnyPolicy            
+        | [|extnID == idPeAutorityInfoAccessOID|] AuthorityInfoAccessSyntax
+        | [|extnID == idPeSubjectInfoAccessOID|] SubjectInfoAccessSyntax 
+        | [|extnID == idPeLogotypeOID|] LogotypeExtn     
+        | [|extnID == idSmimeCapabilitiesOID|] SmimeCapabilities     
+        | [|extnID == CertificateTemplateOID|] CertificateTemplate 
+        | [|extnID == MsApplicationPoliciesOID|] MSApplicationPolicies) ExtnValue;
 }
 
 type CertificateList
@@ -226,14 +364,64 @@ type RevokedCertificate
     optional Extensions CrlEntryExtensions;
 }
 
+// rfc3279
+const array<int> ansiX962OID = [1, 2, 840, 10045];
+const array<int> idDsaOID = [1, 2, 840, 10040, 4, 1];
+const array<int> dhpublicnumberOID = [1, 2, 840, 10046, 2, 1];
+const array<int> idKeyExchangeAlgorithmOID = [2, 16, 840, 1, 101, 2, 1, 1, 22];
+const array<int> ecdsaWithSha1OID = ansiX962OID + [4, 1];
+const array<int> idEcPublicKeyOID = ansiX962OID + [2, 1];
+
+// RFC 3370
+const array<int> idDesEde3CbcOID = [1, 2, 840, 113549, 3, 7];
+
+// rfc3447
+const array<int> pkcs1OID = [1, 2, 840, 113549, 1, 1];
+const array<int> rsaEncryptionOID = pkcs1OID + [1];
+const array<int> md2WithRSAEncryptionOID = pkcs1OID + [2];
+const array<int> md5WithRSAEncryptionOID = pkcs1OID + [4];
+const array<int> sha1WithRSAEncryptionOID = pkcs1OID + [5];
+const array<int> sha256WithRSAEncryptionOID = pkcs1OID + [11];
+const array<int> sha384WithRSAEncryptionOID = pkcs1OID + [12];
+const array<int> sha512WithRSAEncryptionOID = pkcs1OID + [13];
+const array<int> sha1WithRSAEncryptionObsoleteOID = [1, 3, 14, 3, 2, 29];
+
+// rfc3560
+const array<int> idsha1OID = [1, 3, 14, 3, 2, 26];
+const array<int> idsha256OID = [2, 16, 840, 1, 101, 3, 4, 2, 1];
+const array<int> idsha384OID = [2, 16, 840, 1, 101, 3, 4, 2, 2];
+const array<int> idsha512OID = [2, 16, 840, 1, 101, 3, 4, 2, 3];
+const array<int> idRSAESOAEPOID = pkcs1OID + [7];
+const array<int> idmgf1OID = pkcs1OID + [8];
+const array<int> idpSpecifiedOID = pkcs1OID + [9];
+pattern nullOctetString = OctetString where value == null;
+
+// Microsoft implementation
+const array<int> szOID_NTDS_REPLICATIONOID = [1, 3, 6, 1, 4, 1, 311, 25, 1];
+
+type RSAESOAEPparams
+{
+    AlgorithmIdentifier hashFunc with Asn1Encoding{TagNumber = 0, Tagging = Asn1Tagging.Implicit};
+    AlgorithmIdentifier maskGenFunc with Asn1Encoding{TagNumber = 1, Tagging = Asn1Tagging.Implicit};
+    AlgorithmIdentifier pSourceFunc with Asn1Encoding{TagNumber = 2, Tagging = Asn1Tagging.Implicit};
+}
+
 type AlgorithmIdentifier
 {
-    ObjectIdentifier Algorithm;
-    optional ([|Algorithm == [1, 2, 840, 113549, 1, 1, 1] || Algorithm == [1, 2, 840, 113549, 1, 1, 2] || Algorithm == [1, 2, 840, 113549, 1, 1, 4] || Algorithm == [1, 2, 840, 113549, 1, 1, 5]|] Null
-        | [|Algorithm == [1, 2, 840, 10040, 4, 1]|] DssParms
-        | [|Algorithm == [1, 2, 840, 10046, 2, 1]|] DomainParameters
-        | [|Algorithm == [2, 16, 840, 1, 101, 2, 1, 1, 22]|] KeaParmsId
-        | [|Algorithm == [1, 2, 840, 10045, 2, 1]|] EcpkParameters) Parameters;
+    ObjectIdentifier Algorithm with DisplayInfo{ToText = ObjectIdentifierToString};
+    optional (
+        // rfc3447
+        [|Algorithm == idDsaOID|] DssParms |
+        [|Algorithm == dhpublicnumberOID|] DomainParameters |
+        [|Algorithm == idKeyExchangeAlgorithmOID|] KeaParmsId |
+        [|Algorithm == idEcPublicKeyOID|] EcpkParameters |
+        // rfc3370
+        [|Algorithm == idDesEde3CbcOID|] CbcParameter |
+        // rfc3560
+        [|Algorithm == idmgf1OID|] AlgorithmIdentifier |
+        [|Algorithm == idpSpecifiedOID|] nullOctetString |
+        [|Algorithm == idRSAESOAEPOID|] RSAESOAEPparams
+        | Null) Parameters;
 }
 
 type ORAddress
@@ -275,7 +463,7 @@ pattern PrivateDomainName = NumericString | PrintableString;
 pattern OrganizationName = PrintableString;
 pattern NumericUserIdentifier = NumericString;
 
-// WORKROUND: using type temporarily for set definition
+// WORKAROUND: using type temporarily for set definition
 type PersonalName
 {
     PrintableString SurName with Asn1Encoding{TagNumber = 0, Tagging = Asn1Tagging.Implicit};
@@ -329,7 +517,7 @@ pattern CommonName = PrintableString;
 pattern TeletexCommonName = TeletexString;
 pattern TeletexOrganizationName = TeletexString;
 
-// WORKROUND: using type temporarily for set definition
+// WORKAROUND: using type temporarily for set definition
 type TeletexPersonalName
 {
     TeletexString SurName with Asn1Encoding{TagNumber = 0, Tagging = Asn1Tagging.Implicit};
@@ -351,7 +539,7 @@ pattern PhysicalDeliveryOrganizationName = PdsParameter;
 pattern ExtensionPhysicalDeliveryAddressComponents = PdsParameter;
 pattern PrintableAddresses = array<PrintableString>;
 
-// WORKROUND: using type temporarily for set definition
+// WORKAROUND: using type temporarily for set definition
 type UnformattedPostalAddress
 {
     optional PrintableAddresses PrintableAddress;
@@ -364,7 +552,7 @@ pattern PosteRestanteAddress = PdsParameter;
 pattern UniquePostalName = PdsParameter;
 pattern LocalPostalAttributes = PdsParameter;
 
-// WORKROUND: using type temporarily for set definition
+// WORKAROUND: using type temporarily for set definition
 type PdsParameter
 {
     optional PrintableString PrintableString;
@@ -441,11 +629,15 @@ type PolicyInformation
 
 pattern CertPolicyId = ObjectIdentifier;
 
+// rfc3280
+const array<int> idQtCpsOID = idPkixOID + [2, 1];
+const array<int> idQtUnoticeOID = idPkixOID + [2, 2];
+
 type PolicyQualifierInfo
 {
-    PolicyQualifierId PolicyQualifierId;
-    ([|PolicyQualifierId == [1, 3, 6, 1, 5, 5, 7, 2, 1]|] CPSuri
-        | [|PolicyQualifierId == [1, 3, 6, 1, 5, 5, 7, 2, 2]|] UserNotice) Qualifier;
+    PolicyQualifierId PolicyQualifierId with DisplayInfo{ToText = ObjectIdentifierToString};
+    ([|PolicyQualifierId == idQtCpsOID|] CPSuri
+        | [|PolicyQualifierId == idQtUnoticeOID|] UserNotice) Qualifier;
 }
 
 pattern PolicyQualifierId = ObjectIdentifier;
@@ -479,13 +671,13 @@ pattern GeneralNames = array<GeneralName>;
 
 pattern GeneralName = AnotherName | Rfc822Name | DnsName | X400Address | DirectoryName | EdiPartyName
                     | UniformResourceIdentifier | IPAddress | RegisteredID;
-
+                  
 type AnotherName
 {
-    ObjectIdentifier TypeId;
+    ObjectIdentifier TypeId with DisplayInfo{ToText = ObjectIdentifierToString};
     // Future Reference: any not a type in ASN
     //value      [0] EXPLICIT ANY DEFINED BY type-id
-    //binary Value with Asn1Encoding{TagNumber = 0, Tagging = Asn1Tagging.Explicit};
+    OctetString Value with Asn1Encoding{TagNumber = 0, Tagging = Asn1Tagging.Explicit};
 } with Asn1Encoding{TagNumber = 0, Tagging = Asn1Tagging.Implicit, IsExtensible = true};
 
 type EdiPartyName
@@ -496,7 +688,7 @@ type EdiPartyName
 } with Asn1Encoding{TagNumber = 5, Tagging = Asn1Tagging.Implicit};
 
 pattern Rfc822Name = IA5String with Asn1Encoding{TagNumber = 1, Tagging = Asn1Tagging.Implicit};
-pattern DnsName = IA5String with Asn1Encoding{TagNumber = 2, Tagging = Asn1Tagging.Implicit};
+pattern DnsName = IA5String with Asn1Encoding{TagNumber = 2, Tagging = Asn1Tagging.Implicit, Flags = Asn1EncodingFlags.OctetStringIsString};
 pattern X400Address = ORAddress with Asn1Encoding{TagNumber = 3, Tagging = Asn1Tagging.Implicit};
 pattern DirectoryName = Name with Asn1Encoding{TagNumber = 4, Tagging = Asn1Tagging.Explicit};//Name is choice type, the tag is explicit
 pattern UniformResourceIdentifier = IA5String with Asn1Encoding{TagNumber = 6, Tagging = Asn1Tagging.Implicit};
@@ -648,9 +840,9 @@ pattern KeaParmsId = OctetString;
 
 type FieldID
 {
-    ObjectIdentifier FieldType;
-    ([|FieldType == [1, 2, 840, 10045, 1, 1]|] PrimeP
-        | [|FieldType == [1, 2, 840, 10045, 1, 2]|] CharacteristicTwo) Parameters;
+    ObjectIdentifier FieldType with DisplayInfo{ToText = ObjectIdentifierToString};
+    ([|FieldType == primeFieldOID|] PrimeP
+        | [|FieldType == characteristicTwoFieldOID|] CharacteristicTwo) Parameters;
 }
 
 type EcdsaSigValue
@@ -661,13 +853,20 @@ type EcdsaSigValue
 
 pattern PrimeP = Integer;
 
+// rfc3279
+const array<int> primeFieldOID                 = ansiX962OID + [1, 1];
+const array<int> characteristicTwoFieldOID     = ansiX962OID + [1, 2];
+const array<int> gnBasisOID                    = characteristicTwoFieldOID + [1, 1];
+const array<int> tpBasisOID                    = characteristicTwoFieldOID + [1, 2];
+const array<int> ppBasisOID                    = characteristicTwoFieldOID + [1, 3];
+
 type CharacteristicTwo
 {
     Integer M;
-    ObjectIdentifier Basis;
-    ([|Basis == [1, 2, 840, 10045, 1, 2, 1, 1]|] Null
-        | [|Basis == [1, 2, 840, 10045, 1, 2, 1, 2]|] Trinomial
-        | [|Basis == [1, 2, 840, 10045, 1, 2, 1, 3]|] Pentanomial) Parameters;
+    ObjectIdentifier Basis with DisplayInfo{ToText = ObjectIdentifierToString};
+    ([|Basis == gnBasisOID|] Null
+        | [|Basis == tpBasisOID|] Trinomial
+        | [|Basis == ppBasisOID|] Pentanomial) Parameters;
 }
 
 pattern Trinomial = Integer;
@@ -807,7 +1006,7 @@ type SmimeCapability
     ObjectIdentifier CapabilityID;
     optional Integer Version;
     optional IV Iv;
-    //WORKROUND
+    //WORKAROUND
     //optional ([|CapabilityID == [1, 2, 840, 113549, 3, 2]|] Rc2CbcParameter
         //| [|CapabilityID == [1, 2, 840, 113549, 3, 7]|] CbcParameter) Parameters;
 } with Asn1Encoding{IsExtensible = true};
@@ -837,3 +1036,286 @@ pattern EncodedObjectID = ObjectIdentifier;
 //http://msdn.microsoft.com/en-us/library/windows/desktop/aa378155(v=vs.85).aspx
 //Extension: OID = {1.3.6.1.4.1.311.21.10}
 pattern MSApplicationPolicies = array<PolicyInformation>;
+
+///*******************************RFC 4211*****************************/
+// 3.  CertReqMessage Syntax
+type CertReqMsg
+{
+    CertRequest certReq;
+    optional ProofOfPossession popo;
+    // optional set<AttributeTypeAndValue> regInfo;
+}
+
+// 4.  Proof-of-Possession (POP)
+pattern ProofOfPossession = ProofOfPossession_RaVerified | ProofOfPossession_Signature | ProofOfPossession_KeyEncipherment | ProofOfPossession_KeyAgreement;
+pattern ProofOfPossession_RaVerified = Null with Asn1Encoding{TagNumber = 0, Tagging = Asn1Tagging.Implicit};
+pattern ProofOfPossession_Signature = POPOSigningKey with Asn1Encoding{TagNumber = 1, Tagging = Asn1Tagging.Implicit};
+pattern ProofOfPossession_KeyEncipherment = POPOPrivKey with Asn1Encoding{TagNumber = 2, Tagging = Asn1Tagging.Implicit};
+pattern ProofOfPossession_KeyAgreement = POPOPrivKey with Asn1Encoding{TagNumber = 3, Tagging = Asn1Tagging.Implicit};
+
+// 4.1.  Signature Key POP
+type POPOSigningKey
+{
+    optional POPOSigningKeyInput poposkInput with Asn1Encoding{TagNumber = 0, Tagging = Asn1Tagging.Implicit};
+    AlgorithmIdentifier algorithmIdentifier;
+    BitString Signature;
+}
+
+type POPOSigningKeyInput
+{
+    AuthInfoChoice authInfo;
+    SubjectPublicKeyInfo publicKey;
+}
+
+pattern AuthInfoChoice = AuthInfoChoice_Sender | AuthInfoChoice_PublicKeyMAC;
+pattern AuthInfoChoice_Sender = GeneralName with Asn1Encoding{TagNumber = 0, Tagging = Asn1Tagging.Implicit};
+pattern AuthInfoChoice_PublicKeyMAC = PKMACValue;
+
+type PKMACValue
+{
+    AlgorithmIdentifier algId;
+    BitString $"value";
+}
+
+// 4.2.  Key Encipherment Keys
+pattern POPOPrivKey = POPOPrivKey_ThisMessage | POPOPrivKey_SubsequentMessage | POPOPrivKey_DhMac | POPOPrivKey_AgreeMAC;
+pattern POPOPrivKey_ThisMessage = BitString with Asn1Encoding{TagNumber = 0, Tagging = Asn1Tagging.Implicit};
+pattern POPOPrivKey_SubsequentMessage = SubsequentMessage with Asn1Encoding{TagNumber = 1, Tagging = Asn1Tagging.Implicit};
+pattern POPOPrivKey_DhMac = BitString with Asn1Encoding{TagNumber = 2, Tagging = Asn1Tagging.Implicit};
+pattern POPOPrivKey_AgreeMAC = PKMACValue with Asn1Encoding{TagNumber = 3, Tagging = Asn1Tagging.Implicit};
+// Partial implementation
+// pattern POPOPrivKey_EncryptedKey = EnvelopedData with Asn1Encoding{TagNumber = 2, Tagging = Asn1Tagging.Implicit};
+
+pattern SubsequentMessage = enum Integer
+{
+    encrCert = 0,
+    challengeResp  = 1,
+    ...
+};
+
+// 5.  CertRequest syntax
+type CertRequest
+{
+    Integer certReqId;
+    CertTemplate certTemplate;
+    optional Controls controls;
+}
+
+type CertTemplate
+{
+    optional Version version;
+    optional Integer serialNumber;
+    optional AlgorithmIdentifier signingAlg;
+    optional Name issuer;
+    optional OptionalValidity validity;
+    optional Name subject;
+    optional SubjectPublicKeyInfo publicKey;
+    optional UniqueIdentifier issuerUID;
+    optional UniqueIdentifier subjectUID;
+    optional Extensions extensions;
+}
+
+type OptionalValidity
+{
+    optional Time notBefore with Asn1Encoding{TagNumber = 0, Tagging = Asn1Tagging.Implicit};
+    optional Time notAfter with Asn1Encoding{TagNumber = 1, Tagging = Asn1Tagging.Implicit};
+}
+
+pattern Controls = set<AttributeTypeAndValue>;
+
+const map<ObjectIdentifier, string> OIDString =
+{
+    // Algorithm
+    rsaEncryptionOID -> "rsaEncryption",
+    md2WithRSAEncryptionOID -> "md2WithRSAEncryption",
+    md5WithRSAEncryptionOID -> "md5WithRSAEncryption",
+    sha1WithRSAEncryptionOID -> "sha1WithRSAEncryption",
+    sha256WithRSAEncryptionOID -> "sha256WithRSAEncryption",
+    sha384WithRSAEncryptionOID -> "sha384WithRSAEncryption",
+    sha512WithRSAEncryptionOID -> "sha512WithRSAEncryption",
+    sha1WithRSAEncryptionObsoleteOID -> "sha1WithRSAEncryption(Obsolete)",
+    idDsaOID -> "id-dsa",
+    ecdsaWithSha1OID -> "ecdsa-with-SHA1",
+    dhpublicnumberOID -> "dhpublicnumber",
+    idKeyExchangeAlgorithmOID -> "id-keyExchangeAlgorithm",
+    idEcPublicKeyOID -> "id-ecPublicKey",
+    idsha1OID -> "id-sha1",
+    idsha256OID -> "id-sha256",
+    idsha384OID -> "id-sha384",
+    idsha512OID -> "id-sha512",
+    idRSAESOAEPOID -> "id-RSAES-OAEP",
+    idmgf1OID -> "id-mgf1",
+    idpSpecifiedOID -> "id-pSpecified",
+    // AttributeType
+    idDomainComponentAttrType -> "id-domainComponent",
+    idEmailAddressOID -> "id-emailAddress",
+    idAtNameAttrType -> "id-at-name",
+    idAtCommonNameAttrType -> "id-at-commonName",
+    idAtLocalityNameAttrType -> "id-at-localityName",
+    idAtStateOrProvinceNameAttrType -> "id-at-stateOrProvinceName",
+    idAtOrganizationNameAttrType -> "id-at-organizationName",
+    idAtOrganizationUnitNameAttrType -> "id-at-organizationUnitName",
+    idAtTitleAttrType -> "id-at-title",
+    idAtDnQualifierAttrType -> "id-at-dnQualifier",
+    idAtCountryNameAttrType -> "id-at-countryName",
+    idAtSerialNumberAttrType -> "id-at-serialNumber",
+    idAtPseudonymAttrType -> "id-at-pseudonym",
+    // Extension
+    idCeAuthorityKeyIdentifierOID -> "id-ce-authorityKeyIdentifier",
+    idCeSubjectKeyIdentifierOID -> "id-ce-subjectKeyIdentifier",
+    idCeKeyUsageOID -> "id-ce-keyUsage",
+    idCePrivateKeyUsagePeriodOID -> "id-ce-privateKeyUsagePeriod",
+    idCeCertificatePoliciesOID -> "id-ce-certificatePolicies",
+    idCePolicyMappingsOID -> "id-ce-policyMappings",
+    idCeSubjectAltNameOID -> "id-ce-subjectAltName",
+    idCeIssuerAltNameOID -> "id-ce-issuerAltName",
+    idCeSubjectDirectoryAttributesOID -> "id-ce-subjectDirectoryAttributes",
+    idCeBasicConstraintsOID -> "id-ce-basicConstraints",
+    idCeNameConstraintsOID -> "id-ce-nameConstraints",
+    idCePolicyConstraintsOID -> "id-ce-policyConstraints",
+    idCeExtKeyUsageOID -> "id-ce-extKeyUsage",
+    idCeCRLDistributionPointsOID -> "id-ce-cRLDistributionPoints",
+    idCeInhibitAnyPolicyOID -> "id-ce-inhibitAnyPolicy",
+    idCeFreshestCRLOID -> "id-ce-freshestCRL",
+    idCeCRLNumberOID -> "id-ce-cRLNumber",
+    idCeDeltaCRLIndicatorOID -> "id-ce-deltaCRLIndicator",
+    idCeIssuingDistributionPointOID -> "id-ce-issuingDistributionPoint",
+    idCeCRLReasonOID -> "id-ce-cRLReason",
+    idCeHoldInstructionCodeOID -> "id-ce-holdInstructionCode",
+    idCeInvalidityDataOID -> "id-ce-invalidityData",
+    idCeCertificateIssuerOID -> "id-ce-certificateIssuer",
+    idPeAutorityInfoAccessOID -> "id-pe-authorityInfoAccess",
+    idPeSubjectInfoAccessOID -> "id-pe-subjectInfoAccess",
+    idPeLogotypeOID -> "id-pe-logotype",
+    idSmimeCapabilitiesOID -> "S/MIME Capabilities",  
+    CertificateTemplateOID -> "Certificate Template",
+    MsApplicationPoliciesOID -> "MS Application Policies",
+    // PolicyQualifierId
+    idQtCpsOID -> "id-qt-cps",
+    idQtUnoticeOID -> "id-qt-unotice",
+    // FieldType 
+    primeFieldOID -> "prime-field",
+    characteristicTwoFieldOID -> "charateristic-two-field",
+    // Basis
+    gnBasisOID -> "gnBasis",
+    tpBasisOID -> "tpBasis",
+    ppBasisOID -> "ppBasis",
+    // RFC 2560 OCSP
+    idPkixOcspBasicOID -> "id-pkix-ocsp-basic",
+    idPkixOcspNonceOID -> "id-pkix-ocsp-nonce",
+    idPkixOcspCrlOID -> "id-pkix-ocsp-crl",
+    idPkixOcspResponseOID -> "id-pkix-ocsp-response",
+    idPkixOcspNocheckOID -> "id-pkix-ocsp-nocheck",
+    idPkixOcspArchiveCutOffOID -> "id-pkix-ocsp-archive-cutoff",
+    idPkixOcspServiceLocatorOID -> "id-pkix-ocsp-service-locator",
+    // Microsoft implementation
+    szOID_NTDS_REPLICATIONOID -> "szOID_NTDS_REPLICATION"
+};
+
+static string ObjectIdentifierToString(any data)
+{
+    array<int> oid = data as array<int>;
+    if (oid in OIDString)
+    {
+        return OIDString[oid];
+    }
+    else
+    {
+        return oid.ToString();
+    }
+}
+
+///*******************************RFC 5755*****************************/
+type AttributeCertificate
+{
+    AttributeCertificateInfo acinfo;
+    AlgorithmIdentifier signatureAlgorithm;
+    BitString signatureValue;
+}
+
+type AttributeCertificateInfo
+{
+    AttCertVersion version;
+    Holder holder;
+    AttCertIssuer issuer;
+    AlgorithmIdentifier signature;
+    CertificateSerialNumber serialNumber;
+    AttCertValidityPeriod attrCertValidityPeriod;
+    array<Attribute> attributes;
+    optional UniqueIdentifier issuerUniqueID;
+    optional Extensions extensions;
+}
+
+pattern AttCertVersion = enum Integer { v2 = 1 };
+
+type Holder
+{
+    optional IssuerSerial baseCertificateID with Asn1Encoding{TagNumber = 0};
+    optional GeneralNames entityName with Asn1Encoding{TagNumber = 1};
+    optional ObjectDigestInfo objectDigestInfo with Asn1Encoding{TagNumber = 2};
+}
+
+type ObjectDigestInfo
+{
+    DigestedObjectType digestedObjectType;
+    optional ObjectIdentifier otherObjectTypeID;
+    AlgorithmIdentifier digestAlgorithm;
+    BitString objectDigest;
+}
+
+pattern DigestedObjectType = enum Integer {publicKey = 0, publicKeyCert = 1, otherObjectTypes = 2};
+
+pattern AttCertIssuer = GeneralNames | AttCertIssuer_V2Form;
+
+pattern AttCertIssuer_V2Form = V2Form with Asn1Encoding{TagNumber = 0};
+
+type V2Form
+{
+    optional GeneralNames issuerName;
+    optional IssuerSerial baseCertificateID with Asn1Encoding{TagNumber = 0};
+    optional ObjectDigestInfo objectDigestInfo with Asn1Encoding{TagNumber = 1};
+}
+
+type IssuerSerial
+{
+    GeneralNames issuer;
+    CertificateSerialNumber serial;
+    optional UniqueIdentifier issuerUID;
+}
+
+type AttCertValidityPeriod
+{
+    GeneralizedTime notBeforeTime;
+    GeneralizedTime notAfterTime;
+}
+
+// WCCE for Attribute
+type EnrollmentNameValuePair
+{
+    BMPString name;
+    BMPString $"value";
+}
+
+pattern WCCEAnyString = NumericString | PrintableString | TeletexString | VideotexString | IA5String |
+    GraphicString | VisibleString | GeneralString | UniversalString | BMPString;
+
+type RequestClientInfo
+{
+    Integer clientId;
+    UTF8String MachineName;
+    UTF8String UserName;
+    UTF8String ProcessName;
+}
+
+type CSPProvider
+{
+    Integer kySpec;
+    BMPString cspName;
+    BitString signature;
+}
+
+// RFC 2985 PKCS #9 for Attribute
+pattern ContentType = ObjectIdentifier;
+
+// CMC for Attribute
+pattern ExtensionReq = array<X509.Extension>;

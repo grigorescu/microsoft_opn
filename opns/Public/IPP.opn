@@ -1,4 +1,4 @@
-﻿protocol IPP with 
+protocol IPP with 
 BinaryEncodingDefaults{Endian = Endian.Big},
 Documentation
 {
@@ -23,15 +23,13 @@ OPNAuthoring
         ],
     RevisionSummary =    
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "11/30/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "362740", Date = "04/18/2014"}
         ]
 };
 
 using Standard;
 using Utility;
-using Ethernet;
 using HTTP;
-using ERREF;
 
 endpoint Server 
     over HTTP.Server 
@@ -75,76 +73,10 @@ contract Messages
         optional array<AttributeTypeGroup> AttributeTypeGroups;
         EndOfAttributesTag EndOfAttributesTag;
         binary Data;
+        
         override string ToString()
         {
-            switch (OperationId)
-            {
-                case 2     => return "Print-Job";
-                case 3     => return "Print-URI";
-                case 4     => return "Validate-Job";
-                case 5     => return "Create-Job";
-                case 6     => return "Send-Document";
-                case 7     => return "Send-URI";
-                case 8     => return "Cancel-Job";
-                case 9     => return "Get-Job-Attributes";
-                case 10    => return "Get-Job";
-                case 11    => return "Get-Printer-Attributes";
-                case 12    => return "Hold-Job";
-                case 13    => return "Release-Job";
-                case 14    => return "Restart-Job ";
-                case 15    => return "Reserved3";
-                case 16    => return "Pause-Printer";
-                case 17    => return "Resume-Printer";
-                case 18    => return "Purge-Jobs";
-                case 19    => return "Set-Printer-Attributes";
-                case 20    => return "Set-Job-Attributes";
-                case 21    => return "Get-Printer-Supported-Values";
-                case 22    => return "Create-Printer-Subscriptions";
-                case 23    => return "Create-Job-Subscriptions";
-                case 24    => return "Get-Subscription-Attributes";
-                case 25    => return "Get-Subscriptions";
-                case 26    => return "Renew-Subscription";
-                case 27    => return "Cancel-Subscription";
-                case 34    => return "Enable-Priter";
-                case 35    => return "Disable-Printer";
-                case 36    => return "Pause-Priter-After-CurrentJob";
-                case 37    => return "Hold-NewJobs";
-                case 38    => return "Release-Held-New-Jobs";
-                case 39    => return "Deactivate-Printer";
-                case 40    => return "Activate-Printer";
-                case 41    => return "Restart-Printer";
-                case 42    => return "Shutdown-Printer";
-                case 43    => return "Startup-Printer";
-                case 44    => return "Reprocess-Job";
-                case 45    => return "Cancel-Current-Job";
-                case 46    => return "Suspend-Current-Job";
-                case 47    => return "Resume-Job";
-                case 48    => return "Promote-Job ";
-                case 49    => return "Schedule-Job-After";
-                case 50    => return "Cancel-Document";
-                case 51    => return "Get-Document-Attributes";
-                case 52    => return "Get-Documents";
-                case 53    => return "Delete-Document";
-                case 54    => return "Set-Document-Attributes";
-                case 16384 => return "Microsoft Specific Auth";
-                case 16385 => return "CUPS-Get-Default";
-                case 16386 => return "CUPS-Get-Printers";
-                case 16387 => return "CUPS-Add-Modify-Printer";
-                case 16388 => return "CUPS-Delete-Printer";
-                case 16389 => return "CUPS-Get-Classes";
-                case 16390 => return "CUPS-Add-Modify-Class";
-                case 16391 => return "CUPS-Delete-Class";
-                case 16392 => return "CUPS-Accept-Jobs";
-                case 16393 => return "CUPS-Reject-Jobs";
-                case 16394 => return "CUPS-Set-Default";
-                case 16395 => return "CUPS-Get-Devices";
-                case 16396 => return "CUPS-Get-PPDs";
-                case 16397 => return "CUPS-Move-Job";
-                case 16398 => return "CUPS-Authenticate-Job";
-                case 16399 => return "CUPS-Get-PPD";
-                case 16423 => return "CUPS-Get-Document";
-                default    => return "Unknown Message Code: "+ (OperationId as string);
-            }
+            return "Request, OperationId: " + EnumToString<IPP.OperationsID>(OperationId, false);
         }
     }
 
@@ -152,14 +84,15 @@ contract Messages
     {
         (byte where value == 0x01) Major;
         (byte where value == 0x00) Minor;
-        StatusCode StatusCodes where ErrorCodeIf(!(value in {0, 1, 2, 3, 5, 7}), this, GetStatusCodeString(value));
+        StatusCode StatusCodes where ErrorCodeIf(!(value in {0, 1, 2, 3, 5, 7}), this, EnumToString<IPP.StatusCode>(value, false));
         uint RequestId;
         optional array<AttributeTypeGroup> AttributeTypeGroups;
         EndOfAttributesTag EndOfAttributesTag;
         binary Data;
+        
         override string ToString()
         {
-            return GetStatusCodeString(StatusCodes);
+            return "Response, StatusCodes: " + EnumToString<IPP.StatusCode>(StatusCodes, false);
         }
     }
 }
@@ -234,9 +167,9 @@ type AttributeWithOneValue
 {
     (ValueTags where value > 0x10) ValueTag;
     (ushort where value != 0x0000) NameLength;
-    binary Name with BinaryEncoding{Length = NameLength as uint};
+    binary Name with BinaryEncoding{Length = NameLength};
     ushort ValueLength;
-    binary Value with BinaryEncoding{Length = ValueLength as uint};
+    binary Value with BinaryEncoding{Length = ValueLength};
 }
 
 type AdditionalValue
@@ -244,179 +177,132 @@ type AdditionalValue
     (ValueTags where value > 0x10) ValueTag;
     (ushort where value == 0x0000) NameLength ;
     ushort ValueLength;
-    binary Value with BinaryEncoding{Length = ValueLength as uint};
+    binary Value with BinaryEncoding{Length = ValueLength};
 }
 
 pattern OperationsID = enum ushort
 {
     // rfc 2911
-    Reserved1                  = 0x0000,
-    Reserved2                  = 0x0001,
-    PrintJob                   = 0x0002,
-    PrintURI                   = 0x0003,
-    ValidateJob                = 0x0004,
-    CreateJob                  = 0x0005,
-    SendDocument               = 0x0006,
-    SendURI                    = 0x0007,
-    CancelJob                  = 0x0008,
-    GetJobAttributes           = 0x0009,
-    GetJob                     = 0x000A,
-    GetPrinterAttributes       = 0x000B,
-    HoldJob                    = 0x000C,
-    ReleaseJob                 = 0x000D,
-    RestartJob                 = 0x000E,
-    Reserved3                  = 0x000F,
-    PausePrinter               = 0x0010,
-    ResumePrinter              = 0x0011,
-    PurgeJobs                  = 0x0012,
-    SetPrinterAttributes       = 0x0013,
-    SetJobAttributes           = 0x0014,
-    GetPrinterSupportedValues  = 0x0015,
+    $"Print-Job"                      = 0x0002,
+    $"Print-URI"                      = 0x0003,
+    $"Validate-Job"                   = 0x0004,
+    $"Create-Job"                     = 0x0005,
+    $"Send-Document"                  = 0x0006,
+    $"Send-URI"                       = 0x0007,
+    $"Cancel-Job"                     = 0x0008,
+    $"Get-Job-Attributes"             = 0x0009,
+    $"Get-Job"                        = 0x000A,
+    $"Get-Printer-Attributes"         = 0x000B,
+    $"Hold-Job"                       = 0x000C,
+    $"Release-Job"                    = 0x000D,
+    $"Restart-Job"                    = 0x000E,
+    //Reserved3                  = 0x000F,
+    $"Pause-Printer"                  = 0x0010,
+    $"Resume-Printer"                 = 0x0011,
+    $"Purge-Jobs"                     = 0x0012,
+    $"Set-Printer-Attributes"         = 0x0013,
+    $"Set-Job-Attributes"             = 0x0014,
+    $"Get-Printer-Supported-Values"   = 0x0015,
     // rfc 3995
-    CreatePrinterSubscriptions = 0x0016,
-    CreateJobSubscriptions     = 0x0017,
-    GetSubscriptionAttributes  = 0x0018,
-    GetSubscriptions           = 0x0019,
-    RenewSubscription          = 0x001A,
-    CancelSubscription         = 0x001B,
+    $"Create-Printer-Subscriptions"   = 0x0016,
+    $"Create-Job-Subscriptions"       = 0x0017,
+    $"Get-Subscription-Attributes"    = 0x0018,
+    $"Get-Subscriptions"              = 0x0019,
+    $"Renew-Subscription"             = 0x001A,
+    $"Cancel-Subscription"            = 0x001B,
     // rfc 3998
-    EnablePriter               = 0x22, 
-    DisablePrinter             = 0x23, 
-    PausePriterAfterCurrentJob = 0x24,
-    HoldNewJobs                = 0x25,
-    ReleaseHeldNewJobs         = 0x26,
-    DeactivatePrinter          = 0x27,
-    ActivatePrinter            = 0x28,
-    RestartPrinter             = 0x29,
-    ShutdownPrinter            = 0x2A,
-    StartupPrinter             = 0x2B,
-    ReprocessJob               = 0x2C,
-    CancelCurrentJob           = 0x2D,
-    SuspendCurrentJob          = 0x2E,
-    ResumeJob                  = 0x2F,
-    PromoteJob                 = 0x30,
-    ScheduleJobAfter           = 0x31,
+    $"Enable-Priter"                  = 0x22, 
+    $"Disable-Printer"                = 0x23, 
+    $"Pause-Priter-After-Current-Job" = 0x24,
+    $"Hold-New-Jobs"                  = 0x25,
+    $"Release-Held-New-Jobs"          = 0x26,
+    $"Deactivate-Printer"             = 0x27,
+    $"Activate-Printer"               = 0x28,
+    $"Restart-Printer"                = 0x29,
+    $"Shutdown-Printer"               = 0x2A,
+    $"Startup-Printer"                = 0x2B,
+    $"Reprocess-Job"                  = 0x2C,
+    $"Cancel-Current-Job"             = 0x2D,
+    $"Suspend-Current-Job"            = 0x2E,
+    $"Resume-Job"                     = 0x2F,
+    $"Promote-Job"                    = 0x30,
+    $"Schedule-Job-After"             = 0x31,
     // pwg5100.5
-    CancelDocument             = 0x33,
-    GetDocumentAttributes      = 0x34,
-    GetDocuments               = 0x35,
-    DeleteDocument             = 0x36,
-    SetDocumentAttributes      = 0x37,
+    $"Cancel-Document"                = 0x33,
+    $"Get-Document-Attributes"        = 0x34,
+    $"Get-Documents"                  = 0x35,
+    $"Delete-Document"                = 0x36,
+    $"Set-Document-Attributes"        = 0x37,
     // Vendor-Specific codes (0x4000-0xFFFF) (http://www.pwg.org/ipp/opcodes/ippopcodes.html)
-    MicrosoftSpecificAuth      = 0x4000,
+    $"Microsoft-Specific-Auth"        = 0x4000,
     // http://www.cups.org/spec-ipp.htm
-    CupsGetDefault             = 0x4001,
-    CupsGetPrinters            = 0x4002,
-    CupsAddModifyPrinter       = 0x4003,
-    CupsDeletePrinter          = 0x4004,
-    CupsGetClasses             = 0x4005,
-    CupsAddModifyClass         = 0x4006,
-    CupsDeleteClass            = 0x4007,
-    CupsAcceptJobs             = 0x4008,
-    CupsRejectJobs             = 0x4009,
-    CupsSetDefault             = 0x400A,
-    CupsGetDevices             = 0x400B,
-    CupsGetPPDs                = 0x400C,
-    CupsMoveJob                = 0x400D,
-    CupsAuthenticateJob        = 0x400E,
-    CupsGetPPD                 = 0x400F,
-    CupsGetDocument            = 0x4027
+    $"Cups-Get-Default"               = 0x4001,
+    $"Cups-Get-Printers"              = 0x4002,
+    $"Cups-Add-Modify-Printer"        = 0x4003,
+    $"Cups-Delete-Printer"            = 0x4004,
+    $"Cups-Get-Classes"               = 0x4005,
+    $"Cups-Add-Modify-Class"          = 0x4006,
+    $"Cups-Delete-Class"              = 0x4007,
+    $"Cups-Accept-Jobs"               = 0x4008,
+    $"Cups-Reject-Jobs"               = 0x4009,
+    $"Cups-Set-Default"               = 0x400A,
+    $"Cups-Get-Devices"               = 0x400B,
+    $"Cups-Get-PPDs"                  = 0x400C,
+    $"Cups-Move-Job"                  = 0x400D,
+    $"Cups-Authenticate-Job"          = 0x400E,
+    $"Cups-Get-PPD"                   = 0x400F,
+    $"Cups-Get-Document"              = 0x4027,
+    ...
 };
 
 pattern StatusCode = enum ushort
 {
     // rfc 2911
-    Successfulok                                   = 0x0000,
-    Successfulokignoredorsubstitutedattributes     = 0x0001,
-    Successfulokconflictingattributes              = 0x0002,
+    $"successful-ok"                                       = 0x0000,
+    $"successful-ok-ignored-or-substituted-attributes"     = 0x0001,
+    $"successful-ok-conflicting-attributes"                = 0x0002,
     // rfc 3995
-    Successfulokignoredsubscriptions               = 0x0003,
-    Successfuloktoomanyevents                      = 0x0005,
+    $"successful-ok-ignored-subscriptions"                 = 0x0003,
+    $"successful-ok-too-many-events"                       = 0x0005,
     // rfc 3996
-    Successfulokeventscomplete                     = 0x0007,
+    $"successful-ok-events-complete"                       = 0x0007,
     // rfc 2911
-    Clienterrorbadrequest                          = 0x0400,
-    Clienterrorforbidden                           = 0x0401,
-    Clienterrornotauthenticated                    = 0x0402,
-    Clienterrornotauthorized                       = 0x0403,
-    Clienterrornotpossible                         = 0x0404,
-    Clienterrortimeout                             = 0x0405,
-    Clienterrornotfound                            = 0x0406,
-    Clienterrorgone                                = 0x0407,
-    Clienterrorrequestentitytoolarge               = 0x0408,
-    Clienterrorrequestvaluetoolong                 = 0x0409,
-    Clienterrordocumentformatnotsupported          = 0x040A,
-    Clienterrorattributesorvaluesnotsupported      = 0x040B,
-    Clienterrorurischemenotsupported               = 0x040C,
-    Clienterrorcharsetnotsupported                 = 0x040D,
-    Clienterrorconflictingattributes               = 0x040E,
-    Clienterrorcompressionnotsupported             = 0x040F,
-    Clienterrorcompressionerror                    = 0x0410,
-    Clienterrordocumentformaterror                 = 0x0411,
-    Clienterrordocumentaccesserror                 = 0x0412,
+    $"client-error-bad-request"                            = 0x0400,
+    $"client-error-forbidden"                              = 0x0401,
+    $"client-error-not-authenticated"                      = 0x0402,
+    $"client-error-not-authorized"                         = 0x0403,
+    $"client-error-not-possible"                           = 0x0404,
+    $"client-error-timeout"                                = 0x0405,
+    $"client-error-not-found"                              = 0x0406,
+    $"client-error-gone"                                   = 0x0407,
+    $"client-error-request-entity-too-large"               = 0x0408,
+    $"client-error-request-value-too-long"                 = 0x0409,
+    $"client-error-document-format-not-supported"          = 0x040A,
+    $"client-error-attributes-or-values-not-supported"     = 0x040B,
+    $"client-error-uri-scheme-not-supported"               = 0x040C,
+    $"client-error-charset-not-supported"                  = 0x040D,
+    $"client-error-conflicting-attributes"                 = 0x040E,
+    $"client-error-compression-not-supported"              = 0x040F,
+    $"client-error-compression-error"                      = 0x0410,
+    $"client-error-document-format-error"                  = 0x0411,
+    $"client-error-document-access-error"                  = 0x0412,
     // should find rfc
-    Clienterrorattributesnotsettable               = 0x0413,
+    $"client-error-attributes-not-settable"                = 0x0413,
     // rfc 3995
-    Clienterrorignoredallsubscriptions             = 0x0414,
-    Clienterrortoomanysubscriptions                = 0x0415,
+    $"client-error-ignored-all-subscriptions"              = 0x0414,
+    $"client-error-too-many-subscriptions"                 = 0x0415,
     // rfc 2911
-    Servererrorinternalerror                       = 0x0500,
-    Servererroroperationnotsupported               = 0x0501,
-    Servererrorserviceunavailable                  = 0x0502,
-    Servererrorversionnotsupported                 = 0x0503,
-    Servererrordeviceerror                         = 0x0504,
-    Servererrortemporaryerror                      = 0x0505,
-    Servererrornotacceptingjobs                    = 0x0506,
-    Servererrorbusy                                = 0x0507,
-    Servererrorjobcanceled                         = 0x0508,
-    Servererrormultipledocumentjobsnotsupported    = 0x0509,
+    $"server-error-internal-error"                         = 0x0500,
+    $"server-error-operation-not-supported"                = 0x0501,
+    $"server-error-service-unavailable"                    = 0x0502,
+    $"server-error-version-not-supported"                  = 0x0503,
+    $"server-error-device-error"                           = 0x0504,
+    $"server-error-temporary-error"                        = 0x0505,
+    $"server-error-not-accepting-jobs"                     = 0x0506,
+    $"server-error-busy"                                   = 0x0507,
+    $"server-error-job-canceled"                           = 0x0508,
+    $"server-error-multiple-document-jobs-not-supported"   = 0x0509,
     // rfc 3998
-    Servererrorprinterisdeactivated                = 0x050A
+    $"server-error-printer-is-deactivated"                 = 0x050A,
+    ...
 };
-
-
-string GetStatusCodeString(ushort StatusCodes)
-{
-    switch (StatusCodes)
-    {
-        case 0    => return "successful-ok";
-        case 1    => return "Successful-ok-ignored-or-substituted-attributes";
-        case 2    => return "Successful-ok-conflicting-attributes";
-        case 3    => return "Successful-ok-ignored-subscriptions";
-        case 5    => return "Successful-ok-too-many-events";
-        case 7    => return "Successful-ok-events-complete ";
-        case 1024 => return "Client-error-bad-request";
-        case 1025 => return "Client-error-forbidden";
-        case 1026 => return "Client-error-not-authenticated";
-        case 1027 => return "Client-error-not-authorized";
-        case 1028 => return "Client-error-not-possible";
-        case 1029 => return "Client-error-timeout";
-        case 1030 => return "Client-error-not-found";
-        case 1031 => return "Client-error-gone";
-        case 1032 => return "Client-error-request-entity-too-large";
-        case 1033 => return "Client-error-request-value-too-long";
-        case 1034 => return "Client-error-document-format-not-supported";
-        case 1035 => return "Client-error-attributes-or-values-not-supported";
-        case 1036 => return "Client-error-uri-scheme-not-supported";
-        case 1037 => return "Client-error-conflicting-attributes";
-        case 1038 => return "Client-error-compression-not-supported";
-        case 1039 => return "Client-error-compression-error";
-        case 1040 => return "Client-error-document-format-error";
-        case 1041 => return "Client-error-document-access-error";
-        case 1042 => return "Client-error-attributes-not-settable";
-        case 1043 => return "Client-error-ignored-all-subscriptions";
-        case 1044 => return "Client-error-too-many-subscriptions";
-        case 1280 => return "Server-error-internal-error";
-        case 1281 => return "Server-error-operation-not-supported";
-        case 1283 => return "Server-error-service-unavailable";
-        case 1284 => return "Server-error-version-not-supported";
-        case 1285 => return "Server-error-device-error";
-        case 1286 => return "Server-error-temporary-error";
-        case 1287 => return "Server-error-not-accepting-jobs";
-        case 1288 => return "Server-error-busy ";
-        case 1289 => return "Server-error-job-canceled";
-        case 1289 => return "Server-error-multiple-document-jobs-not-supported";
-        case 1289 => return "Server-error-printer-is-deactivated";
-        default   => return "Unknown Message Code: "+ (StatusCodes as string);
-    }
-}

@@ -20,16 +20,13 @@ OPNAuthoring
        
     RevisionSummary =
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "06/09/2011"},
+            new Revision{Class = RevisionClass.Major, Version = "356548", Date = "11/16/2013"},
         ]
 };
 
 using Standard;
 using Ethernet;
 using Utility;
-using IANA;
-using IPv4;
-using IPv6;
 
 endpoint Node accepts DataUnit;
 

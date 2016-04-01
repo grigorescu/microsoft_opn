@@ -1,5 +1,5 @@
-﻿protocol SMTP with 
-StreamEncodingDefaults{Encoding = TextEncoding.ASCII}, // WORKAROUND: BUG23734: Stream Encoding does not support UTF8 as Text Encoding.
+protocol SMTP with 
+StreamEncodingDefaults{Encoding = TextEncoding.ASCII},
 Documentation
 {
     ProtocolName = "Simple Mail Transfer Protocol",
@@ -21,7 +21,7 @@ OPNAuthoring
         ],
     RevisionSummary =
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "10/31/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "380827", Date = "09/22/2015"}
         ]
 };
 
@@ -29,73 +29,98 @@ using Standard;
 using IANA;
 using Utility;
 using TCP;
-using VirtualTransport;
+using DecodingUtility; // WORKAROUND: compiler bug#3131164, When type A inherit from type B, module C use tye A, and A, B, C is in different module file, compiler will give a compilation error
 
-endpoint Server over VirtualTransport.Server accepts MailPacket issues MailPacket;
+/*
+ * SMTP command format
+ * RFC 821
+    HELO <SP> <domain> <CRLF>
+    MAIL <SP> FROM:<reverse-path> <CRLF>
+    RCPT <SP> TO:<forward-path> <CRLF>
+    DATA <CRLF> // data end with line <CRLF>.<CRLF>
+    RSET <CRLF>
+    SEND <SP> FROM:<reverse-path> <CRLF>
+    SOML <SP> FROM:<reverse-path> <CRLF>
+    SAML <SP> FROM:<reverse-path> <CRLF>
+    VRFY <SP> <string> <CRLF>
+    EXPN <SP> <string> <CRLF>
+    HELP [<SP> <string>] <CRLF>
+    NOOP <CRLF>
+    QUIT <CRLF>
+    TURN <CRLF>
+ * RFC 1985
+    ETRN <SP> [<option character>] <node name> <CRLF>
+ * RFC 2554
+    AUTH <SP> mechanism [<SP> <base64>] <CRLF> // should consider AUTH reassemble
+ * RFC 3030
+    BDAT <SP> chunk-size [<SP> end-maker] <CRLF>
+ * RFC 5321
+    EHLO SP ( Domain / address-literal ) <CRLF>
+
+ * SMTP Reply
+ * RFC 821
+ * Single line reply: three-digit code <SP> text <CRLF>
+ * Multiple line reply:
+ *      123-first line
+ *      123-second line
+ *      123 last line <CRLF>
+ */
+
+// Base64 encoded prefix for NTLM: "TlRMTVNTUA"
+const binary Base64EncodedNtlmPrefix = $[546C524D54564E54];
+const string Base64EncodedNtlmPrefixString = "TlRMTVNTUA";
+const set<byte> MinorVersions = {0x01, 0x02, 0x03}; // for check TLS header
+const binary CRLFBinary = $[0D0A];
+const binary DATAEndSequence = $[0D0A2E0D0A]; // CRLF.CRLF
+const binary LFBinary = $[0A];
+
+annotation int MailPacket#byteLength;
+
+// ----------------------------------- endpoint & actor -----------------------------------------------------
+endpoint Server over TCP.Server accepts MailPacket issues MailPacket;
 client endpoint Client connected to Server;
 
-autostart actor SMTPOverTCP(VirtualTransport.Server server)
+autostart actor SMTPOverTCP(TCP.Server server)
 {
-    MailPacket packet;
-    bool dataBegin = false;
-
-    process server accepts p:VirtualTransport.VirtualDataSegment{DestinationPort is Port.SMTP}
+    SmtpDecodingHelper smtpDecodingHelper = null;
+    
+    process server accepts segment:TCP.Segment where IsStmpMessage(segment.DestinationPort)
     {
-        switch (p.Payload)
+        if (smtpDecodingHelper == null)
         {
-            case d:MailPacket from PacketDecoder =>
-                d.SourceData = p.Payload;
-                if (d.Request != nothing)
-                {
-                    if ((d.Request as RequestType).Command.ToUpper() == "DATA")
-                    {
-                        packet = new MailPacket{};
-                        packet.Payload = $[];
-                        packet#byteLength = 0;
-                        dataBegin = true;
-                        dispatch endpoint SMTP.Server over server accepts d;
-                    }
-                    else
-                    {
-                        dataBegin = false;
-                    }
-                }
-
-                if (!dataBegin)
-                {
-                    dispatch endpoint SMTP.Server over server accepts d;
-                }
-
-                if (dataBegin && d.Payload != nothing)
-                {
-                    packet.Payload = (packet.Payload as binary) + (d.Payload as binary);
-                    packet#byteLength = (packet#byteLength as int) + (d#byteLength as int);
-                    binary end = (packet.Payload as binary).Segment((packet.Payload as binary).Count-5);
-                    if (end[0] == 0x0D && end[1] == 0x0A && end[2] == 0x2E && end[3] == 0x0D && end[4] == 0x0A)
-                    {
-                        packet.SourceData = packet.Payload;
-                        dispatch (endpoint SMTP.Server over server) accepts packet;
-                        dataBegin = false;
-                    }
-                }
-            default =>
-                ThrowDecodingException("SMTP", "MailPacket");
+            smtpDecodingHelper = new SmtpDecodingHelper();
+            smtpDecodingHelper.InitializeSmtpDecodingHelper(new SmtpRequestDecodingCache(), new SmtpResponseDecodingCache(), server);
+        }
+        
+        smtpDecodingHelper.TryDecode(segment, MessageDirection.Accepts);
+    }
+    
+    process server issues segment:TCP.Segment where IsStmpMessage(segment.SourcePort)
+    {
+        if (smtpDecodingHelper == null)
+        {
+            smtpDecodingHelper = new SmtpDecodingHelper();
+            smtpDecodingHelper.InitializeSmtpDecodingHelper(new SmtpRequestDecodingCache(), new SmtpResponseDecodingCache(), server);
+        }
+        
+        smtpDecodingHelper.TryDecode(segment, MessageDirection.Issues);
+    }
+    
+    ~endpoint(TCP.Server server)
+    {
+        if (smtpDecodingHelper != null)
+        {
+            smtpDecodingHelper.ClearInDestructor();
         }
     }
 
-    process server issues p:VirtualTransport.VirtualDataSegment{SourcePort is Port.SMTP}
+    bool IsStmpMessage(ushort port)
     {
-        switch (p.Payload)
-        {
-            case d:MailPacket from PacketDecoder =>
-                d.SourceData = p.Payload;
-                dispatch endpoint SMTP.Server over server issues d;
-            default =>
-                ThrowDecodingException("SMTP", "MailPacket");
-        }
+        return port == Port.SMTP || port == Port.Submission || port == Port.ODMR;
     }
 }
 
+// -----------------------------------message & types -----------------------------------------------------
 message MailPacket
 {
     optional RequestType Request;
@@ -104,252 +129,537 @@ message MailPacket
 
     override string ToString()
     {
-        if (Request != nothing)
+        if (Request is req:RequestType)
         {
-            RequestType dq = Request as RequestType;
-            if ((dq.CommandParameter == nothing))
-            {
-                return "Request, Command: " + dq.Command;
-            }
-            else
-            {
-                return "Request, Command: " + dq.Command + " " + (dq.CommandParameter as string) + ", Length: " +
-                (this#byteLength as string) + " bytes";
-            }
+            return req.ToString() + ", Length: " + (this#byteLength as string) + " bytes";
         }
-        else if (Response != nothing)
+        else if (Response is res:ResponseType)
         {
-            ResponseType dp = Response as ResponseType;
-            if ((dp.ReplyMessage != nothing) && ((dp.ReplyMessage as array<string>).Count > 0))
-            {
-                return "Response, ReplyCode: " + dp.ReplyCode + ", ReplyMessage: " + (dp.ReplyMessage as array<string>)[0] + ", Length: " + (this#byteLength as string) + " bytes";
-            }
-            return "Response, ReplyCode: " + dp.ReplyCode;
+            return res.ToString() + ", Length: " + (this#byteLength as string) + " bytes";
         }
-        else
+        else if (Payload is payload:binary)
         {
-            return "MailPacket, Data Payload: " + (this#byteLength as string) + " bytes";
+            var byteCnt = payload.Count;
+            return "MailPacket, Data Payload: " + byteCnt.ToString() + " bytes";
         }
 
         return "";
     }
 }
 
-annotation int MailPacket#byteLength;
-
-// [RFC 5321    Page 32    4.1.  SMTP Commands]
-syntax CommandWithParameter = s:(a:(
-    regex {(?i)DSN}                |
-    regex {(?i)ATRN}               |
-    regex {(?i)AUTH}               |
-    regex {(?i)BDAT}               |
-    regex {(?i)EHLO}               |
-    regex {(?i)ETRN}               |
-    regex {(?i)EXPN}               |
-    regex {(?i)HELO}               |
-    regex {(?i)HELP}               |
-    regex {(?i)LHLO}               |
-    regex {(?i)MAIL}               |
-    regex {(?i)MTRK}               |
-    regex {(?i)NOOP}               |
-    regex {(?i)ONEX}               |
-    regex {(?i)RCPT}               |
-    regex {(?i) RCPT}              |
-    regex {(?i)SAML}               |
-    regex {(?i)SEND}               |
-    regex {(?i)SOML}               |
-    regex {(?i)SIZE}               |
-    regex {(?i)TURN}               |
-    regex {(?i)VERB}               |
-    regex {(?i)VRFY}               |
-    regex {(?i)8BITMIME}           |
-    regex {(?i)CHUNKING}           |
-    regex {(?i)SUBMITTER}          |
-    regex {(?i)BINARYMIME}         |
-    regex {(?i)CHECKPOINT}         |
-    regex {(?i)PIPELINING}         |
-    regex {(?i)QUIT}               |
-    regex {(?i)RSET}               |
-    regex {(?i)NO-SOLICITING}      |
-    regex {(?i)ENHANCEDSTATUSCODES}
-    ) " " => a                     |
-    b:(regex {(?i)AG5L}) ("C" | "c")
-    => b                           |
-    c:(regex {(?i)ENH6}) ("O" | "o")
-    => c
-    ) => new RequestType{Command = s};
-
-syntax CRLF = "\r\n";
-syntax CommandWithoutParameter = s:(
-    regex {(?i)DATA}     |
-    regex {(?i)QUIT}     |
-    regex {(?i)EHLO}     |
-    regex {(?i)HELO}     |
-    regex {(?i)HELP}     |
-    regex {(?i)RSET}     |
-    regex {(?i)STARTTLS} |
-    regex {(?i)TURN}     |
-    regex {(?i)VRFY}     |
-    ""
-    ) CRLF
-    => new RequestType{Command = s};
-
 type RequestType
 {
     string Command;
     optional string CommandParameter;
-    optional array<string> Data;
+    optional uint ChunkSize; // Only for BDAT command
+    
+    override string ToString()
+    {
+        string summaryLine = "Request, Command: " + Command;
+        if (CommandParameter is commandParameter:string)
+        {
+            summaryLine += " " + commandParameter;
+        }
+        return summaryLine;
+    }
 }
-
-// [RFC 5321    Page 46    4.2.  SMTP Replies]
-syntax Code = c1:(regex {[2-5]{1}}) c2:(regex {[0-5]{1}}) c3:(regex {[0-9]{1}}) w:(" " | "-")
-    => new ResponseType{ReplyCode = c1+c2+c3, WhiteSpace = w};
 
 type ResponseType
 {
     string ReplyCode;
-    string WhiteSpace;
     optional array<string> ReplyMessage;
+    
+    override string ToString()
+    {
+        string summaryLine = "Response, ReplyCode: " + ReplyCode;
+        if (ReplyMessage is replyMessage:array<string> && replyMessage.Count > 0)
+        {
+            summaryLine += ", ReplyMessage: " + replyMessage[0];
+        }
+        
+        return summaryLine;
+    }
 }
 
-// NLMP Authentication data.
-syntax NlmpData    = s:"TlRMTVNTUA" => s;
-syntax Text        = s:regex{[^\r\n]+} ("\n" | CRLF) => s;
-pattern SP         = " ";
-syntax Spaces      = SP*;
+// ---------------------------------- syntax -----------------------------------------------------
+// RFC 5321 alphabetic characters terminated by <SP>,
+// also consider the COMMANDS supported by Microsoft Exchange like X-LINK2STATE.
+// restrict the command will no more than 20 characters
+syntax Command = regex{[A-Za-z0-9\x2D]{1,20}};
+syntax CommandParameter = regex{[^\r\n]+};
+syntax AuthMechanism = regex{[^\x20]+};
+syntax AuthCommand = regex {(?i)AUTH};
+syntax BdatCommand = regex{((?i)BDAT)};
+syntax BdatChunkSize = s:regex{[0-9]+} => (s as uint);
+syntax BdatLast = regex{LAST};
+syntax SP = regex{\x20};
+syntax CRLF = regex{\r\n};
 
-MailPacket PacketDecoder(stream payload)
-{
-    MailPacket packet = new MailPacket{};
-    if (packet == nothing)
+syntax CommandLine = AuthCommandLine | BdatCommandLine | OtherCommandLine;
+
+syntax OtherCommandLine = c:Command p1:(SP p:CommandParameter => p)? CRLF =>
+    new MailPacket
     {
-        ThrowDecodingException("SMTP", "MailPacket"); 
-    }
-    packet#byteLength = payload.ByteLength;
-
-    // Transport Layer Security (TLS) Payload Data.
-    if ((payload.ByteLength > 4) && (((payload.PeekByte(8) == 0x03)
-        && ((payload.PeekByte(2*8) == 0x00) || (payload.PeekByte(2*8) == 0x01) || (payload.PeekByte(2*8) == 0x02) || (payload.PeekByte(2*8) == 0x03)))
-        || ((payload.PeekByte(3*8) == 0x03) && ((payload.PeekByte(4*8) == 0x00) || (payload.PeekByte(4*8) == 0x01)))))
-    {
-        packet.Payload = payload.PeekBytes(0);
-
-        return packet;
-    }
-
-    if ((payload.ByteLength == 5) && (payload.PeekByte(0) == 0x0D) && (payload.PeekByte(8) == 0x0A) && (payload.PeekByte(2*8) == 0x2E)
-        && (payload.PeekByte(3*8) == 0x0D) && (payload.PeekByte(4*8) == 0x0A))
-    {
-        packet.Payload = payload.PeekBytes(0);
-
-        return packet;
-    }
-
-    packet.Request = CommandWithParameter(payload);
-    if (packet.Request != nothing)
-    {
-        var packetRequest = packet.Request as RequestType;
-        packetRequest.CommandParameter = Text(payload);
-
-        if (payload.BytePosition < payload.ByteLength)
+        Request = new RequestType
         {
-            packetRequest.Data = AddArray(ref payload);
-        }
+            Command = c,
+            CommandParameter = p1.Count > 0 ? p1[0] : nothing,
+        },
+        Response = nothing,
+        Payload = nothing,
+    };
+
+syntax AuthCommandLine = c:AuthCommand SP mechanism:AuthMechanism p:(SP p1:CommandParameter => p1)? CRLF =>
+    new MailPacket
+    {
+        Request = new RequestType
+        {
+            Command = c,
+            CommandParameter = mechanism,
+        },
+        Response = nothing,
+        Payload = p.Count > 0 ? (p[0] as stream).PeekBytes(0) : nothing,
+    };
+// BDAT <SP> chunk-size [<SP> end-marker] <CRLF>
+// Just use to decoding length parameter in BDAT command
+syntax BdatCommandLine = cmd:BdatCommand SP chunkSize:BdatChunkSize l:(SP l1:BdatLast => l1)? CRLF =>
+    new MailPacket
+    {
+        Request = new RequestType
+        {
+            Command = cmd,
+            CommandParameter = l.Count > 0 ? l[0] : nothing,
+            ChunkSize = chunkSize,
+        },
+        Response = nothing,
+        Payload = nothing,
+    };
+
+// [RFC 5321    Page 46    4.2.  SMTP Replies]
+// Consider both single line Reply and multiple lines Reply
+syntax Replies = msgs:(regex {[0-9]{3}\x2D} s1:regex{[^\r\n]+} regex{(\r)?\n} => s1)* c:(regex {[0-9]{3}}) " " msg:regex{[^\r\n]+} regex{(\r)?\n}
+    => new MailPacket
+    {
+        Request = nothing,
+        Response = new ResponseType{ReplyCode = c, ReplyMessage = msgs + [msg]},
+        Payload = nothing,
+    };
+
+// ---------------------------------- Utilities for TLS ---------------------------------------
+// copy from TLS
+bool IsTLSHeader(binary data)
+{
+    if (data.Count < 5)
+        return false;
+        
+    // For V2ClientHello message, the highest bit MUST be 1.
+    if ((data[0] & 0x80) != 0)
+    {
+        return IsTLSV2ClientHello(data);
+    }
+    else if (data[1] == 0x03 &&
+            data[2] in MinorVersions &&
+            InRange<ContentType>(data[0]))
+    {
+        return true;
     }
     else
     {
-        packet.Request = CommandWithoutParameter(payload);
-        if (packet.Request == nothing)
-        {
-            packet.Response = Code(payload);
-            if (packet.Response != nothing)
-            {
-                Spaces(payload);
-
-                if (NlmpData(payload) != nothing)
-                {
-                    packet.Payload = payload.PeekBytes(payload.BytePosition * 8);
-                }
-                else if (payload.BytePosition < payload.ByteLength)
-                {
-                    var packetResponse = packet.Response as ResponseType;
-                    packetResponse.ReplyMessage = AddArray(ref payload);
-                }
-            }
-            else
-            {
-                packet.Payload = payload.PeekBytes(payload.BytePosition * 8);
-            }
-        }
-        else if ((payload.ByteLength != 2) && ((packet.Request as RequestType).Command == ""))
-        {
-            packet.Request = nothing;
-            packet.Payload = payload.PeekBytes(0);
-        }
+        return false;
     }
-
-    return packet;
 }
 
-array<string> AddArray(ref stream payload)
+bool IsTLSV2ClientHello(binary data)
 {
-    array<string> strArray = [];
-
-    while (payload.BytePosition < payload.ByteLength)
+    if (data.Count >= 5 && 
+        ((data[0] & 0x80) != 0) &&
+        data[2] == 1 &&
+        data[3] == 3 &&
+        data[4] == 0)
     {
-        optional string msg = Text(payload);
-        if (msg != nothing)
+        return true;
+    }
+
+    return false;
+}
+
+pattern ContentType = enum byte
+{
+    change_cipher_spec = 20,
+    alert = 21,
+    handshake = 22,
+    application_data = 23,
+    heartbeat = 24,
+    ...
+};
+
+// ---------------------------------- SMTP Decoding ---------------------------------------
+type SmtpDecodingHelper: TCPDecodingHelper
+{
+    SmtpDecodingContext smtpDecodingContext = null;
+    
+    void InitializeSmtpDecodingHelper(SmtpRequestDecodingCache acceptsCache, SmtpResponseDecodingCache issuesCache, TCP.Server server)
+    {
+        smtpDecodingContext = new SmtpDecodingContext();
+        
+        AcceptsCache = acceptsCache;
+        acceptsCache.InitializeContext(server, smtpDecodingContext);
+        IssuesCache = issuesCache;
+        issuesCache.InitializeContext(server, smtpDecodingContext);
+    }
+}
+
+/*
+ * For SMTP decoding we should consider below,
+ * 1. Data over SMTP after DATA command is end with mark CRLF.CRLF
+ * 2. Data over SMTP after BDAT command is decoded based on Chunk Size in BDAT command.
+ */
+pattern SmtpDecodingState = enum byte
+{
+    DecodingDataState = 0,
+    DecodingBdatState = 1,
+    DecodingXEXCH50State = 2,
+    DecodingCommandState = 3,
+    ...
+};
+
+type SmtpDecodingCache : TCPTextDecodingCache
+{
+    bool isTlsSession = false;
+    
+    override void TryDecodeAndDispatchMessage()
+    {
+        assert Initliazed == true;
+        
+        if (IsTlsSession(Buffer))
         {
-            strArray += [msg as string];
+            // for TLS, always decode as SMTP message and put the data as SMTP message payload
+            var msg = GenerateMailPacketPayload(Buffer);
+            msg.Origins = Origins;
+            
+            DispatchMessage(msg);
+            CompleteMessages.Add(msg, BufferStartSequenceNumber, BufferEndSequenceNumber);
+            ResetAfterSucceed(null);
+            return;
+        }
+        
+        // for common SMTP message, follows the origins logic
+        base.TryDecodeAndDispatchMessage();
+    }
+    
+    bool IsTlsSession(binary buffer)
+    {
+        isTlsSession = isTlsSession || IsTLSHeader(buffer);
+        return isTlsSession;
+    }
+}
+
+type SmtpDecodingContext
+{
+    array<string> CachedCommands = []; // cache request for SMTP DATA command
+    int CachedCommandsArrayIndex = 0;
+    SmtpDecodingState DecodingState = SmtpDecodingState.DecodingCommandState;
+    
+    string PeekTopCachedCommand()
+    {
+        if (CachedCommandsArrayIndex < CachedCommands.Count)
+        {
+            return CachedCommands[CachedCommandsArrayIndex];
+        }
+        
+        return "";
+    }
+    
+    void RemoveTopCachedCommand()
+    {
+        if (CachedCommandsArrayIndex < CachedCommands.Count)
+        {
+            CachedCommandsArrayIndex++;
+        }
+    }
+    
+    void ClearCachedCommand()
+    {
+        CachedCommands = [];
+        CachedCommandsArrayIndex = 0;
+    }
+    
+    void AddCommand(string command)
+    {
+        CachedCommands += [command];
+    }
+    
+    void ResetDecodingState()
+    {
+        DecodingState = SmtpDecodingState.DecodingCommandState;
+    }
+}
+
+type SmtpRequestDecodingCache: SmtpDecodingCache
+{
+    SmtpDecodingContext smtpDecodingContext = null;
+    uint chunkSize = 0;
+
+    void InitializeContext(TCP.Server server, SmtpDecodingContext smtpDecodingContext)
+    {
+        base.InitializeTextDecodingCache("SMTP", endpoint SMTP.Server over server, MessageDirection.Accepts,
+            (x) => true, GetSmtpRequestEndMarkBinary, DecodeSingleSmtpRequest, DecodeIncompleteSmtpMsg);
+        this.smtpDecodingContext = smtpDecodingContext;
+    }
+    
+    binary GetSmtpRequestEndMarkBinary()
+    {
+        switch (smtpDecodingContext.DecodingState)
+        {
+            case SmtpDecodingState.DecodingCommandState =>
+                return CRLFBinary;
+            case SmtpDecodingState.DecodingDataState =>
+                return DATAEndSequence;
+            default =>
+                // for BDAT or XEXCH50 state, it will be handled in overreide IsSufficientSingleTextMessage.
+                // below code should never be reached
+                return null;
+        }
+    }
+    
+    override uint? IsSufficientSingleTextMessage(binary data)
+    {
+        if (smtpDecodingContext.DecodingState == SmtpDecodingState.DecodingBdatState ||
+            smtpDecodingContext.DecodingState == SmtpDecodingState.DecodingXEXCH50State)
+            return data.Count > chunkSize ? 0 : chunkSize;
+        else
+            // for other states, invoke the base function
+            return base.IsSufficientSingleTextMessage(data);
+    }
+
+    optional any message DecodeSingleSmtpRequest(stream s)
+    {
+        if (smtpDecodingContext.DecodingState == SmtpDecodingState.DecodingCommandState &&
+            CommandLine(s) is mailPacket:MailPacket && s.RemainingByteLength() == 0 /* assume the command will consume all the buffer*/)
+        {
+            // set ByteLength annotation
+            mailPacket#byteLength = s.BytePosition;
+            
+            string commandStr = (mailPacket.Request as RequestType).Command.ToUpper();
+            if (commandStr == "DATA")
+            {
+                // If command is DATA command, switch status to DecodingDataState.
+                // And following coming TCP segment will be decoding according end mark CRLF.CRLF.
+                smtpDecodingContext.DecodingState = SmtpDecodingState.DecodingDataState;
+            }
+            else if (commandStr == "BDAT") // valid BDAT command
+            {
+                // cache chunk size for BDAT command
+                if ((mailPacket.Request as RequestType).ChunkSize is num:uint)
+                {
+                    chunkSize = num;
+                    // If command is BDAT command, switch status to DecodingBdatState.
+                    // And following coming TCP segment will be decoding according Chunk Size in BDAT command.
+                    smtpDecodingContext.DecodingState = SmtpDecodingState.DecodingBdatState;
+                }
+            }
+            else if (commandStr == "XEXCH50")
+            {
+                // cache chunk size of XEXCH50 command
+                // first arguments is the chunk size of XEXCH50
+                if ((mailPacket.Request as RequestType).CommandParameter is commandParameter:string)
+                {
+                    array<string> arguments = commandParameter.Split([' '], true);
+                    if (arguments.Count > 0 && arguments[0].ToUInt() is size:uint)
+                    {
+                        chunkSize = size;
+                        // If command is XEXCH50 command, switch status to DecodingXEXCH50State.
+                        // And following coming TCP segment will be decoding according Chunk Size in XEXCH50 command.
+                        smtpDecodingContext.DecodingState = SmtpDecodingState.DecodingXEXCH50State;
+                    }
+                }
+            }
+            
+            smtpDecodingContext.AddCommand(commandStr.ToUpper());
+            return mailPacket;
+        }
+        
+        /*
+         * state is DecodingBdatState | DecodingDataState
+         * or the line cannot be decoded as SMTP command in DecodingCommandState
+         *
+         * in DecodingCommandState, it covers both the end mark situation: CRLF, CRLF.CRLF
+         */
+        uint smtpMailPacketLength = 0;
+        if (smtpDecodingContext.DecodingState == SmtpDecodingState.DecodingBdatState ||
+            smtpDecodingContext.DecodingState == SmtpDecodingState.DecodingXEXCH50State)
+        {
+            smtpMailPacketLength = chunkSize;
+        }
+        else if (smtpDecodingContext.DecodingState == SmtpDecodingState.DecodingDataState)
+        {
+            // CRLF.CRLF is always the end line
+            smtpMailPacketLength = s.RemainingByteLength() as uint;
         }
         else
         {
-            break;
+            // assume must contains end mark CRLF since data is suffient
+            smtpMailPacketLength = (Buffer.IndexOf(CRLFBinary) + CRLFBinary.Count) as uint;
         }
+        
+        if (smtpDecodingContext.DecodingState != SmtpDecodingState.DecodingBdatState)
+        {
+            // add empty string for the payload SMTP request.
+            // to make the request and reponse one-one match correctly, we should cache the SMTP Request Payload
+            smtpDecodingContext.AddCommand("");
+        }
+        
+        // reset the state
+        smtpDecodingContext.DecodingState = SmtpDecodingState.DecodingCommandState;
+        chunkSize = 0;
+        
+        // decode the SMTP payload
+        if (BinaryDecoder<Blob[smtpMailPacketLength]>(s) is dataBlob:Blob)
+        {
+            return GenerateMailPacketPayload(dataBlob.Data);
+        }
+        
+        // this code should not be reached
+        return nothing;
     }
-
-    return strArray;
+    
+    override void ClearExceptionally()
+    {
+        base.ClearExceptionally();
+        
+        smtpDecodingContext.ResetDecodingState();
+        chunkSize = 0;
+    }
 }
 
-string CommandTable(string command)
+type SmtpResponseDecodingCache: SmtpDecodingCache
 {
-    switch (command)
+    SmtpDecodingContext smtpDecodingContext;
+    
+    void InitializeContext(TCP.Server server, SmtpDecodingContext smtpDecodingContext)
     {
-        case "DSN"                => return "DSN, Delivery Status Notification";
-        case "ATRN"               => return "ATRN, Authenticated TURN";
-        case "AUTH"               => return "AUTH, Authentication mechanism to the server";
-        case "BDAT"               => return "BDAT, Binary data";
-        case "EHLO"               => return "EHLO, Extended Hello";
-        case "ETRN"               => return "ETRN, Extended Turn";
-        case "DATA"               => return "DATA, Begins message composition";
-        case "EXPN"               => return "EXPN, Returns names on the specified mail list";
-        case "HELO"               => return "HELO, Returns identity of mail server";
-        case "HELP"               => return "HELP, Returns information on the specified command";
-        case "LHLO"               => return "LHLO, Local Mail";
-        case "MAIL"               => return "MAIL, Initiates a mail session from host";
-        case "MTRK"               => return "MTRK, Message Tracking";
-        case "NOOP"               => return "NOOP, Causes no action, except acknowledgement from server";
-        case "ONEX"               => return "ONEX, One message transaction only";
-        case "QUIT"               => return "QUIT, Terminates the mail session";
-        case "RCPT"               => return "RCPT, Designates who receives mail";
-        case "RSET"               => return "RSET, Resets mail connection";
-        case "SAML"               => return "SAML, Sends mail to user terminal and mailbox";
-        case "SEND"               => return "SEND, Sends mail to user terminal";
-        case "SOML"               => return "SOML, Sends mail to user terminal or mailbox";
-        case "SIZE"               => return "SIZE, Message size declaration";
-        case "TURN"               => return "TURN, Switches role of receiver and sender";
-        case "VERB"               => return "VERB, Verbose";
-        case "VRFY"               => return "VRFY, Confirm the argument identifies a user or mailbox";
-        case "8BITMIME"           => return "8BITMIME, Use 8-bit data";
-        case "CHUNKING"           => return "CHUNKING, Chunking";
-        case "STARTTLS"           => return "STARTTLS, Server is currently able to negotiate the use of TLS";
-        case "SUBMITTER"          => return "SUBMITTER, SMTP Responsible Submitter";
-        case "BINARYMIME"         => return "BINARYMIME, Binary MIME";
-        case "CHECKPOINT"         => return "CHECKPOINT, Checkpoint/Restart";
-        case "PIPELINING"         => return "PIPELINING, Command Pipelining";
-        case "NO-SOLICITING"      => return "NO-SOLICITING, Notification of no soliciting";
-        case "ENHANCEDSTATUSCODES"=> return "ENHANCEDSTATUSCODES, Enhanced Status Codes";
-        case ""                   => return "Completed";
-        default                   => return command;
+        base.Initialize(
+            "SMTP",
+            endpoint SMTP.Server over server,
+            MessageDirection.Issues,
+            (x) => true /* always is current protocol */,
+            IsSufficientSmtpResponse,
+            DecodeSingleSmtpResponse,
+            DecodeIncompleteSmtpMsg);
+        this.smtpDecodingContext = smtpDecodingContext;
     }
+    
+    uint? IsSufficientSmtpResponse(binary buffer)
+    {
+        /*
+         * check whether it is the multiple line in SMTP Reply: 123-xxxxx
+         * If it is the multiple line Reply, wait for next TCP segment
+         */
+        int endMarkIndex = buffer.LastIndexOf(LFBinary, buffer.Count - 1);
+        if (endMarkIndex < 0)
+        {
+            // cannot find
+            return null;
+        }
+
+        int startPosition = endMarkIndex - 1;
+        while (startPosition >= 0)
+        {
+            endMarkIndex = buffer.LastIndexOf(LFBinary, startPosition);
+            
+            // check end line of multiple line reply
+            // assume that endMarkIndex = -1 if end mark is not found
+            if (endMarkIndex + 4 < buffer.Count && IsNumeric(buffer[endMarkIndex + 1]) &&
+                IsNumeric(buffer[endMarkIndex + 2]) && IsNumeric(buffer[endMarkIndex + 3]) &&
+                buffer[endMarkIndex + 4] == 0x20)
+            {
+                return 0;
+            }
+
+            startPosition = endMarkIndex - 1;
+        }
+
+        return null;
+    }
+    
+    optional any message DecodeSingleSmtpResponse(stream s)
+    {
+        if (Replies(s) is mailPacket:MailPacket && s.RemainingByteLength() == 0 /* assume Reply will consume all the buffer*/)
+        {
+            ResponseType response = mailPacket.Response as ResponseType;
+            if (response.ReplyMessage is replyMessage:array<string> && replyMessage.Count == 1 && replyMessage[0].Count > 8 &&
+                replyMessage[0].Segment(0, 10) == Base64EncodedNtlmPrefixString)
+            {
+                // for STMP NTLM
+                mailPacket.Payload = (replyMessage[0] as stream).PeekBytes(0);
+                response.ReplyMessage = nothing;
+            }
+            
+            mailPacket#byteLength = s.BytePosition;
+            
+            SetSmtpRequestDecodingCacheState(response.ReplyCode);
+            return mailPacket;
+        }
+        
+        if (BinaryDecoder<Blob[s.RemainingByteLength() as uint]>(s) is blob:Blob)
+        {
+            var smtpResponse = GenerateMailPacketPayload(blob.Data);
+            SetSmtpRequestDecodingCacheState("");
+            return smtpResponse;
+        }
+        
+        // below code should never reached
+        return nothing;
+    }
+    
+    void SetSmtpRequestDecodingCacheState(string replyCode)
+    {
+        /*
+         * For SMTP decoding, it should decode payload (CRLF.CRLF) following DATA command only when
+         * server reply code 354.
+         * Also we should consider the Pipelining in SMTP, so client may send several commands
+         * to server in a TCP segment, e.g. RCPT, DATA. We should find the correct SMTP reply for the
+         * SMTP request. Then in SMTP Reponse, we cache the commands of SMTP request so that it can
+         * get the matched SMTP Reply
+         */
+        string commandStr = smtpDecodingContext.PeekTopCachedCommand();
+        smtpDecodingContext.RemoveTopCachedCommand();
+        
+        if ((commandStr == "DATA" || commandStr == "XEXCH50") && replyCode != "354")
+        {
+            smtpDecodingContext.ResetDecodingState();
+        }
+    }
+    
+    override void ClearExceptionally()
+    {
+        base.ClearExceptionally();
+        
+        // clear the cached to avoid mismatch SMTP command and reply
+        smtpDecodingContext.ClearCachedCommand();
+    }
+}
+    
+optional any message DecodeIncompleteSmtpMsg(binary buffer)
+{
+    return GenerateMailPacketPayload(buffer);
+}
+
+MailPacket GenerateMailPacketPayload(binary payload)
+{
+    var packet = new MailPacket
+    {
+        Request = nothing,
+        Response = nothing,
+        Payload = payload
+    };
+    packet.SourceData = payload;
+    packet#byteLength = payload.Count;
+    packet.AssignFieldEncodingInfo("Payload", 0, payload.Count * 8);
+    return packet;
+}
+
+bool IsNumeric(byte b)
+{
+    return b >= 0x30 && b <= 0x39;
 }

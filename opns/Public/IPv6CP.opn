@@ -1,4 +1,4 @@
-﻿protocol IPv6CP with 
+protocol IPv6CP with 
 BinaryEncodingDefaults{Endian = Endian.Big},
 Documentation
 {
@@ -15,12 +15,11 @@ OPNAuthoring
         ],
     RevisionSummary =
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "11/03/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "362740", Date = "04/18/2014"}
         ]
 };
 
 using Standard;
-using IANA;
 using Utility;
 using PPP;
 
@@ -45,21 +44,11 @@ message Message
 {
     Code Code;
     byte Identifier;
-    byte Length;
+    ushort Length;
     array<Option> Options;
     override string ToString()
     {
-        switch (Code)
-        {
-            case 1 => return "ConfigureRequest";
-            case 2 => return "ConfigureAck";
-            case 3 => return "ConfigureNak";
-            case 4 => return "ConfigureReject";
-            case 5 => return "TerminateRequest";
-            case 6 => return "TerminateAck";
-            case 7 => return "CodeReject";
-            default => return "Unknown Message Code: "+ (Code as string);
-        }
+        return (InRange<Code>(Code) ? "" : "Unknow Message Code: ") + EnumToString<IPv6CP.Code>(Code, false) + ", Length: " + (Length.ToString());
     }
 }
 
@@ -72,14 +61,15 @@ pattern Code = enum byte
     ConfigureReject = 4,
     TerminateRequest = 5,
     TerminateAck = 6,
-    CodeReject = 7
+    CodeReject = 7,
+    ...
 };
 
 pattern Option = (InterfaceIdentifier | CompressionProtocol);
 
 type InterfaceIdentifier
 {
-    (byte where value == 1) Type ;
+    (byte where value == 1) Type;
     byte Length where value == 10;
     ulong InterfaceID;
 }
@@ -87,7 +77,7 @@ type InterfaceIdentifier
 type CompressionProtocol
 {
     (byte where value == 2) Type;
-    byte Length where value >= 4;
+    byte Length where value >= 14;
     ushort CompressionProtocol;
-    binary Data with BinaryEncoding{Length =(Length - 4) as uint};
+    binary Data with BinaryEncoding{Length =(Length - 4)};
 }

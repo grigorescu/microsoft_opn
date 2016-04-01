@@ -11,17 +11,18 @@ OPNAuthoring
     Copyright = "(c) Microsoft Corporation",
     References =
         [
-            new Reference{Name = "MS-DTYP", Version = "25.1", ProgramName = ProgramName.MCPP},
+            new Reference{Name = "MS-DTYP", Version = "25.1", Date = "01/31/2013", ProgramName = ProgramName.MCPP},
         ],
     RevisionSummary =
         [
-            new Revision{Class=RevisionClass.Major, Version="1.0.0", Date="09/02/2011"}
+            new Revision{Class=RevisionClass.Major, Version="381842", Date="10/14/2015"}
         ]
 };
 
 using Standard;
 using Technologies.IDL;
-using Technologies.Block;
+using Utility;
+using Diagnostics;
 
 // below 'wchar_t' has been defined in Technologies.IDL
 //pattern wchar_t = ushort
@@ -258,6 +259,34 @@ typedef PWORD = ushort with IDL{IndirectionLevel = 1};
 typedef LPWORD = ushort with IDL{IndirectionLevel = 1};
 
 /*********************************************************** MS-DTYP 2.3 Common Data Structures ***********************************************************/
+type EVENT_DESCRIPTOR
+{
+    USHORT Id;
+    UCHAR Version;
+    UCHAR Channel;
+    UCHAR Level;
+    UCHAR Opcode;
+    USHORT Task;
+    ULONGLONG Keyword;
+}
+typedef PEVENT_DESCRIPTOR = EVENT_DESCRIPTOR with IDL{IndirectionLevel = 1};
+
+type EVENT_HEADER
+{
+    USHORT           Size;
+    USHORT           HeaderType;
+    USHORT           Flags;
+    USHORT           EventProperty;
+    ULONG            ThreadId;
+    ULONG            ProcessId;
+    LARGE_INTEGER    TimeStamp;
+    GUID             ProviderId;
+    EVENT_DESCRIPTOR EventDescriptor;
+    ULONG64          ProcessorTime;
+    GUID             ActivityId;
+}
+typedef PEVENT_HEADER = EVENT_HEADER with IDL{IndirectionLevel = 1};
+
 /*
  * The FILETIME structure is a 64-bit value that represents the number of 100-nanosecond intervals 
  * that have elapsed since January 1, 1601, Coordinated Universal Time (UTC).
@@ -270,19 +299,18 @@ type FILETIME
     override string ToString()
     {
         ulong intervals = ((dwHighDateTime as ulong) << 32) + dwLowDateTime; // 100-nanosecond intervals since January 1, 1601, UTC
-        return CreateDateTime(1601, 1, 1).AddMilliseconds((intervals / 10000) as double).ToLocalTime().ToString();
+        return CreateDateTime(1601, 1, 1).AddMilliseconds((intervals / 10000) as double).ToLocalTime().ToString("MM/dd/yyyy HH:mm:ss.fffffff K");
+    }
+
+    string ToUtcString()
+    {
+        ulong intervals = ((dwHighDateTime as ulong) << 32) + dwLowDateTime; // 100-nanosecond intervals since January 1, 1601, UTC
+        return CreateDateTime(1601, 1, 1).AddMilliseconds((intervals / 10000) as double).ToUniversalTime().ToString("MM/dd/yyyy HH:mm:ss.fffffff K");
     }
 }
 typedef PFILETIME = FILETIME with IDL{IndirectionLevel = 1};
 typedef LPFILETIME = FILETIME with IDL{IndirectionLevel = 1};
 
-//type GUID
-//{
-    //ULONG Data1;
-    //USHORT Data2;
-    //USHORT Data3;
-    //array<byte> Data4 with IDL{Dimensions = [8]}, BinaryEncoding{Length = 8};
-//}
 typedef GUID = guid;
 typedef UUID = GUID;
 typedef PGUID = GUID with IDL{IndirectionLevel = 1};
@@ -365,6 +393,11 @@ type LUID
 {
     DWORD LowPart;
     LONG HighPart;
+    
+    override string ToString()
+    {
+        return HighPart.ToString() + "-" + LowPart.ToString();
+    }
 }
 typedef PLUID = LUID with IDL{IndirectionLevel = 1};
 
@@ -378,7 +411,34 @@ type RPC_UNICODE_STRING
 {
     ushort Length;
     ushort MaximumLength;
-    array<WCHAR> Buffer with IDL{IndirectionLevel = 1, Length_is = [Length / 2], Size_is =[MaximumLength / 2]};
+    // The same behavior with NetMon. In NetMon, if no element, Buffer will not display.
+    optional string Buffer with IDL{IndirectionLevel = 1, Length_is = [Length / 2], Size_is =[MaximumLength / 2]},
+        Encoding
+        {
+            Decoder = BinaryDecoder<string>,
+            SourceConverter = ConvertArrayWCHAR2Binary,
+            SourcePattern = TypeOf<array<WCHAR>>()
+        },
+        BinaryEncoding{Endian = Endian.Little, TextEncoding = TextEncoding.Unicode};
+    
+    override string ToString()
+    {
+        if (Buffer == nothing)
+        {
+            return "";
+        }
+        return Buffer as string;
+    }
+    
+    optional binary ConvertArrayWCHAR2Binary(array<WCHAR> arrayWCHAR)
+    {
+        array<byte> result = [];
+        foreach (WCHAR c in arrayWCHAR)
+        {
+            result += [c as byte, (c >> 8) as byte];
+        }
+        return result as binary;
+    }
 }
 typedef PRPC_UNICODE_STRING = RPC_UNICODE_STRING with IDL{IndirectionLevel = 1};
 
@@ -412,6 +472,12 @@ type SYSTEMTIME
     WORD Wminute;
     WORD Wsecond;
     WORD Wmilliseconds;
+
+    override string ToString()
+    {
+        return Format("{0:D2}/{1:D2}/{2:D4} {3:D2}:{4:D2}:{5:D2}.{6:D3}",
+            [Wday, Wmonth, Wyear, Whour, Wminute, Wsecond, Wmilliseconds]);
+    }
 }
 typedef PSYSTEMTIME = SYSTEMTIME with IDL{IndirectionLevel = 1};
 
@@ -430,10 +496,10 @@ typedef PULARGE_INTEGER = ULARGE_INTEGER with IDL{IndirectionLevel = 1};
 
 type RPC_SID_IDENTIFIER_AUTHORITY
 {
-    array<byte> Value where ValidationCheck((value as binary) is SidIdentifierAuthorityValue, null, "DTYP: The Value in type RPC_SID_IDENTIFIER_AUTHORITY is an undefined value. Please refer to RPC_SID_IDENTIFIER_AUTHORITY in the Technical Document MS-DTYP.") with IDL{Dimensions = [6]};
+    array<byte> Value with IDL{Dimensions = [6]}, DisplayInfo{ToText = x => EnumToString(x, "DTYP.SidIdentifierAuthorityValue")};
 }
 
-pattern ACCESS_MASK = DWORD where value is AccessMaskFlags;
+pattern ACCESS_MASK = DWORD;
 
 typedef PACCESS_MASK = ACCESS_MASK with IDL{IndirectionLevel = 1};
 
@@ -445,86 +511,18 @@ type OBJECT_TYPE_LIST
 }
 typedef POBJECT_TYPE_LIST = OBJECT_TYPE_LIST with IDL{IndirectionLevel = 1};
 
-pattern ACE_HEADER_AceType = enum byte
-{
-    ACCESS_ALLOWED_ACE_TYPE = 0x00
-        with Documentation
-        {Description = "Access-allowed ACE that uses the ACCESS_ALLOWED_ACE structure."},
-    ACCESS_DENIED_ACE_TYPE = 0x01
-        with Documentation
-        {Description = "Access-denied ACE that uses the ACCESS_DENIED_ACE structure."},
-    SYSTEM_AUDIT_ACE_TYPE = 0x02
-        with Documentation
-        {Description = "System-audit ACE that uses the SYSTEM_AUDIT_ACE structure."},
-    SYSTEM_ALARM_ACE_TYPE = 0x03
-        with Documentation
-        {Description = "Reserved for future use."},
-    ACCESS_ALLOWED_COMPOUND_ACE_TYPE = 0x04
-        with Documentation
-        {Description = "Reserved for future use"},
-    ACCESS_ALLOWED_OBJECT_ACE_TYPE = 0x05
-        with Documentation
-        {Description = "Object-specific access-allowed ACE that uses the ACCESS_ALLOWED_OBJECT_ACE structure."},
-    ACCESS_DENIED_OBJECT_ACE_TYPE = 0x06
-        with Documentation
-        {Description = "Object-specific access-denied ACE that uses the ACCESS_DENIED_OBJECT_ACE structure."},
-    SYSTEM_AUDIT_OBJECT_ACE_TYPE = 0x07
-        with Documentation
-        {Description = "Object-specific system-audit ACE that uses the SYSTEM_AUDIT_OBJECT_ACE structure."},
-    SYSTEM_ALARM_OBJECT_ACE_TYPE = 0x08
-        with Documentation
-        {Description = "Reserved for future use."},
-    ACCESS_ALLOWED_CALLBACK_ACE_TYPE = 0x09
-        with Documentation
-        {Description = "Access-allowed callback ACE that uses the ACCESS_ALLOWED_CALLBACK_ACE structure."},
-    ACCESS_DENIED_CALLBACK_ACE_TYPE = 0x0A
-        with Documentation
-        {Description = "Access-denied callback ACE that uses the ACCESS_DENIED_CALLBACK_ACE structure."},
-    ACCESS_ALLOWED_CALLBACK_OBJECT_ACE_TYPE = 0x0B
-        with Documentation
-        {Description = "Object-specific access-allowed callback ACE that uses the ACCESS_ALLOWED_CALLBACK_OBJECT_ACE structure."},
-    ACCESS_DENIED_CALLBACK_OBJECT_ACE_TYPE = 0x0C
-        with Documentation
-        {Description = "Object-specific access-denied callback ACE that uses the ACCESS_DENIED_CALLBACK_OBJECT_ACE structure."},
-    SYSTEM_AUDIT_CALLBACK_ACE_TYPE = 0x0D
-        with Documentation
-        {Description = "System-audit callback ACE that uses the SYSTEM_AUDIT_CALLBACK_ACE structure."},
-    SYSTEM_ALARM_CALLBACK_ACE_TYPE = 0x0E
-        with Documentation
-        {Description = "Reserved for future use."},
-    SYSTEM_AUDIT_CALLBACK_OBJECT_ACE_TYPE = 0x0F
-        with Documentation
-        {Description = "Object-specific system-audit callback ACE that uses the SYSTEM_AUDIT_CALLBACK_OBJECT_ACE structure."},
-    SYSTEM_ALARM_CALLBACK_OBJECT_ACE_TYPE = 0x10
-        with Documentation
-        {Description = "Reserved for future use"},
-    SYSTEM_MANDATORY_LABEL_ACE_TYPE = 0x11
-        with Documentation
-        {Description = "Mandatory label ACE that uses the SYSTEM_MANDATORY_LABEL_ACE structure."},
-    SYSTEM_RESOURCE_ATTRIBUTE_ACE_TYPE = 0x12
-        with Documentation
-        {Description = "Resource attribute ACE that uses the SYSTEM_RESOURCE_ATTRIBUTE_ACE."},
-    SYSTEM_SCOPED_POLICY_ID_ACE_TYPE = 0x13
-        with Documentation
-        {Description = "A central policy ID ACE that uses the SYSTEM_SCOPED_POLICY_ID_ACE."},
-    ...
-} with Documentation{EmbeddedType = true}, IDL{DoNotGenerate = true};
-
-
 type ACE_HEADER
 {
-    UCHAR AceType where ValidationCheck(InRange<ACE_HEADER_AceType>(value), null, "DTYP: The AceType in type ACE_HEADER is an undefined value. Please refer to ACE_HEADER in the Technical Document MS-DTYP.")
-        with Documentation
-        {Description = "An unsigned 8-bit integer that specifies the ACE types. This field MUST be one of the following values."};
-    UCHAR AceFlags
-        with Documentation
-        {Description = "An unsigned 8-bit integer that specifies a set of ACE type-specific control flags. This field can be a combination of the following values."};
+    AceHeaderAceType AceType where ValidationCheckEnumValueTooManyItems(InRange<AceHeaderAceType>(value), null, true, ReferenceType.Type,
+        "DTYP", "AceType", "ACE_HEADER", "Ace Type", "[MS-DTYP]")
+        with Encoding{Decoder = PatternDecoder<AceHeaderAceType>, SourcePattern = TypeOf<UCHAR>()};
+    AceHeaderAceFlags AceFlags
+        where ValidationCheckCombinationValueTooManyItems(InRange<AceHeaderAceFlags>(value), null, true, ReferenceType.Type,
+                "DTYP", "AceFlags", "ACE_HEADER", "Ace Flags", "[MS-DTYP]") 
+        with Encoding{Decoder = PatternDecoder<AceHeaderAceFlags>, SourcePattern = TypeOf<UCHAR>()};
     USHORT AceSize
         with Documentation
         {Description = "An unsigned 16-bit integer that specifies the size, in bytes, of the ACE. The AceSize field can be greater than the sum of the individual fields. In cases where the AceSize field encompasses additional data for the callback ACEs types, that data is implementation-specific. Otherwise, this additional data is not interpreted and MUST be ignored."};
-
-    invariant AceType is AceHeaderAceType;
-    invariant AceFlags is AceHeaderAceFlags;
 } with Documentation{Description = "The ACE_HEADER structure defines the type and size of an access control entry (ACE)."};
 typedef PACE_HEADER = ACE_HEADER with IDL{IndirectionLevel = 1};
 
@@ -573,7 +571,8 @@ pattern CLAIM_SECURITY_ATTRIBUTE_RELATIVE_V1_ValueType = enum ushort
         with Documentation
         {Description = "Values member contains an array of CLAIM_SECURITY_ATTRIBUTE_OCTET_STRING_RELATIVE value(s) as specified in section ."},
     ...
-} with Documentation{EmbeddedType = true}, IDL{DoNotGenerate = true};
+} with Documentation{EmbeddedType = true}, IDL{DoNotGenerate = true},
+    Encoding{EncodingKind = EncodingKind.Binary};
 
 type CLAIM_SECURITY_ATTRIBUTE_RELATIVE_V1
 {
@@ -601,7 +600,7 @@ type CLAIM_SECURITY_ATTRIBUTE_RELATIVE_V1
         with BinaryEncoding{Length = ValueCount},
         Documentation {Description = "An array of offsets from the beginning of the CLAIM_SECURITY_ATTRIBUTE_RELATIVE_V1 structure. Each offset indicates the location of a claim security attribute value of type specified in the ValueType member."};
     
-    optional [|Name > 20|] array<byte> NamePadding with BinaryEncoding{Length = Name - 20 as uint};
+    optional [|Name > 20|] array<byte> NamePadding with BinaryEncoding{Length = Name - 20};
     string ClaimSecurityAttributeName;
     
     ([|ValueType == 0x0001|] array<LONG64> |
@@ -644,7 +643,8 @@ type CLAIM_SECURITY_ATTRIBUTE_RELATIVE_V1
     }
 } with Documentation
     {Description = "The CLAIM_SECURITY_ATTRIBUTE_RELATIVE_V1 structure defines a resource attribute that is defined in contiguous memory for persistence within a serialized Security Descriptor."}
-, IDL{DoNotGenerate = true};
+, IDL{DoNotGenerate = true},
+    Encoding{EncodingKind = EncodingKind.Binary};
 
 typedef SECURITY_INFORMATION = DWORD
     with Documentation
@@ -735,15 +735,38 @@ pattern AccessMaskFlags = flags DWORD
     WriteDacl                           = 0x00040000,
     ReadControl                         = 0x00020000,
     Delete                              = 0x00010000,
-    ReservedForImplementationSpecific   = 0x0000FFFF,
-} with IDL{DoNotGenerate = true}, Documentation{Ignore = true};
+    ...
+} with IDL{DoNotGenerate = true}, Documentation{Ignore = true},
+    Encoding{EncodingKind = EncodingKind.Binary};
+
+pattern SystemMandatoryLabelAceMaskFlags = flags DWORD
+{
+    GenericRead                         = 0x80000000,
+    GenericWrite                        = 0x40000000,
+    GenericExecute                      = 0x20000000,
+    GenericAll                          = 0x10000000,
+    Reserved1                           = 0x0C000000,
+    MaximumAllowed                      = 0x02000000,
+    AccessSystemSecurity                = 0x01000000,
+    Reserved2                           = 0x00E00000,
+    Synchronize                         = 0x00100000,
+    WriteOwner                          = 0x00080000,
+    WriteDacl                           = 0x00040000,
+    ReadControl                         = 0x00020000,
+    Delete                              = 0x00010000,
+    SYSTEM_MANDATORY_LABEL_NO_WRITE_UP  = 0x00000001,
+    SYSTEM_MANDATORY_LABEL_NO_READ_UP   = 0x00000002,
+    SYSTEM_MANDATORY_LABEL_NO_EXECUTE_UP = 0x00000004,
+    ...
+} with IDL{DoNotGenerate = true}, Documentation{Ignore = true},
+    Encoding{EncodingKind = EncodingKind.Binary};
 
 type SID_IDENTIFIER_AUTHORITY
 {
-    array<byte> Value where ValidationCheck((value as binary) is SidIdentifierAuthorityValue, null, "DTYP: The Value in type SID_IDENTIFIER_AUTHORITY is an undefined value. Please refer to SID_IDENTIFIER_AUTHORITY in the Technical Document MS-DTYP.")
-        with BinaryEncoding{Length = 6}, Documentation
+    array<byte> Value with BinaryEncoding{Length = 6}, DisplayInfo{ToText = x => EnumToString(x, "DTYP.SidIdentifierAuthorityValue")}, Documentation
             {Description = "Six element arrays of 8-bit unsigned integers that specify the top-level authority of a SID, RPC_SID, and LSAPR_SID_INFORMATION."};
-}
+} with IDL{DoNotGenerate = true},
+    Encoding{EncodingKind = EncodingKind.Binary};
 
 pattern SidIdentifierAuthorityValue = enum binary
 {
@@ -769,12 +792,14 @@ pattern SidIdentifierAuthorityValue = enum binary
         {Description = "Specifies the Mandatory label authority. It defines the integrity level SIDs."},
     SecurityAppPackageAuthority = $[00000000000F]
         with Documentation
-        {Description = "Specifies the application package authority. It defines application capability SIDs."}
-} with Documentation{EmbeddedType = true}, IDL{DoNotGenerate = true};
+        {Description = "Specifies the application package authority. It defines application capability SIDs."},
+        ...
+} with Documentation{EmbeddedType = true}, IDL{DoNotGenerate = true},
+    Encoding{EncodingKind = EncodingKind.Binary};
 
 type SID
 {
-    byte Revision where value == 0x01 //where ValidationCheck(value == 1, null, DiagnosisLevel.Error, "DTYP: The Revision in type SID must be set to 0x01, not " + value.ToString() + ".")
+    byte Revision where value == 0x01 // where ValidationCheck(value == 1, null, DiagnosisLevel.Error, "DTYP: The Revision in type SID must be set to 0x01, not " + value.ToString() + ".")
         with Documentation
         {Description = "An 8-bit unsigned integer that specifies the revision level of the SID structure. This value MUST be set to 0x01."};
         
@@ -811,12 +836,13 @@ type SID
         return SubAuthorityCount * 4 + 8 as ushort;
     }
 } with Documentation
-    {Description = "The SID structure defines a security identifier (SID), which is a variable-length byte array that uniquely identifies a security principal. Each security principal has a unique SID that is issued by a security agent. The agent can be a windows local system or domain. The agent generates the SID when the security principal is created. The RPC marshaled version of the SID structure is defined in section ."}
-    , IDL{DoNotGenerate = true};
+    {Description = "The SID structure defines a security identifier (SID), which is a variable-length byte array that uniquely identifies a security principal. Each security principal has a unique SID that is issued by a security agent. The agent can be a windows local system or domain. The agent generates the SID when the security principal is created. The RPC marshaled version of the SID structure is defined in section ."},
+    IDL{DoNotGenerate = true},
+    Encoding{EncodingKind = EncodingKind.Binary};
 
-string GetDescriptionStringForSID(string SIDString)
+string GetDescriptionStringForSID(string sidString)
 {
-    switch (SIDString)
+    switch (sidString)
     {
         case "S-1-0-0"            => return " Null -- No Security principal.";
         case "S-1-1-0"            => return " Everyone -- A group that includes all users.";
@@ -911,67 +937,67 @@ string GetDescriptionStringForSID(string SIDString)
         case "S-1-18-1"           => return " AuthenticationAuthorityAssertedIdentity -- A SID that means the client's identity is asserted by an authentication authority based on proof of possession of client credentials.";
         case "S-1-18-2"           => return " ServiceAssertedIdentity -- A SID that means the client's identity is asserted by a service.";
         default                           =>
-            if (SIDString.IndexOf("S-1-5-5-") == 0)
+            if (sidString.IndexOf("S-1-5-5-") == 0)
             {
                 return " LogonID -- A logon session. The X and Y values for these SIDs are different for each logon session, and will be recycled when the operating system is rebooted.";
             }
-            else if (SIDString.IndexOf("S-1-5-21-") == 0 && SIDString.Segment(SIDString.Count - 3) == "498")
+            else if (sidString.IndexOf("S-1-5-21-") == 0 && sidString.Segment(sidString.Count - 3) == "498")
             {
                 return " EnterpriseReadonlyDomainControllers -- A universal group containing all read-only domain controllers in a forest.";
             }
-            else if (SIDString.IndexOf("S-1-5-21-") == 0 && SIDString.Segment(SIDString.Count - 3) == "500")
+            else if (sidString.IndexOf("S-1-5-21-") == 0 && sidString.Segment(sidString.Count - 3) == "500")
             {
-			    return "Administrator -- A user account for the system administrator. By default, it is the only user account that is given full control over the system.";
+                return "Administrator -- A user account for the system administrator. By default, it is the only user account that is given full control over the system.";
             }
-            else if (SIDString.IndexOf("S-1-5-21-") == 0 && SIDString.Segment(SIDString.Count - 3) == "501")
+            else if (sidString.IndexOf("S-1-5-21-") == 0 && sidString.Segment(sidString.Count - 3) == "501")
             {
-			    return "Guest -- A user account for people who do not have individual accounts. This user account does not require a password. By default, the Guest account is disabled.";
+                return "Guest -- A user account for people who do not have individual accounts. This user account does not require a password. By default, the Guest account is disabled.";
             }
-            else if (SIDString.IndexOf("S-1-5-21-") == 0 && SIDString.Segment(SIDString.Count - 3) == "512")
+            else if (sidString.IndexOf("S-1-5-21-") == 0 && sidString.Segment(sidString.Count - 3) == "512")
             {
-			    return "DomainAdmins -- A global group whose members are authorized to administer the domain. By default, the DOMAIN_ADMINS group is a member of the Administrators group on all computers that have joined a domain, including the domain controllers. DOMAIN_ADMINS is the default owner of any object that is created by any member of the group.";
+                return "DomainAdmins -- A global group whose members are authorized to administer the domain. By default, the DOMAIN_ADMINS group is a member of the Administrators group on all computers that have joined a domain, including the domain controllers. DOMAIN_ADMINS is the default owner of any object that is created by any member of the group.";
             }
-            else if (SIDString.IndexOf("S-1-5-21-") == 0 && SIDString.Segment(SIDString.Count - 3) == "513")
+            else if (sidString.IndexOf("S-1-5-21-") == 0 && sidString.Segment(sidString.Count - 3) == "513")
             {
                 return " DomainUsers -- A global group that includes all user accounts in a domain.";
             }
-            else if (SIDString.IndexOf("S-1-5-21-") == 0 && SIDString.Segment(SIDString.Count - 3) == "514")
+            else if (sidString.IndexOf("S-1-5-21-") == 0 && sidString.Segment(sidString.Count - 3) == "514")
             {
                 return " DomainGuests -- A global group that has only one member, the domain's built-in Guest account.";
             }
-            else if (SIDString.IndexOf("S-1-5-21-") == 0 && SIDString.Segment(SIDString.Count - 3) == "515")
+            else if (sidString.IndexOf("S-1-5-21-") == 0 && sidString.Segment(sidString.Count - 3) == "515")
             {
                 return " DomainComputers -- A global group that includes all clients and servers that have joined the domain.";
             }
-            else if (SIDString.IndexOf("S-1-5-21-") == 0 && SIDString.Segment(SIDString.Count - 3) == "516")
+            else if (sidString.IndexOf("S-1-5-21-") == 0 && sidString.Segment(sidString.Count - 3) == "516")
             {
                 return " DomainDomainControllers -- A global group that includes all domain controllers in the domain.";
             }
-            else if (SIDString.IndexOf("S-1-5-21-") == 0 && SIDString.Segment(SIDString.Count - 3) == "517")
+            else if (sidString.IndexOf("S-1-5-21-") == 0 && sidString.Segment(sidString.Count - 3) == "517")
             {
                 return " CertPublishers -- A global group that includes all computers that are running an enterprise certification authority. Cert Publishers are authorized to publish certificates for User objects in Active Directory.";
             }
-            else if (SIDString.IndexOf("S-1-5-21-") == 0 && SIDString.Segment(SIDString.Count - 3) == "518")
+            else if (sidString.IndexOf("S-1-5-21-") == 0 && sidString.Segment(sidString.Count - 3) == "518")
             {
                 return " SchemaAdministrators -- A universal group in a native-mode domain, or a global group in a mixed-mode domain. The group is authorized to make schema changes in Active Directory.";
             }
-            else if (SIDString.IndexOf("S-1-5-21-") == 0 && SIDString.Segment(SIDString.Count - 3) == "519")
+            else if (sidString.IndexOf("S-1-5-21-") == 0 && sidString.Segment(sidString.Count - 3) == "519")
             {
                 return " EnterpriseAdmins -- A universal group in a native-mode domain, or a global group in a mixed-mode domain. The group is authorized to make forest-wide changes in Active Directory, such as adding child domains.";
             }
-            else if (SIDString.IndexOf("S-1-5-21-") == 0 && SIDString.Segment(SIDString.Count - 3) == "520")
+            else if (sidString.IndexOf("S-1-5-21-") == 0 && sidString.Segment(sidString.Count - 3) == "520")
             {
                 return " GroupPolicyCreatorOwners -- A global group that is authorized to create new Group Policy Objects in Active Directory.";
             }
-            else if (SIDString.IndexOf("S-1-5-21-") == 0 && SIDString.Segment(SIDString.Count - 3) == "521")
+            else if (sidString.IndexOf("S-1-5-21-") == 0 && sidString.Segment(sidString.Count - 3) == "521")
             {
                 return " ReadonlyDomainControllers -- A global group that includes all read-only domain controllers.";
             }
-            else if (SIDString.IndexOf("S-1-5-21-") == 0 && SIDString.Segment(SIDString.Count - 3) == "522")
+            else if (sidString.IndexOf("S-1-5-21-") == 0 && sidString.Segment(sidString.Count - 3) == "522")
             {
                 return " CloneableControllers -- A global group that includes all domain controllers in the domain that may be cloned.";
             }
-            else if (SIDString.IndexOf("S-1-5-") == 0 && SIDString.Segment(SIDString.Count - 3) == "553")
+            else if (sidString.IndexOf("S-1-5-") == 0 && sidString.Segment(sidString.Count - 3) == "553")
             {
                 return " RasServers -- A domain local group. Servers in this group have Read Account Restrictions and Read Logon Information access to User objects in the Active Directory domain local group.";
             }
@@ -1297,8 +1323,10 @@ pattern AceHeaderAceType = enum byte
         {Description = "Resource attribute ACE that uses the SYSTEM_RESOURCE_ATTRIBUTE_ACE."},
     SystemScopedPolicyIdAceType = 0x13
         with Documentation
-        {Description = "A central policy ID ACE that uses the SYSTEM_SCOPED_POLICY_ID_ACE."}
-} with Documentation{EmbeddedType = true}, IDL{DoNotGenerate = true};
+        {Description = "A central policy ID ACE that uses the SYSTEM_SCOPED_POLICY_ID_ACE."},
+    ...
+} with Documentation{EmbeddedType = true}, IDL{DoNotGenerate = true},
+    Encoding{EncodingKind = EncodingKind.Binary};
 
 pattern AceHeaderAceFlags = flags byte
 {
@@ -1324,29 +1352,35 @@ pattern AceHeaderAceFlags = flags byte
     FailedAcceddAceFlag = 0x80
         with Documentation
         {Description = "Used with system-audit ACEs in a system access control list (SACL) to generate audit messages for failed access attempts."},
-} with Documentation{EmbeddedType = true}, IDL{DoNotGenerate = true};
+    ...
+} with Documentation{EmbeddedType = true}, IDL{DoNotGenerate = true},
+    Encoding{EncodingKind = EncodingKind.Binary};
 
 type AccessAllowedAce
 {
-    (ACE_HEADER where value.AceType == AceHeaderAceType.AccessAllowedAceType) Header
+    ACE_HEADER Header
         with Documentation
         {Description = "An ACE_HEADER structure that specifies the size and type of ACE. It also contains flags that control inheritance of the ACE by child objects."};
-    ACCESS_MASK Mask
+    AccessMaskFlags Mask
         with Documentation
         {Description = "An ACCESS_MASK that specifies the user rights allowed by this ACE."};
     SID SID
         with Documentation
         {Description = "The SID of a trustee. The length of the SID MUST be a multiple of 4."};
+    optional [|Header.AceSize - 8 - SID.SubAuthorityCount * 4 - 8 > 0|] binary AdditionalData with BinaryEncoding{Length = (Header.AceSize - 8 - SID.SubAuthorityCount * 4 - 8)},
+        Documentation
+        {Description = "This additional data is not interpreted and MUST be ignored."};
 } with Documentation
     {Description = "The ACCESS_ALLOWED_ACE structure defines an ACE for the discretionary access control list (DACL) that controls access to an object. An access-allowed ACE allows access to an object for a specific trustee identified by a security identifier (SID)."}
-, IDL{DoNotGenerate = true};
+, IDL{DoNotGenerate = true},
+    Encoding{EncodingKind = EncodingKind.Binary};
 
 type AccessAllowedObjectAce
 {
-    (ACE_HEADER where value.AceType == AceHeaderAceType.AccessAllowedObjectAceType) Header
+    ACE_HEADER Header
         with Documentation
         {Description = "An ACE_HEADER structure that specifies the size and type of ACE. It also contains flags that control inheritance of the ACE by child objects."};
-    AccessAllowedObjectAceMask Mask
+    AccessAllowedObjectAceMaskFlags Mask
         with Documentation
         {Description = "An ACCESS_MASK that specifies the user rights allowed by this ACE."};
     AccessAllowedObjectAceFlags Flags
@@ -1361,65 +1395,75 @@ type AccessAllowedObjectAce
     SID SID
         with Documentation
         {Description = "The SID of a trustee. The length of the SID MUST be a multiple of 4."};
+    optional [|Header.AceSize - 44 - SID.SubAuthorityCount * 4 - 8 > 0|] binary AdditionalData with BinaryEncoding{Length = (Header.AceSize - 44 - SID.SubAuthorityCount * 4 - 8)},
+        Documentation
+        {Description = "This additional data is not interpreted and MUST be ignored."};
 } with Documentation
     {Description = "The ACCESS_ALLOWED_OBJECT_ACE structure defines an ACE that controls allowed access to an object, a property set, or property. The ACE contains a set of access rights, a GUID that identifies the type of object, and a SID that identifies the trustee to whom the system will grant access. The ACE also contains a GUID and a set of flags that control inheritance of the ACE by child objects."}
-, IDL{DoNotGenerate = true};
+, IDL{DoNotGenerate = true},
+    Encoding{EncodingKind = EncodingKind.Binary};
 
-pattern AccessAllowedObjectAceMask = enum uint
+pattern AccessAllowedObjectAceMaskFlags = flags uint
 {
-    AdsRightDsControlAccess = 0x00000100
-        with Documentation
-        {Description = "The ObjectType GUID identifies an extended access right."},
-    AdsRightDsCreateChild = 0x00000001
-        with Documentation
-        {Description = "The ObjectType GUID identifies a type of child object. The ACE controls the trustee's right to create this type of child object."},
-    AdsRightDsDeleteChild = 0x00000002
-        with Documentation
-        {Description = "The ObjectType GUID identifies a type of child object. The ACE controls the trustee's right to delete this type of child object."},
-    AdsRightDsReadProp = 0x00000010
-        with Documentation
-        {Description = "The ObjectType GUID identifies a property set or property of the object. The ACE controls the trustee's right to read the property or property set."},
-    AdsRightDsWriteProp = 0x00000020
-        with Documentation
-        {Description = "The ObjectType GUID identifies a property set or property of the object. The ACE controls the trustee's right to write the property or property set."},
-    AdsRightDsSelf = 0x00000008
-        with Documentation
-        {Description = "The ObjectType GUID identifies a validated write."}
-} with Documentation{EmbeddedType = true}, IDL{DoNotGenerate = true};
+    GenericRead                         = 0x80000000,
+    GenericWrite                        = 0x40000000,
+    GenericExecute                      = 0x20000000,
+    GenericAll                          = 0x10000000,
+    Reserved1                           = 0x0C000000,
+    MaximumAllowed                      = 0x02000000,
+    AccessSystemSecurity                = 0x01000000,
+    Reserved2                           = 0x00E00000,
+    Synchronize                         = 0x00100000,
+    WriteOwner                          = 0x00080000,
+    WriteDacl                           = 0x00040000,
+    ReadControl                         = 0x00020000,
+    Delete                              = 0x00010000,
+    AdsRightDsControlAccess             = 0x00000100,
+    AdsRightDsCreateChild               = 0x00000001,
+    AdsRightDsDeleteChild               = 0x00000002,
+    AdsRightDsReadProp                  = 0x00000010,
+    AdsRightDsWriteProp                 = 0x00000020,
+    AdsRightDsSelf                      = 0x00000008,
+    ...
+} with Documentation{EmbeddedType = true}, IDL{DoNotGenerate = true},
+    Encoding{EncodingKind = EncodingKind.Binary};
 
-pattern AccessAllowedObjectAceFlags = enum uint
+pattern AccessAllowedObjectAceFlags = flags uint
 {
-    Vaule0 = 0x00000000
-        with Documentation
-        {Description = "Neither ObjectType nor InheritedObjectType are valid."},
     AceObjectTypePresent = 0x00000001
         with Documentation{Description = "ObjectType is valid."},
     AceInheritedObjectTypePresent = 0x00000002
         with Documentation
-        {Description = "InheritedObjectType is valid. If this value is not specified, all types of child objects can inherit the ACE."}
-} with Documentation{EmbeddedType = true}, IDL{DoNotGenerate = true};
+        {Description = "InheritedObjectType is valid. If this value is not specified, all types of child objects can inherit the ACE."},
+    ...
+} with Documentation{EmbeddedType = true}, IDL{DoNotGenerate = true},
+    Encoding{EncodingKind = EncodingKind.Binary};
 
 type AccessDeniedAce
 {
-    (ACE_HEADER where value.AceType == AceHeaderAceType.AccessDeniedAceType) Header
+    ACE_HEADER Header
         with Documentation
         {Description = "An ACE_HEADER structure that specifies the size and type of ACE. It also contains flags that control inheritance of the ACE by child objects."};
-    ACCESS_MASK Mask
+    AccessMaskFlags Mask
         with Documentation
         {Description = "An ACCESS_MASK that specifies the user rights denied by this ACE."};
     SID SID
         with Documentation
         {Description = "The SID of a trustee. The length of the SID MUST be a multiple of 4."};
+    optional [|Header.AceSize - 8 - SID.SubAuthorityCount * 4 - 8 > 0|] binary AdditionalData with BinaryEncoding{Length = (Header.AceSize - 8 - SID.SubAuthorityCount * 4 - 8)},
+        Documentation
+        {Description = "This additional data is not interpreted and MUST be ignored."};
 } with Documentation
     {Description = "The ACCESS_DENIED_ACE structure defines an ACE for the DACL that controls access to an object. An access-denied ACE denies access to an object for a specific trustee identified by a SID."}
-, IDL{DoNotGenerate = true};
+, IDL{DoNotGenerate = true},
+    Encoding{EncodingKind = EncodingKind.Binary};
 
 type AccessDeniedObjectAce
 {
-    (ACE_HEADER where value.AceType == AceHeaderAceType.AccessDeniedObjectAceType) Header
+    ACE_HEADER Header
         with Documentation
         {Description = "An ACE_HEADER structure that specifies the size and type of ACE. It also contains flags that control inheritance of the ACE by child objects."};
-    ACCESS_MASK Mask
+    AccessMaskFlags Mask
         with Documentation
         {Description = "An ACCESS_MASK that specifies the user rights denied by this ACE."};
     AccessDeniedObjectAceFlags Flags
@@ -1434,61 +1478,69 @@ type AccessDeniedObjectAce
     SID SID
         with Documentation
         {Description = "The SID of a trustee. The length of the SID MUST be a multiple of 4."};
+    optional [|Header.AceSize - 44 - SID.SubAuthorityCount * 4 - 8 > 0|] binary AdditionalData with BinaryEncoding{Length = (Header.AceSize - 44 - SID.SubAuthorityCount * 4 - 8)},
+        Documentation
+        {Description = "This additional data is not interpreted and MUST be ignored."};
 } with Documentation
-    {Description = "The ACCESS_DENIED_OBJECT_ACE structure defines an ACE that controls denied access to an object, a property set, or a property. The ACE contains a set of access rights, a GUID that identifies the type of object, and a SID that identifies the trustee to whom the system will deny access. The ACE also contains a GUID and a set of flags that control inheritance of the ACE by child objects."}, IDL{DoNotGenerate = true};
+    {Description = "The ACCESS_DENIED_OBJECT_ACE structure defines an ACE that controls denied access to an object, a property set, or a property. The ACE contains a set of access rights, a GUID that identifies the type of object, and a SID that identifies the trustee to whom the system will deny access. The ACE also contains a GUID and a set of flags that control inheritance of the ACE by child objects."},
+    IDL{DoNotGenerate = true},
+    Encoding{EncodingKind = EncodingKind.Binary};
 
-pattern AccessDeniedObjectAceFlags = enum uint
+pattern AccessDeniedObjectAceFlags = flags uint
 {
-    Vaule0 = 0x00000000
-        with Documentation
-        {Description = "Neither ObjectType nor InheritedObjectType is valid."},
     AceObjectTypePresent = 0x00000001
         with Documentation{Description = "ObjectType is valid."},
     AceInheritedObjectTypePresent = 0x00000002
         with Documentation
-        {Description = "InheritedObjectType is valid. If this value is not specified, all types of child objects can inherit the ACE."}
-} with Documentation{EmbeddedType = true}, IDL{DoNotGenerate = true};
+        {Description = "InheritedObjectType is valid. If this value is not specified, all types of child objects can inherit the ACE."},
+    ...
+} with Documentation{EmbeddedType = true}, IDL{DoNotGenerate = true},
+    Encoding{EncodingKind = EncodingKind.Binary};
 
 type AccessAllowedCallbackAce
 {
-    (ACE_HEADER where value.AceType == AceHeaderAceType.AccessAllowedCallbackAceType) Header
+    ACE_HEADER Header
         with Documentation
         {Description = "An ACE_HEADER structure that specifies the size and type of ACE. It also contains flags that control inheritance of the ACE by child objects."};
-    ACCESS_MASK Mask
+    AccessMaskFlags Mask
         with Documentation
         {Description = "An ACCESS_MASK that specifies the user rights allowed by this ACE."};
     SID SID
         with Documentation
         {Description = "The SID of a trustee. The length of the SID MUST be a multiple of 4."};
-    optional [|Header.AceSize - 8 - SID.SubAuthorityCount * 4 - 8 > 0|] binary ApplicationData with BinaryEncoding{Length = (Header.AceSize - 8 - SID.SubAuthorityCount * 4 - 8) as uint},
+    optional [|Header.AceSize - 8 - SID.SubAuthorityCount * 4 - 8 > 0|] binary ApplicationData with BinaryEncoding{Length = (Header.AceSize - 8 - SID.SubAuthorityCount * 4 - 8)},
         Documentation
         {Description = "Optional application data. The size of the application data is determined by the AceSize field of the ACE_HEADER."};
 } with Documentation
-    {Description = "The ACCESS_ALLOWED_CALLBACK_ACE structure defines an ACE for the DACL that controls access to an object. An access-allowed ACE allows access to an object for a specific trustee identified by a SID."}, IDL{DoNotGenerate = true};
+    {Description = "The ACCESS_ALLOWED_CALLBACK_ACE structure defines an ACE for the DACL that controls access to an object. An access-allowed ACE allows access to an object for a specific trustee identified by a SID."},
+    IDL{DoNotGenerate = true},
+    Encoding{EncodingKind = EncodingKind.Binary};
 
 type AccessDeniedCallbackAce
 {
-    (ACE_HEADER where value.AceType == AceHeaderAceType.AccessDeniedCallbackAceType) Header
+    ACE_HEADER Header
         with Documentation
         {Description = "An ACE_HEADER structure that specifies the size and type of ACE. It also contains flags that control inheritance of the ACE by child objects."};
-    ACCESS_MASK Mask
+    AccessMaskFlags Mask
         with Documentation
         {Description = "An ACCESS_MASK that specifies the user rights denied by this ACE."};
     SID SID
         with Documentation
         {Description = "The SID of a trustee. The length of the SID MUST be a multiple of 4."};
-    optional [|Header.AceSize - 8 - SID.SubAuthorityCount * 4 - 8 > 0|] binary ApplicationData with BinaryEncoding{Length = (Header.AceSize - 8 - SID.SubAuthorityCount * 4 - 8) as uint},
+    optional [|Header.AceSize - 8 - SID.SubAuthorityCount * 4 - 8 > 0|] binary ApplicationData with BinaryEncoding{Length = (Header.AceSize - 8 - SID.SubAuthorityCount * 4 - 8)},
         Documentation
         {Description = "Optional application data. The size of the application data is determined by the AceSize field of the ACE_HEADER."};
 } with Documentation
-    {Description = "The ACCESS_DENIED_CALLBACK_ACE structure defines an ACE for the DACL that controls access to an object. An access-denied ACE denies access to an object for a specific trustee identified by a SID."}, IDL{DoNotGenerate = true};
+    {Description = "The ACCESS_DENIED_CALLBACK_ACE structure defines an ACE for the DACL that controls access to an object. An access-denied ACE denies access to an object for a specific trustee identified by a SID."},
+    IDL{DoNotGenerate = true},
+    Encoding{EncodingKind = EncodingKind.Binary};
 
 type AccessAllowedCallbackObjectAce
 {
-    (ACE_HEADER where value.AceType == AceHeaderAceType.AccessAllowedCallbackObjectAceType) Header
+    ACE_HEADER Header
         with Documentation
         {Description = "An ACE_HEADER structure that specifies the size and type of ACE. It also contains flags that control inheritance of the ACE by child objects."};
-    AccessAllowedCallbackObjectAceMask Mask
+    AccessAllowedCallbackObjectAceMaskFlags Mask
         with Documentation
         {Description = "An ACCESS_MASK structure that specifies the user rights allowed by this ACE."};
     AccessAllowedCallbackObjectAceFlags Flags
@@ -1503,49 +1555,54 @@ type AccessAllowedCallbackObjectAce
     SID SID
         with Documentation
         {Description = "The SID of a trustee. The length of the SID MUST be a multiple of 4."};
-    optional [|Header.AceSize - 44 - SID.SubAuthorityCount * 4 - 8 > 0|] binary ApplicationData with BinaryEncoding{Length = (Header.AceSize - 44 - SID.SubAuthorityCount * 4 - 8) as uint},
+    optional [|Header.AceSize - 44 - SID.SubAuthorityCount * 4 - 8 > 0|] binary ApplicationData with BinaryEncoding{Length = (Header.AceSize - 44 - SID.SubAuthorityCount * 4 - 8)},
         Documentation
         {Description = "Optional application data. The size of the application data is determined by the AceSize field of the ACE_HEADER."};
 } with Documentation
-    {Description = "The ACCESS_ALLOWED_CALLBACK_OBJECT_ACE structure defines an ACE that controls allowed access to an object, property set, or property. The ACE contains a set of user rights, a GUID that identifies the type of object, and a SID that identifies the trustee to whom the system will grant access. The ACE also contains a GUID and a set of flags that control inheritance of the ACE by child objects."}, IDL{DoNotGenerate = true};
+    {Description = "The ACCESS_ALLOWED_CALLBACK_OBJECT_ACE structure defines an ACE that controls allowed access to an object, property set, or property. The ACE contains a set of user rights, a GUID that identifies the type of object, and a SID that identifies the trustee to whom the system will grant access. The ACE also contains a GUID and a set of flags that control inheritance of the ACE by child objects."},
+    IDL{DoNotGenerate = true},
+    Encoding{EncodingKind = EncodingKind.Binary};
 
-pattern AccessAllowedCallbackObjectAceMask = enum ACCESS_MASK
+pattern AccessAllowedCallbackObjectAceMaskFlags = flags ACCESS_MASK
 {
-    AdsRightDsControlAccess = 0x00000100
-        with Documentation
-        {Description = "The ObjectType GUID identifies an extended access right."},
-    AdsRightDsCreateChild = 0x00000001
-        with Documentation
-        {Description = "The ObjectType GUID identifies a type of child object. The ACE controls the trustee's right to create this type of child object."},
-    AdsRightDsReadProp = 0x00000010
-        with Documentation
-        {Description = "The ObjectType GUID identifies a property set or property of the object. The ACE controls the trustee's right to read the property or property set."},
-    AdsRightDsWriteProp = 0x00000020
-        with Documentation
-        {Description = "The ObjectType GUID identifies a property set or property of the object. The ACE controls the trustee's right to write the property or property set."},
-    AdsRightDsSelf = 0x00000008
-        with Documentation
-        {Description = "The ObjectType GUID identifies a validated write."}
-} with Documentation{EmbeddedType = true}, IDL{DoNotGenerate = true};
+    GenericRead                         = 0x80000000,
+    GenericWrite                        = 0x40000000,
+    GenericExecute                      = 0x20000000,
+    GenericAll                          = 0x10000000,
+    Reserved1                           = 0x0C000000,
+    MaximumAllowed                      = 0x02000000,
+    AccessSystemSecurity                = 0x01000000,
+    Reserved2                           = 0x00E00000,
+    Synchronize                         = 0x00100000,
+    WriteOwner                          = 0x00080000,
+    WriteDacl                           = 0x00040000,
+    ReadControl                         = 0x00020000,
+    Delete                              = 0x00010000,
+    AdsRightDsControlAccess             = 0x00000100,
+    AdsRightDsCreateChild               = 0x00000001,
+    AdsRightDsReadProp                  = 0x00000010,
+    AdsRightDsWriteProp                 = 0x00000020,
+    AdsRightDsSelf                      = 0x00000008,
+    ...
+} with Documentation{EmbeddedType = true}, IDL{DoNotGenerate = true},
+    Encoding{EncodingKind = EncodingKind.Binary};
 
-pattern AccessAllowedCallbackObjectAceFlags = enum uint
+pattern AccessAllowedCallbackObjectAceFlags = flags uint
 {
-    Vaule0 = 0x00000000
-        with Documentation
-        {Description = "Neither ObjectType nor InheritedObjectType are valid."},
     AceObjectTypePresent = 0x00000001
         with Documentation{Description = "ObjectType is valid."},
     AceInheritedObjectTypePresent = 0x00000002
         with Documentation
         {Description = "InheritedObjectType is valid. If this value is not specified, all types of child objects can inherit the ACE."}
-} with Documentation{EmbeddedType = true}, IDL{DoNotGenerate = true};
+} with Documentation{EmbeddedType = true}, IDL{DoNotGenerate = true},
+    Encoding{EncodingKind = EncodingKind.Binary};
 
 type AccessDeniedCallbackObjectAce
 {
-    (ACE_HEADER where value.AceType == AceHeaderAceType.AccessDeniedCallbackObjectAceType) Header
+    ACE_HEADER Header
         with Documentation
         {Description = "An ACE_HEADER structure that specifies the size and type of ACE. It also contains flags that control inheritance of the ACE by child objects."};
-    AccessDeniedCallbackObjectAceMask Mask
+    AccessDeniedCallbackObjectAceMaskFlags Mask
         with Documentation
         {Description = "An ACCESS_MASK structure that specifies the user rights denied by this ACE."};
     AccessDeniedCallbackObjectAceFlags Flags
@@ -1560,63 +1617,75 @@ type AccessDeniedCallbackObjectAce
     SID SID
         with Documentation
         {Description = "The SID of a trustee. The length of the SID MUST be a multiple of 4."};
-    optional [|Header.AceSize - 44 - SID.SubAuthorityCount * 4 - 8 > 0|] binary ApplicationData with BinaryEncoding{Length = (Header.AceSize - 44 - SID.SubAuthorityCount * 4 - 8) as uint},
+    optional [|Header.AceSize - 44 - SID.SubAuthorityCount * 4 - 8 > 0|] binary ApplicationData with BinaryEncoding{Length = (Header.AceSize - 44 - SID.SubAuthorityCount * 4 - 8)},
         Documentation
         {Description = "Optional application data. The size of the application data is determined by the AceSize field of the ACE_HEADER."};
 } with Documentation
-    {Description = "The ACCESS_DENIED_CALLBACK_OBJECT_ACE structure defines an ACE that controls denied access to an object, a property set, or property. The ACE contains a set of user rights, a GUID that identifies the type of object, and a SID that identifies the trustee to whom the system will deny access. The ACE also contains a GUID and a set of flags that control inheritance of the ACE by child objects."}, IDL{DoNotGenerate = true};
+    {Description = "The ACCESS_DENIED_CALLBACK_OBJECT_ACE structure defines an ACE that controls denied access to an object, a property set, or property. The ACE contains a set of user rights, a GUID that identifies the type of object, and a SID that identifies the trustee to whom the system will deny access. The ACE also contains a GUID and a set of flags that control inheritance of the ACE by child objects."},
+    IDL{DoNotGenerate = true},
+    Encoding{EncodingKind = EncodingKind.Binary};
 
-pattern AccessDeniedCallbackObjectAceMask = enum ACCESS_MASK
+pattern AccessDeniedCallbackObjectAceMaskFlags = flags ACCESS_MASK
 {
-    AdsRightDsControlAccess = 0x00000100
-        with Documentation
-        {Description = "The ObjectType GUID identifies an extended access right."},
-    AdsRightDsCreateChild = 0x00000001
-        with Documentation
-        {Description = "The ObjectType GUID identifies a type of child object. The ACE controls the trustee's right to create this type of child object."},
-    AdsRightDsReadProp = 0x00000010
-        with Documentation
-        {Description = "The ObjectType GUID identifies a property set or property of the object. The ACE controls the trustee's right to read the property or property set."},
-    AdsRightDsWriteProp = 0x00000020
-        with Documentation
-        {Description = "The ObjectType GUID identifies a property set or property of the object. The ACE controls the trustee's right to write the property or property set."},
-    AdsrightDsSelf = 0x00000008
-        with Documentation
-        {Description = "The ObjectType GUID identifies a validated write."}
-} with Documentation{EmbeddedType = true}, IDL{DoNotGenerate = true};
+    GenericRead                         = 0x80000000,
+    GenericWrite                        = 0x40000000,
+    GenericExecute                      = 0x20000000,
+    GenericAll                          = 0x10000000,
+    Reserved1                           = 0x0C000000,
+    MaximumAllowed                      = 0x02000000,
+    AccessSystemSecurity                = 0x01000000,
+    Reserved2                           = 0x00E00000,
+    Synchronize                         = 0x00100000,
+    WriteOwner                          = 0x00080000,
+    WriteDacl                           = 0x00040000,
+    ReadControl                         = 0x00020000,
+    Delete                              = 0x00010000,
+    AdsRightDsControlAccess             = 0x00000100,
+    AdsRightDsCreateChild               = 0x00000001,
+    AdsRightDsReadProp                  = 0x00000010,
+    AdsRightDsWriteProp                 = 0x00000020,
+    AdsrightDsSelf                      = 0x00000008,
+    ...
+} with Documentation{EmbeddedType = true}, IDL{DoNotGenerate = true},
+    Encoding{EncodingKind = EncodingKind.Binary};
 
-pattern AccessDeniedCallbackObjectAceFlags = enum uint
+pattern AccessDeniedCallbackObjectAceFlags = flags uint
 {
-    Vaule0 = 0x00000000
-        with Documentation
-        {Description = "Neither ObjectType nor InheritedObjectType are valid."},
     AceObjectTypePresent = 0x00000001
         with Documentation{Description = "ObjectType is valid."},
     AceInheritedObjectTypePresent = 0x00000002
         with Documentation
-        {Description = "InheritedObjectType is valid. If this value is not specified, all types of child objects can inherit the ACE."}
-} with Documentation{EmbeddedType = true}, IDL{DoNotGenerate = true};
+        {Description = "InheritedObjectType is valid. If this value is not specified, all types of child objects can inherit the ACE."},
+    ...
+} with Documentation{EmbeddedType = true},
+    IDL{DoNotGenerate = true},
+    Encoding{EncodingKind = EncodingKind.Binary};
 
 type SystemAuditAce
 {
-    (ACE_HEADER where value.AceType == AceHeaderAceType.SystemAuditAceType) Header
+    ACE_HEADER Header
         with Documentation
         {Description = "An ACE_HEADER structure that specifies the size and type of ACE. It also contains flags that control inheritance of the ACE by child objects."};
-    ACCESS_MASK Mask
+    AccessMaskFlags Mask
         with Documentation
         {Description = "An ACCESS_MASK structure that specifies the user rights that cause audit messages to be generated."};
     SID SID
         with Documentation
         {Description = "The SID of a trustee. The length of the SID MUST be a multiple of 4. An access attempt of a kind specified by the Mask field by any trustee whose SID matches the SID field causes the system to generate an audit message. If an application does not specify a SID for this field, audit messages are generated for the specified access rights for all trustees."};
+    optional [|Header.AceSize - 8 - SID.SubAuthorityCount * 4 - 8 > 0|] binary AdditionalData with BinaryEncoding{Length = (Header.AceSize - 8 - SID.SubAuthorityCount * 4 - 8)},
+        Documentation
+        {Description = "This additional data is not interpreted and MUST be ignored."};
 } with Documentation
-    {Description = "The SYSTEM_AUDIT_ACE structure defines an access ACE for the system access control list (SACL) that specifies what types of access cause system-level notifications. A system-audit ACE causes an audit message to be logged when a specified trustee attempts to gain access to an object. The trustee is identified by a SID."}, IDL{DoNotGenerate = true};
+    {Description = "The SYSTEM_AUDIT_ACE structure defines an access ACE for the system access control list (SACL) that specifies what types of access cause system-level notifications. A system-audit ACE causes an audit message to be logged when a specified trustee attempts to gain access to an object. The trustee is identified by a SID."},
+    IDL{DoNotGenerate = true},
+    Encoding{EncodingKind = EncodingKind.Binary};
 
 type SystemAuditObjectAce
 {
-    (ACE_HEADER where value.AceType == AceHeaderAceType.SystemAuditObjectAceType) Header
+    ACE_HEADER Header
         with Documentation
         {Description = "An ACE_HEADER structure that specifies the size and type of ACE. It also contains flags that control inheritance of the ACE by child objects."};
-    ACCESS_MASK Mask
+    AccessMaskFlags Mask
         with Documentation
         {Description = "An ACCESS_MASK structure that specifies the user rights that cause audit messages to be generated."};
     AccessDeniedObjectAceFlags Flags
@@ -1631,28 +1700,32 @@ type SystemAuditObjectAce
     SID SID
         with Documentation
         {Description = "The SID of a trustee. The length of the SID MUST be a multiple of 4."};
-    optional [|Header.AceSize - 44 - SID.SubAuthorityCount * 4 - 8 > 0|] binary ApplicationData with BinaryEncoding{Length = (Header.AceSize - 44 - SID.SubAuthorityCount * 4 - 8) as uint},
+    optional [|Header.AceSize - 44 - SID.SubAuthorityCount * 4 - 8 > 0|] binary ApplicationData with BinaryEncoding{Length = (Header.AceSize - 44 - SID.SubAuthorityCount * 4 - 8)},
         Documentation
         {Description = "Optional application data. The size of the application data is determined by the AceSize field of the ACE_HEADER."};
 } with Documentation
-    {Description = "The SYSTEM_AUDIT_OBJECT_ACE structure defines an ACE for a SACL. The ACE can audit access to an object or subobjects, such as property sets or properties. The ACE contains a set of user rights, a GUID that identifies the type of object or subobject, and a SID that identifies the trustee for whom the system will audit access. The ACE also contains a GUID and a set of flags that control inheritance of the ACE by child objects."}, IDL{DoNotGenerate = true};
+    {Description = "The SYSTEM_AUDIT_OBJECT_ACE structure defines an ACE for a SACL. The ACE can audit access to an object or subobjects, such as property sets or properties. The ACE contains a set of user rights, a GUID that identifies the type of object or subobject, and a SID that identifies the trustee for whom the system will audit access. The ACE also contains a GUID and a set of flags that control inheritance of the ACE by child objects."},
+    IDL{DoNotGenerate = true},
+    Encoding{EncodingKind = EncodingKind.Binary};
 
 type SystemAuditCallbackAce
 {
-    (ACE_HEADER where value.AceType == AceHeaderAceType.SystemAuditCallbackAceType) Header
+    ACE_HEADER Header
         with Documentation
         {Description = "An ACE_HEADER structure that specifies the size and type of ACE. It also contains flags that control inheritance of the ACE by child objects."};
-    ACCESS_MASK Mask
+    AccessMaskFlags Mask
         with Documentation
         {Description = "An ACCESS_MASK structure that specifies the user rights that cause audit messages to be generated."};
     SID SID
         with Documentation
         {Description = "The SID of a trustee. The length of the SID MUST be a multiple of 4. An access attempt of a kind specified by the Mask field by any trustee whose SID matches the SID field causes the system to generate an audit message. If an application does not specify a SID for this field, audit messages are generated for the specified access rights for all trustees."};
-    optional [|Header.AceSize - 8 - SID.SubAuthorityCount * 4 - 8 > 0|] binary ApplicationData with BinaryEncoding{Length = (Header.AceSize - 8 - SID.SubAuthorityCount * 4 - 8) as uint},
+    optional [|Header.AceSize - 8 - SID.SubAuthorityCount * 4 - 8 > 0|] binary ApplicationData with BinaryEncoding{Length = (Header.AceSize - 8 - SID.SubAuthorityCount * 4 - 8)},
         Documentation
         {Description = "Optional application data. The size of the application data is determined by the AceSize field of the ACE_HEADER."};
 } with Documentation
-    {Description = "The SYSTEM_AUDIT_CALLBACK_ACE structure defines an ACE for the SACL that specifies what types of access cause system-level notifications. A system-audit ACE causes an audit message to be logged when a specified trustee attempts to gain access to an object. The trustee is identified by a SID."}, IDL{DoNotGenerate = true};
+    {Description = "The SYSTEM_AUDIT_CALLBACK_ACE structure defines an ACE for the SACL that specifies what types of access cause system-level notifications. A system-audit ACE causes an audit message to be logged when a specified trustee attempts to gain access to an object. The trustee is identified by a SID."},
+    IDL{DoNotGenerate = true},
+    Encoding{EncodingKind = EncodingKind.Binary};
 
 pattern SystemMandatoryLabelAceMask = enum ACCESS_MASK
 {
@@ -1664,15 +1737,19 @@ pattern SystemMandatoryLabelAceMask = enum ACCESS_MASK
         {Description = "A principal with a lower mandatory level than the object cannot read the object."},
     SystemMandatoryLabelNoExecuteUp = 0x00000004
         with Documentation
-        {Description = "A principal with a lower mandatory level than the object cannot execute the object."}
-} with Documentation{EmbeddedType = true}, IDL{DoNotGenerate = true};
+        {Description = "A principal with a lower mandatory level than the object cannot execute the object."},
+    ...
+} with Documentation{EmbeddedType = true}, IDL{DoNotGenerate = true},
+    Encoding{EncodingKind = EncodingKind.Binary};
 
 type SystemAuditCallbackObjectAce
 {
-    (ACE_HEADER where value.AceType == AceHeaderAceType.SystemAuditCallbackObjectAceType) Header
+    ACE_HEADER Header
         with Documentation
         {Description = "An ACE_HEADER structure that specifies the size and type of ACE. It contains flags that control inheritance of the ACE by child objects."};
     SystemAuditCallbackObjectAceMask Mask
+        where ValidationCheckEnumValueTooManyItems(InRange<SystemAuditCallbackObjectAceMask>(value), null, true, ReferenceType.Type,
+                "DTYP", "Mask", "SystemAuditCallbackObjectAce", "Mask", "[MS-DTYP]")
         with Documentation
         {Description = "An ACCESS_MASK structure that specifies the user rights that cause audit messages to be generated."};
     SystemAuditCallbackObjectAceFlags Flags
@@ -1687,10 +1764,12 @@ type SystemAuditCallbackObjectAce
     SID SID
         with Documentation
         {Description = "The SID of a trustee. The length of the SID MUST be a multiple of 4."};
-    optional [|Header.AceSize - 44 - SID.SubAuthorityCount * 4 - 8 > 0|] binary ApplicationData with BinaryEncoding{Length = (Header.AceSize - 44 - SID.SubAuthorityCount * 4 - 8) as uint},
+    optional [|Header.AceSize - 44 - SID.SubAuthorityCount * 4 - 8 > 0|] binary ApplicationData with BinaryEncoding{Length = (Header.AceSize - 44 - SID.SubAuthorityCount * 4 - 8)},
         Documentation
         {Description = "Optional application data. The size of the application data is determined by the AceSize field of the ACE_HEADER."};
-} with Documentation{Description = "The SYSTEM_AUDIT_CALLBACK_OBJECT_ACE structure defines an ACE for a SACL. The ACE can audit access to an object or subobjects, such as property sets or properties. The ACE contains a set of user rights, a GUID that identifies the type of object or subobject, and a SID that identifies the trustee for whom the system will audit access. The ACE also contains a GUID and a set of flags that control inheritance of the ACE by child objects."}, IDL{DoNotGenerate = true};
+} with Documentation{Description = "The SYSTEM_AUDIT_CALLBACK_OBJECT_ACE structure defines an ACE for a SACL. The ACE can audit access to an object or subobjects, such as property sets or properties. The ACE contains a set of user rights, a GUID that identifies the type of object or subobject, and a SID that identifies the trustee for whom the system will audit access. The ACE also contains a GUID and a set of flags that control inheritance of the ACE by child objects."},
+    IDL{DoNotGenerate = true},
+    Encoding{EncodingKind = EncodingKind.Binary};
 
 pattern SystemAuditCallbackObjectAceMask = enum ACCESS_MASK
 {
@@ -1708,27 +1787,27 @@ pattern SystemAuditCallbackObjectAceMask = enum ACCESS_MASK
         {Description = "The ObjectType GUID identifies a property set or property of the object. The ACE controls the trustee's right to write the property or property set."},
     AdsRightDsSelf = 0x00000008
         with Documentation
-        {Description = "The ObjectType GUID identifies a validated write."}
-} with Documentation{EmbeddedType = true}, IDL{DoNotGenerate = true};
+        {Description = "The ObjectType GUID identifies a validated write."},
+    ...
+} with Documentation{EmbeddedType = true}, IDL{DoNotGenerate = true},
+    Encoding{EncodingKind = EncodingKind.Binary};
 
-pattern SystemAuditCallbackObjectAceFlags = enum uint
+pattern SystemAuditCallbackObjectAceFlags = flags uint
 {
-    Vaule0 = 0x00000000
-        with Documentation
-        {Description = "Neither ObjectType nor InheritedObjectType are valid."},
     AceObjectTypePresent = 0x00000001
         with Documentation{Description = "ObjectType is valid."},
     AceInheritedObjectTypePresent = 0x00000002
         with Documentation
         {Description = "InheritedObjectType is valid. If this value is not specified, all types of child objects can inherit the ACE."}
-} with Documentation{EmbeddedType = true}, IDL{DoNotGenerate = true};
+} with Documentation{EmbeddedType = true}, IDL{DoNotGenerate = true},
+    Encoding{EncodingKind = EncodingKind.Binary};
 
 type SystemResourceAttributeAce
 {
-    (ACE_HEADER where value.AceType == AceHeaderAceType.SystemResourceAttributeAceType) Header
+    ACE_HEADER Header
         with Documentation
         {Description = "An ACE_HEADER structure that specifies the size and type of ACE. It contains flags that control inheritance of the ACE by child objects."};
-    ACCESS_MASK Mask
+    AccessMaskFlags Mask
         with Documentation
         {Description = "An ACCESS_MASK that MUST be set to zero."};
     SID SID
@@ -1738,22 +1817,29 @@ type SystemResourceAttributeAce
         with Documentation
         {Description = "Data describing a resource attribute type, name, and value(s)."};
         
-    optional [|Header.AceSize > 8 + SID.Length() + AttributeData.Length()|] array<byte> EntryPadding with BinaryEncoding{Length = Header.AceSize - 8 - SID.Length() - AttributeData.Length() as uint};
-} with Documentation{Description = "The SYSTEM_RESOURCE_ATTRIBUTE_ACE structure defines an ACE for the specification of a resource attribute associated with an object. A SYSTEM_RESOURCE_ATTRIBUTE_ACE is used in conditional ACEs in specifying access or audit policy for the resource."}, IDL{DoNotGenerate = true};
+    optional [|Header.AceSize > 8 + SID.Length() + AttributeData.Length()|] array<byte> EntryPadding with BinaryEncoding{Length = Header.AceSize - 8 - SID.Length() - AttributeData.Length()};
+} with Documentation{Description = "The SYSTEM_RESOURCE_ATTRIBUTE_ACE structure defines an ACE for the specification of a resource attribute associated with an object. A SYSTEM_RESOURCE_ATTRIBUTE_ACE is used in conditional ACEs in specifying access or audit policy for the resource."},
+    IDL{DoNotGenerate = true},
+    Encoding{EncodingKind = EncodingKind.Binary};
 
 type SystemScopedPolicyIdAce
 {
-    (ACE_HEADER where value.AceType == AceHeaderAceType.SystemScopedPolicyIdAceType) Header
+    ACE_HEADER Header
         with Documentation
         {Description = "An ACE_HEADER structure that specifies the size and type of ACE. It contains flags that control inheritance of the ACE by child objects."};
-    ACCESS_MASK Mask
+    AccessMaskFlags Mask
         with Documentation
         {Description = "An ACCESS_MASK that MUST be set to zero."};
     SID SID
         with Documentation
         {Description = "A SID that identifies a central access policy."};
+    optional [|Header.AceSize - 8 - SID.SubAuthorityCount * 4 - 8 > 0|] binary AdditionalData with BinaryEncoding{Length = (Header.AceSize - 8 - SID.SubAuthorityCount * 4 - 8)},
+        Documentation
+        {Description = "This additional data is not interpreted and MUST be ignored."};
 } with Documentation
-    {Description = "The SYSTEM_SCOPED_POLICY_ID_ACE structure defines an ACE for the purpose of applying a central access policy to the resource."}, IDL{DoNotGenerate = true};
+    {Description = "The SYSTEM_SCOPED_POLICY_ID_ACE structure defines an ACE for the purpose of applying a central access policy to the resource."},
+    IDL{DoNotGenerate = true},
+    Encoding{EncodingKind = EncodingKind.Binary};
 
 pattern AclAclRevision = enum byte
 {
@@ -1795,27 +1881,29 @@ type ClaimSecurityAttributeUnicodeString
     {
         return UnicodeString;
     }
-} with IDL{DoNotGenerate = true};
+} with IDL{DoNotGenerate = true},
+    Encoding{EncodingKind = EncodingKind.Binary};
 
 pattern ClaimSecurityAttributeRelativeV1Flags = flags DWORD
 {
-    FciClaimSecurityAttributeManual = 0x00010000,
-    FciClaimSecurityAttributePolicyDerived = 0x00020000,
-    ClaimSecurityAttributeNonInheritable = 0x00000001,
-    ClaimSecurityAttributeValueCaseSensitive = 0x00000002,
-    ClaimSecurityAttributeUseForDenyOnly = 0x00000004,
-    ClaimSecurityAttributeDisabledByDefault = 0x00000008,
-    ClaimSecurityAttributeDisabled = 0x00000010,
-    ClaimSecurityAttributeMandatory = 0x00000020,
-    Reserved = 0xFFFFFFC0,
+    FciClaimSecurityAttributeManual             = 0x00010000,
+    FciClaimSecurityAttributePolicyDerived      = 0x00020000,
+    ClaimSecurityAttributeNonInheritable        = 0x00000001,
+    ClaimSecurityAttributeValueCaseSensitive    = 0x00000002,
+    ClaimSecurityAttributeUseForDenyOnly        = 0x00000004,
+    ClaimSecurityAttributeDisabledByDefault     = 0x00000008,
+    ClaimSecurityAttributeDisabled              = 0x00000010,
+    ClaimSecurityAttributeMandatory             = 0x00000020,
     ...
-} with IDL{DoNotGenerate = true};
+} with IDL{DoNotGenerate = true},
+    Encoding{EncodingKind = EncodingKind.Binary};
 
 type CLAIM_SECURITY_ATTRIBUTE_OCTET_STRING_RELATIVE
 {
     DWORD Length;
     array<BYTE> OctetString with BinaryEncoding{Length = Length};
-} with IDL{DoNotGenerate = true};
+} with IDL{DoNotGenerate = true},
+    Encoding{EncodingKind = EncodingKind.Binary};
 typedef PCLAIM_SECURITY_ATTRIBUTE_OCTET_STRING_RELATIVE = CLAIM_SECURITY_ATTRIBUTE_OCTET_STRING_RELATIVE with IDL{IndirectionLevel = 1};
 
 // ============================================================== NonRpc types =================================================================
@@ -1830,7 +1918,7 @@ type SECURITY_DESCRIPTOR_NonRpc
         {Description = "An unsigned 8-bit value that specifies the Sbz1 field. If the Control field has the RM flag set, then this field contains the resource manager (RM) control value. For more information about resource managers, see [MS-SECO] section . Otherwise, this field is reserved and MUST be set to zero."};
     SecurityDescriptorControl Control
         with Documentation
-            {Description = "An unsigned 16-bit field that specifies control access bit flags. The Self Relative (SR) bit MUST be set."};        
+            {Description = "An unsigned 16-bit field that specifies control access bit flags. The Self Relative (SR) bit MUST be set."};
     uint OffsetOwner
         with Documentation
         {Description = "An unsigned 32-bit integer that specifies the offset to the SID. This SID specifies the owner of the object to which the security descriptor is associated. This must be a valid offset if the OD flag is not set. If this field is set to zero, then the OwnerSid field MUST not be present."};
@@ -1843,34 +1931,45 @@ type SECURITY_DESCRIPTOR_NonRpc
     uint OffsetDacl
         with Documentation
         {Description = "An unsigned 32-bit integer that specifies the offset to the ACL that contains ACEs that control access. Typically, the DACL contains ACEs that grant or deny access to principals or groups. This must be a valid offset if the DP flag is set; if the DP flag is not set, this field MUST be set to zero. If this field is set to zero, then the Dacl field MUST not be present."};
-    /* Since OwnerSid, GroupSid, Sacl, Dacl may not appear in sequence, so use
-     * array<SID | ACL> as a workaround. May need to find a better workaround for it.
-     */
-    optional [|SizeOfArray() > 0|] array<SID | ACL_NonRpc> OwerSidOrGroupSidOrSaclOrDacl with BinaryEncoding{Length = SizeOfArray() as uint};
     
-    int SizeOfArray()
+    optional [|OffsetOwner > 0|] SID OwnerSid with Encoding{Offset = OffsetOwner};
+    optional [|OffsetGroup > 0|] SID GroupSid with Encoding{Offset = OffsetGroup};
+    optional [|(Control & SecurityDescriptorControl.SACLPresent) > 0 && OffsetSacl > 0|] ACL_NonRpc Sacl with Encoding{Offset = OffsetSacl};
+    optional [|(Control & SecurityDescriptorControl.DACLPresent) > 0 && OffsetDacl > 0|] ACL_NonRpc Dacl with Encoding{Offset = OffsetDacl};
+
+    optional [|Length() - 20 > 0|] binary dataBuffer with BinaryEncoding{Length = Length() - 20},
+        // do not show this field on the UI
+        Encoding{Decoder = DataBufferDecoder, SourcePattern = TypeOf<binary>()};
+
+    uint Length()
     {
-        int result = 0;
-        if (OffsetOwner > 0)
+        uint max1 = OffsetOwner > OffsetGroup ? OffsetOwner : OffsetGroup;
+        uint max2 = OffsetSacl > OffsetDacl ? OffsetSacl : OffsetDacl;
+
+        if (max1 > max2)
         {
-            result++;
+            return OffsetOwner > OffsetGroup ? (OwnerSid as SID).Length() + OffsetOwner : (GroupSid as SID).Length() + OffsetGroup;
         }
-        if (OffsetGroup > 0)
+        else
         {
-            result++;
+            if (max2 == 0)
+            {
+                return 20;
+            }
+
+            return OffsetSacl > OffsetDacl ? (Sacl as ACL_NonRpc).AclSize + OffsetSacl : (Dacl as ACL_NonRpc).AclSize + OffsetDacl;
         }
-        if (OffsetSacl > 0)
-        {
-            result++;
-        }
-        if (OffsetDacl > 0)
-        {
-            result++;
-        }
-        return result;
+    }
+
+    optional binary DataBufferDecoder(binary data)
+    {
+        // do not should this field on the UI
+        return nothing;
     }
 } with Documentation
-    {NameInDocumentation = "SECURITY_DESCRIPTOR", Description = "The SECURITY_DESCRIPTOR structure defines an object's security attributes. These attributes specify who owns the object, who can access the object and what they can do with it, what level of audit logging should be applied to the object, and what kind of restrictions apply to the use of the security descriptor."};
+    {NameInDocumentation = "SECURITY_DESCRIPTOR", Description = "The SECURITY_DESCRIPTOR structure defines an object's security attributes. These attributes specify who owns the object, who can access the object and what they can do with it, what level of audit logging should be applied to the object, and what kind of restrictions apply to the use of the security descriptor."},
+    IDL{DoNotGenerate = true},
+    Encoding{EncodingKind = EncodingKind.Binary};
 
 type ACL_NonRpc
 {
@@ -1893,34 +1992,45 @@ type ACL_NonRpc
         {Description = "An unsigned 16-bit integer. This field is reserved and MUST be set to zero."};
     array<AceList> AceRecords with BinaryEncoding{Length = AceCount};
 } with Documentation
-    {NameInDocumentation = "ACL", Description = "The access control list (ACL), is used to specify a list of individual access control entries (ACEs)."};
+    {NameInDocumentation = "ACL", Description = "The access control list (ACL), is used to specify a list of individual access control entries (ACEs)."},
+    IDL{DoNotGenerate = true},
+    Encoding{EncodingKind = EncodingKind.Binary};
 
-pattern AceList =   AccessAllowedAce                    |
-                    AccessAllowedObjectAce              |
-                    AccessDeniedAce                     |
-                    AccessDeniedObjectAce               |
-                    AccessAllowedCallbackAce            |
-                    AccessDeniedCallbackAce             |
-                    AccessAllowedCallbackObjectAce      |
-                    AccessDeniedCallbackObjectAce       |
-                    SystemAuditAce                      |
-                    SystemAuditObjectAce                |
-                    SystemAuditCallbackAce              |
-                    SYSTEM_MANDATORY_LABEL_ACE_NonRpc   |
-                    SystemAuditCallbackObjectAce        |
-                    SystemResourceAttributeAce          |
-                    SystemScopedPolicyIdAce;
+pattern AceList =   [|stream.RemainingByteLength() > 0|]
+    ([|stream.CurrentByte() == AceHeaderAceType.AccessAllowedAceType|] AccessAllowedAce |
+    [|stream.CurrentByte() == AceHeaderAceType.AccessAllowedObjectAceType|] AccessAllowedObjectAce |
+    [|stream.CurrentByte() == AceHeaderAceType.AccessDeniedAceType|] AccessDeniedAce |
+    [|stream.CurrentByte() == AceHeaderAceType.AccessDeniedObjectAceType|] AccessDeniedObjectAce |
+    [|stream.CurrentByte() == AceHeaderAceType.AccessAllowedCallbackAceType|] AccessAllowedCallbackAce |
+    [|stream.CurrentByte() == AceHeaderAceType.AccessDeniedCallbackAceType|] AccessDeniedCallbackAce |
+    [|stream.CurrentByte() == AceHeaderAceType.AccessAllowedCallbackObjectAceType|] AccessAllowedCallbackObjectAce |
+    [|stream.CurrentByte() == AceHeaderAceType.AccessDeniedCallbackObjectAceType|] AccessDeniedCallbackObjectAce |
+    [|stream.CurrentByte() == AceHeaderAceType.SystemAuditAceType|] SystemAuditAce |
+    [|stream.CurrentByte() == AceHeaderAceType.SystemAuditObjectAceType|] SystemAuditObjectAce |
+    [|stream.CurrentByte() == AceHeaderAceType.SystemAuditCallbackAceType|] SystemAuditCallbackAce |
+    [|stream.CurrentByte() == AceHeaderAceType.SystemMandatoryLabelAceType|] SYSTEM_MANDATORY_LABEL_ACE_NonRpc |
+    [|stream.CurrentByte() == AceHeaderAceType.SystemAuditCallbackObjectAceType|] SystemAuditCallbackObjectAce |
+    [|stream.CurrentByte() == AceHeaderAceType.SystemResourceAttributeAceType|] SystemResourceAttributeAce |
+    [|stream.CurrentByte() == AceHeaderAceType.SystemScopedPolicyIdAceType|] SystemScopedPolicyIdAce)
+with IDL{DoNotGenerate = true},
+Encoding{EncodingKind = EncodingKind.Binary};
 
 type SYSTEM_MANDATORY_LABEL_ACE_NonRpc
 {
-    (ACE_HEADER where value.AceType == AceHeaderAceType.SystemMandatoryLabelAceType) Header
+    ACE_HEADER Header
         with Documentation
         {Description = "An ACE_HEADER structure that specifies the size and type of ACE. It also contains flags that control inheritance of the ACE by child objects."};
-    (ACCESS_MASK where value is SystemMandatoryLabelAceMask) Mask
+    SystemMandatoryLabelAceMaskFlags Mask
         with Documentation
         {Description = "An ACCESS_MASK structure that specifies the access policy for principals with a mandatory integrity level lower than the object associated with the SACL that contains this ACE."};
     SID SID
         with Documentation
         {Description = "The SID of a trustee. The length of the SID MUST be a multiple of 4. The identifier authority of the SID must be SECURITY_MANDATORY_LABEL_AUTHORITY. The RID of the SID specifies the mandatory integrity level of the object associated with the SACL that contains this ACE. The RID must be one of the following values."};
+    optional [|Header.AceSize - 8 - SID.SubAuthorityCount * 4 - 8 > 0|] binary AdditionalData with BinaryEncoding{Length = (Header.AceSize - 8 - SID.SubAuthorityCount * 4 - 8)},
+        Documentation
+        {Description = "This additional data is not interpreted and MUST be ignored."};
 } with Documentation
-    {NameInDocumentation = "SYSTEM_MANDATORY_LABEL_ACE", Description = "The SYSTEM_MANDATORY_LABEL_ACE structure defines an ACE for the SACL that specifies the mandatory access level and policy for a securable object.<31> This construct is supported only by Windows Server 2008, Windows Vista, and Windows 7."};
+    {NameInDocumentation = "SYSTEM_MANDATORY_LABEL_ACE", Description = "The SYSTEM_MANDATORY_LABEL_ACE structure defines an ACE for the SACL that specifies the mandatory access level and policy for a securable object.<31> This construct is supported only by Windows Server 2008, Windows Vista, and Windows 7."},
+    IDL{DoNotGenerate = true},
+    Encoding{EncodingKind = EncodingKind.Binary};
+

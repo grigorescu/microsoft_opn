@@ -16,17 +16,15 @@ OPNAuthoring
         ],
     RevisionSummary =
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "09/02/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "363316", Date = "04/27/2014"}
         ]
 };
     
 using Standard;
-using IANA;
 using NBTNS;
 using Utility;
 using UDP;
-using IPv4;
-using IPv6;
+using IANA;
 
 endpoint Server over UDP.Host accepts Packet issues Packet;
 client endpoint Client connected to Server;
@@ -38,26 +36,6 @@ autostart actor NBTDSOverUDP(UDP.Host node)
         switch (datagram.Payload)
         {
             case d:Packet from BinaryDecoder<Packet> =>
-                if (d.SourceName != nothing)
-                {
-                    var p = d.SourceName as NbtName;
-                    if (p.Name is NbtString)
-                    {
-                        var s = p.Name as NbtString;
-                        s.Chars = (p.Name as NbtString).GetName();
-                    }
-                }
-                
-                if (d.DestinationName != nothing)
-                {
-                    var p = d.DestinationName as NbtName;
-                    if (p.Name is NbtString)
-                    {
-                        var s = p.Name as NbtString;
-                        s.Chars = (p.Name as NbtString).GetName();
-                    }
-                }
-                
                 dispatch endpoint NBTDS.Server over node accepts d;
             default =>
                 ThrowDecodingException("NBTDS");
@@ -69,26 +47,6 @@ autostart actor NBTDSOverUDP(UDP.Host node)
         switch (datagram.Payload)
         {
             case d:Packet from BinaryDecoder<Packet> =>
-                if (d.SourceName != nothing)
-                {
-                    var p = d.SourceName as NbtName;
-                    if (p.Name is NbtString)
-                    {
-                        var s = p.Name as NbtString;
-                        s.Chars = (p.Name as NbtString).GetName();
-                    }
-                }
-                
-                if (d.DestinationName != nothing)
-                {
-                    var p = d.DestinationName as NbtName;
-                    if (p.Name is NbtString)
-                    {
-                        var s = p.Name as NbtString;
-                        s.Chars = (p.Name as NbtString).GetName();
-                    }
-                }
-                
                 dispatch endpoint NBTDS.Server over node issues d;
             default =>
                 ThrowDecodingException("NBTDS");

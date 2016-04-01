@@ -7,7 +7,7 @@ OPNAuthoring
         ],
     RevisionSummary =
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "09/16/2012"}
+            new Revision{Class = RevisionClass.Major, Version = "362740", Date = "04/18/2014"}
         ]
 };
 
@@ -32,7 +32,7 @@ type SocketAddress[uint SockAddrLen]
 {
     (SockAddrIn | SockAddrIn6 | SockAddr) Address;
     // Padding to the total size in bytes
-    optional ([|SockAddrLen > AddressSize()|] binary) Padding with BinaryEncoding{Length = SockAddrLen - AddressSize() as uint};
+    optional ([|SockAddrLen > AddressSize()|] binary) Padding with BinaryEncoding{Length = SockAddrLen - AddressSize()};
     
     // Get the size of Address field in bytes
     uint AddressSize()

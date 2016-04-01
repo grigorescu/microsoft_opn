@@ -15,7 +15,7 @@ OPNAuthoring
         ],
     RevisionSummary = 
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "11/29/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "362740", Date = "04/18/2014"}
         ]
 };
 
@@ -23,7 +23,6 @@ using Standard;
 using Utility;
 using IANA;
 using IPv4;
-using IPv6;
 
 endpoint Node
     over ReassemblyNode
@@ -264,7 +263,7 @@ message Packet
     
     override string ToString()
     {
-        string display = "Packet Type = ";
+        string display = "";
         switch (Type.Type)
         {
             case 0x00 => display += "Source Path Message";
@@ -274,12 +273,12 @@ message Packet
             case 0x05 => display += "RData Packet";
             case 0x08 => display += "Negative Acknowledgment";
             case 0x09 => display += "Null Negative Acknowledgment";
-            case 0x0A => display += "NAK confirmation";
+            case 0x0A => display += "NAK Confirmation";
             case 0x0C => display += "SPM Request";
             default => 
-                display += "Unknown Packet";
+                display += "Unknown Packet Type(" + Utility.DecToHexFormat(Type.Type) + ")";
         }
-        display += ", SrcPort = " + (SourcePort as string) + ", DstPort = " + (DestinationPort as string) + ", TSDULength = " + (TSDULength as string);
+        display += ", SrcPort: " + (SourcePort as string) + ", DstPort: " + (DestinationPort as string) + ", TSDULength: " + (TSDULength as string);
         return display;
     }
 }
@@ -481,7 +480,7 @@ type OptNAKList
     byte OPX with BinaryEncoding{Width = 2};
     byte U with BinaryEncoding{Width = 1};
     byte Unused with BinaryEncoding{Width = 7};
-    array<uint> RequestedSequenceNumber with BinaryEncoding{Length = ((OptionLength - 4) / 4) as uint};
+    array<uint> RequestedSequenceNumber with BinaryEncoding{Length = ((OptionLength - 4) / 4)};
 }
 
 type OptJoin
@@ -695,5 +694,5 @@ type DefaultOption
     byte OPX with BinaryEncoding{Width = 2};
     byte U with BinaryEncoding{Width = 1};
     byte Specific with BinaryEncoding{Width = 7};
-    binary OptionValue with BinaryEncoding{Length = (OptionLength - 4) as uint};
+    binary OptionValue with BinaryEncoding{Length = (OptionLength - 4)};
 }

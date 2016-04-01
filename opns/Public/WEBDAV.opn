@@ -1,8 +1,8 @@
-﻿protocol WEBDAV with 
+protocol WEBDAV with 
 XmlEncodingDefaults{Namespace = WebdavDavNamespace},
 Documentation
 {
-    ProtocolName = "WEBDAV",
+    ProtocolName = "Web Distributed Authoring and Versioning",
     ShortName = "WEBDAV",
     Description = ""
 },
@@ -16,15 +16,13 @@ OPNAuthoring
         ],
     RevisionSummary = 
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "12/28/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "360482", Date = "03/21/2014"}
         ]
 };
 
 using Standard;
 using Utility;
 using HTTP;
-using Technologies.WSDL;
-using Technologies.SOAP;
 
 const string WebdavDavNamespace = "DAV:";
 
@@ -163,35 +161,70 @@ set<string> Methods = { "PROPFIND", "PROPPATCH", "MKCOL", "COPY", "MOVE", "LOCK"
 message PropFindMsg
 {
     PropFindType PropFind with XmlEncoding{Name = "propfind"};
+    
+    override string ToString()
+    {
+        return "PropFind Message";
+    }
 }
 
 message PropertyUpdateMsg
 {
     PropertyUpdateType PropertyUpdate with XmlEncoding{Name = "propertyupdate"};
+    
+    override string ToString()
+    {
+        return "PropertyUpdate Message";
+    }
 }
 
 message MkcolMsg
 {
     MkcolType Mkcol with XmlEncoding{Name = "mkcol"};
+    
+    override string ToString()
+    {
+        return "Mkcol Message";
+    }
 }
 
 message LockInfoMsg
 {
     LockInfoType LockInfo with XmlEncoding{Name = "lockInfo"};
+    
+    override string ToString()
+    {
+        return "LockInfo Message";
+    }
 }
 message MkcolResponseMsg
 {
     MkcolResponseType MkcolResponse with XmlEncoding{Name = "mkcolResponse"};
+    
+    override string ToString()
+    {
+        return "MkcolResponse Message";
+    }
 }
 
 message MultistatusMsg
 {
     MultistatusType Multistatus with XmlEncoding{Name = "multistatus"};
+    
+    override string ToString()
+    {
+        return "Multistatus Message";
+    }
 }
 
 message PropMsg
 {
     PropType Prop with XmlEncoding{Name = "prop"};
+    
+    override string ToString()
+    {
+        return "Prop Message";
+    }
 }
 
 type PropFindType
@@ -465,7 +498,7 @@ type PropStat
     optional ResponseDescription ResponseDescription with XmlEncoding{Name = "responsedescription"};
     optional array<xml> AnyElement with XmlEncoding{IsAny = true, Namespace = XmlNamespaceIndicator.Any};
     optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Any};
-}
+} with XmlEncoding{Order = XmlOrderIndicator.All};
 
 // remove XML Element
 type Remove

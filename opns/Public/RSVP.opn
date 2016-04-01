@@ -35,14 +35,13 @@ OPNAuthoring
         ],
     RevisionSummary =
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "11/25/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "362740", Date = "04/18/2014"}
         ]
 };
 
 using IPv4;
-using IPv6;
-using IANA;
 using Utility;
+using IANA;
 
 endpoint Node
     over IPv4.Node
@@ -100,10 +99,10 @@ message Datagram
             case 26 => summary = "Integrity Response Message";
             case 66 => summary = "DSBM willing Message";
             case 67 => summary = "I AM DSBM";
-            default => summary = "Undefined message type: " + (MsgType as string);
+            default => summary = "Undefined message type(" + (MsgType as string) + ")";
         }
         
-        summary += ", Length = " + (TotalLength as string);
+        summary += ", Length: " + (TotalLength.ToString());
         return summary;
     }
 }
@@ -591,7 +590,7 @@ type IntegrityType1[uint Len]
     byte Reserved;
     ulong KeyIdentifier with BinaryEncoding{Width = 48};
     ulong SequenceNumber;
-    binary KeyedMessageDigest with BinaryEncoding{Length = (Len - 16) as uint};
+    binary KeyedMessageDigest with BinaryEncoding{Length = (Len - 16)};
 }
 
 type IntegrityFlags
@@ -649,12 +648,12 @@ type ScopeObject
 
 type IPv4AddressArray[ushort len]
 {
-    array<IPv4Address> Addresses with BinaryEncoding{Length = (len / 4) as uint};
+    array<IPv4Address> Addresses with BinaryEncoding{Length = (len / 4)};
 }
 
 type IPv6AddressArray[ushort len]
 {
-    array<IPv6Address> Addresses with BinaryEncoding{Length = (len / 16) as uint};
+    array<IPv6Address> Addresses with BinaryEncoding{Length = (len / 16)};
 }
 
 // Section A.7, RFC 2205
@@ -957,7 +956,7 @@ type Parameter
 {
     ParameterHeader Header;
     // The data is actually consist of 32-bit values, not must be float type.
-    array<float> Data with BinaryEncoding{Length = Header.ParameterLength as uint};
+    array<float> Data with BinaryEncoding{Length = Header.ParameterLength};
 }
 
 // Section 2.1, RFC 3946. CType = 4
@@ -1026,7 +1025,7 @@ type AdspecGuaranteedService
     int Dsum; // Since-last-reshaping point composed D
     //optional [|ServiceLength - 32 > 0|] array<Parameter> Parameters;
     // WORKAROUND: Cannot get parameter array length, use binary instead.
-    optional [|ServiceLength > 8|] binary Parameters with BinaryEncoding{Length = ((ServiceLength - 8) * 4) as uint};
+    optional [|ServiceLength > 8|] binary Parameters with BinaryEncoding{Length = ((ServiceLength - 8) * 4)};
 }
 
 // 
@@ -1037,7 +1036,7 @@ type AdspecControlledLoadService
     byte Reserved with BinaryEncoding{Width = 7};
     ushort ServiceLength;
     // WORKAROUND: Cannot get parameter array length, use binary instead.
-    optional [|ServiceLength > 8|] binary Parameters with BinaryEncoding{Length = ((ServiceLength - 8) * 4) as uint};
+    optional [|ServiceLength > 8|] binary Parameters with BinaryEncoding{Length = ((ServiceLength - 8) * 4)};
 }
 
 // Section A.13, RFC 2205; section 3.1, RFC 2750.
@@ -1063,7 +1062,7 @@ type PolicyElement
 {
     ushort Length;
     ushort PType;
-    binary PolicyInformation with BinaryEncoding{Length = Length as uint};
+    binary PolicyInformation with BinaryEncoding{Length = Length};
 }
 
 // Section A.14, RFC 2205
@@ -1128,7 +1127,7 @@ type RouteIPv4[ushort typeLength]
 {
     array<byte> Reserved with BinaryEncoding{Length= 3};
     byte RPointer;
-    array<IPv4Address> RsvpNodeList with BinaryEncoding{Length = ((typeLength - 4) / 4) as uint};
+    array<IPv4Address> RsvpNodeList with BinaryEncoding{Length = ((typeLength - 4) / 4)};
 }
 
 // CType = 2
@@ -1136,7 +1135,7 @@ type RouteIPv6[ushort typeLength]
 {
     array<byte> Reserved with BinaryEncoding{Length= 3};
     byte RPointer;
-    array<IPv4Address> RsvpNodeList with BinaryEncoding{Length = ((typeLength - 4) / 16) as uint};
+    array<IPv4Address> RsvpNodeList with BinaryEncoding{Length = ((typeLength - 4) / 16)};
 }
 
 // Section 3.6, RFC 2745
@@ -1199,7 +1198,7 @@ type DiagSelectClassTypePair
 type DefaultObject
 {
     ObjectHeader Header;
-    binary Data with BinaryEncoding{Length = (Header.Length - 4) as uint};
+    binary Data with BinaryEncoding{Length = (Header.Length - 4)};
 }
 
 /* All implemented Class/Type are listed in below table.

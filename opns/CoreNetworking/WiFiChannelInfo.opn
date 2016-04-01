@@ -7,7 +7,7 @@ OPNAuthoring
         ],
     RevisionSummary = 
         [
-            new Revision{Class=RevisionClass.Major, Version="1.0.0", Date="09/02/2011"}
+            new Revision{Class=RevisionClass.Major, Version="382201", Date="10/19/2015"}
         ]
 };
 
@@ -16,8 +16,6 @@ using PefNdisProvider;
 using NdisEtwProvider;
 using WiFi;
 using Utility;
-using IPv4;
-using IPv6;
 
 endpoint WiFiChannelNode
     accepts NdisEtwWiFiChannelMessage
@@ -26,9 +24,9 @@ endpoint WiFiChannelNode
 {
     process this accepts m:NdisEtwWiFiChannelMessage
     {
-        if (!DecodeWiFiMessageAndDispatch(m.WiFiFrame, false))
+        if (!DecodeWiFiMessageAndDispatch(m.WiFiFrame))
         {
-            ThrowDecodingException("WiFiChannelInfo", "PEF NDIS WiFi");
+            ThrowDecodingException("WiFiChannelInfo", "NDIS WiFi");
         }
     }
     
@@ -69,7 +67,7 @@ autostart actor WiFiChannelOverNdisEtw(NdisEtwNode ndisEtw)
     {
         if (metaDataMsg != null)
         {
-            DisplayTopLevelMessage(metaDataMsg, "WiFiChannelInfo: Missing continuous WiFi message");
+            DisplayTopLevelMessage(metaDataMsg, "WiFiChannelInfo: Missing continuation WiFi message");
         }
         metaDataMsg = m;
     }
@@ -82,7 +80,7 @@ autostart actor WiFiChannelOverNdisEtw(NdisEtwNode ndisEtw)
         if (metaDataMsg == null)
         {
             // the outbound traffice doesn't have NDIS ETW WiFi MetaData
-            if (!DecodeWiFiMessageAndDispatch(m.Payload, false))
+            if (!DecodeWiFiMessageAndDispatch(m.Payload))
             {
                 ThrowDecodingException("WiFiChannelInfo", "NDIS ETW WiFi without MetaData");
             }
@@ -117,7 +115,7 @@ autostart actor WiFiChannelOverNdisEtw(NdisEtwNode ndisEtw)
     {
         if (metaDataMsg != null)
         {
-            DisplayTopLevelMessage(metaDataMsg, "WiFiChannelInfo: Missing continuous WiFi message");
+            DisplayTopLevelMessage(metaDataMsg, "WiFiChannelInfo: Missing continuation WiFi message");
         }
     }
 }
@@ -134,6 +132,11 @@ message NdisEtwWiFiChannelMessage
     }
 }
 
+int get PayloadLength(this WiFiChannelInfo.NdisEtwWiFiChannelMessage msg)
+{
+    return msg.WiFiFrame.Count;
+}
+
 type NdisEtwMetaData
 {
     byte Type where value == 0x80;
@@ -142,13 +145,12 @@ type NdisEtwMetaData
     uint uReceiveFlags;
     uint uPhyId;
     uint uChCenterFrequency;
-    ushort usNumberOfMPDUsReceived;
+    ushort usNumberOfMPDUsReceived with BinaryEncoding{TrailPadding = 16};
     int lRSSI;
-    byte ucDataRate;
+    byte ucDataRate with BinaryEncoding{TrailPadding = 24};
     uint uSizeMediaSpecificInfo;
-    ([|size == 48|]ulong | [|size == 40|]uint) pvMediaSpecificInfo;
+    ([|size == 48|] ulong | uint) pvMediaSpecificInfo;
     ulong ullTimestamp;
-    ([|size == 48|]Padding[5] | [|size == 40|]Padding[1]) Padding;
 }
 
 type Padding[byte Length]
@@ -163,7 +165,7 @@ type Padding[byte Length]
 // WiFi message provided by NetMon3 Capture file
 message NetMon3WiFiChannelMessage
 {
-    (NetMon3MetaData | NetMon3UnknownMetaData) Metadata;
+    ([|stream.CurrentByte == 2|]NetMon3MetaData | NetMon3UnknownMetaData) Metadata;
     binary WiFiFrame;
     
     override string ToString()
@@ -180,12 +182,16 @@ message NetMon3WiFiChannelMessage
     }
 }
 
+int get PayloadLength(this WiFiChannelInfo.NetMon3WiFiChannelMessage msg)
+{
+    return msg.WiFiFrame.Count;
+}
 
 type NetMon3UnknownMetaData
 {
     byte Version where value != 8 && value != 2;
     ushort Length;
-    array<byte> UnknownMetaData with BinaryEncoding{Length = (Length - 3) as uint};
+    array<byte> UnknownMetaData with BinaryEncoding{Length = (Length - 3)};
 }
 
 type NetMon3MetaData
@@ -195,7 +201,7 @@ type NetMon3MetaData
     OpMode OpMode;
     uint Flags;
     optional [|Flags != 0xFFFFFFFF|] MetadataDesc MetadataDesc;
-    optional [|Flags == 0xFFFFFFFF|] array<byte> RemData with BinaryEncoding{ Length = 13 as uint};
+    optional [|Flags == 0xFFFFFFFF|] array<byte> RemData with BinaryEncoding{ Length = 13};
     ulong TimeStamp;
 }
 
@@ -237,7 +243,6 @@ pattern StandardRate = byte
                     0x60,
                     0x6C};
 
-
 /*
     Part 3. PEF NDIS WiFi
 */
@@ -250,7 +255,7 @@ autostart actor WiFiChannelOverPefNdis(PefNdisNode pefNdis)
     {
         if (metaDataMsg != null)
         {
-            DisplayTopLevelMessage(metaDataMsg, "WiFiChannelInfo: Missing continuous PefNdisMsg");
+            DisplayTopLevelMessage(metaDataMsg, "WiFiChannelInfo: Missing continuation PefNdisMsg");
         }
         metaDataMsg = m;
     }
@@ -262,7 +267,7 @@ autostart actor WiFiChannelOverPefNdis(PefNdisNode pefNdis)
         if (metaDataMsg == null)
         {
             // the outbound traffice doesn't have PEF NDIS WiFi MetaData
-            if (!DecodeWiFiMessageAndDispatch(m.FrameData, false))
+            if (!DecodeWiFiMessageAndDispatch(m.FrameData))
             {
                 ThrowDecodingException("WiFiChannelInfo", "PEF NDIS WiFi without MetaData");
             }
@@ -296,7 +301,7 @@ autostart actor WiFiChannelOverPefNdis(PefNdisNode pefNdis)
     {
         if (metaDataMsg != null)
         {
-            DisplayTopLevelMessage(metaDataMsg, "WiFiChannelInfo: Missing continuous PefNdisMsg");
+            DisplayTopLevelMessage(metaDataMsg, "WiFiChannelInfo: Missing continuation PefNdisMsg");
         }
     }
 }
@@ -311,6 +316,11 @@ message PefNdisWiFiChannelMessage
     {
         return "PefNdisWiFiChannelMessage, " + GetWiFiMetaDataDisplayInfo(MetaData.lRSSI, MetaData.DataRate);
     }
+}
+
+int get PayloadLength(this WiFiChannelInfo.PefNdisWiFiChannelMessage msg)
+{
+    return msg.WiFiFrame.Count;
 }
 
 type PefNdisMetaData

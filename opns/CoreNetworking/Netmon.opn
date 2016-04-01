@@ -1,4 +1,4 @@
-﻿protocol Netmon with
+protocol Netmon with
 BinaryEncodingDefaults{Endian = Endian.Big,TextEncoding = TextEncoding.UTF16},
 Documentation
 {
@@ -14,16 +14,12 @@ OPNAuthoring
         ],// No References, from Netmon.npl directly
     RevisionSummary =
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "11/25/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "371566", Date = "11/27/2014"}
         ]
 };
 
 using Standard;
-using Ethernet;
-using IANA;
 using Utility;
-using IPv4;
-using IPv6;
 
 endpoint Node
     accepts NetmonFilter
@@ -90,11 +86,12 @@ type NetMonNetworkAdapter[bool isMessageNetworkInfo]
     ushort DhcpServerAddressCount;
     ushort DnsIpv4AddressCount;
     ushort DnsIpv6AddressCount;
-    array<IPv4Address> IPv4Address with BinaryEncoding{Length = IPv4AddressCount as uint};
-    array<IPv4Address> SubnetMask with BinaryEncoding{Length = IPv4AddressCount as uint};
-    array<IPv6Address> IPv6Address with BinaryEncoding{Length = IPv6AddressCount as uint};
-    array<IPv4Address> GatewayAddress with BinaryEncoding{Length = GatewayAddressCount as uint};
-    array<IPv4Address> DhcpServerAddress with BinaryEncoding{Length = DhcpServerAddressCount as uint};
-    array<IPv4Address>  DnsIpv4Address with BinaryEncoding{Length = DnsIpv4AddressCount as uint};
-    array<IPv6Address> DnsIpv6Address with BinaryEncoding{Length = DnsIpv6AddressCount as uint};
+    // Netmon may generates data in wrong format, declare with 'MaxLength' to parse message as possible as it could.
+    array<IPv4Address> IPv4Address with BinaryEncoding{MaxLength = IPv4AddressCount};
+    array<IPv4Address> SubnetMask with BinaryEncoding{MaxLength = IPv4AddressCount};
+    array<IPv6Address> IPv6Address with BinaryEncoding{MaxLength = IPv6AddressCount};
+    array<IPv4Address> GatewayAddress with BinaryEncoding{MaxLength = GatewayAddressCount};
+    array<IPv4Address> DhcpServerAddress with BinaryEncoding{MaxLength = DhcpServerAddressCount};
+    array<IPv4Address>  DnsIpv4Address with BinaryEncoding{MaxLength = DnsIpv4AddressCount};
+    array<IPv6Address> DnsIpv6Address with BinaryEncoding{MaxLength = DnsIpv6AddressCount};
 }

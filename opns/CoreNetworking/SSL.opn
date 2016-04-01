@@ -1,4 +1,4 @@
-﻿protocol SSL
+protocol SSL
     with BinaryEncodingDefaults{Endian = Endian.Big},
 Documentation
 {
@@ -15,585 +15,320 @@ OPNAuthoring
         ],
     RevisionSummary = 
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "12/09/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "382197", Date = "10/15/2015"}
         ]
 };
 
 using Standard;
-using TCP;
-using X509;
 using Utility;
-using IANA;
-using VirtualTransport;
-using Reassembly;
+using TLS;
+using TCP;
+using DecodingUtility;
 
-endpoint Server over VirtualTransport.Server accepts RecordLayers issues RecordLayers;
-client endpoint Client connected to Server;
-
-autostart actor SSLOverTCP(VirtualTransport.Server server)
+message RecordLayers : TLS.RecordLayers
 {
-    DecodingCache inboundCache = null;
-    DecodingCache outboundCache = null;
-    
-    void AcceptsDispatcher(RecordLayers ss)
+    override string ToString()
     {
-        dispatch (endpoint Server over server) accepts ss;
-    }
-    void IssuesDispatcher(RecordLayers ss)
-    {
-        dispatch (endpoint Server over server) issues ss;
-    }
-    
-    process server accepts s:VirtualTransport.VirtualDataSegment 
-        where s.DestinationPort == Port.HTTPS && (SSLCondition(s.Payload) || inboundCache != null && inboundCache.IsReassembled)
-    {
-        if (inboundCache == null)
-        {
-            inboundCache = new DecodingCache{ Dispatcher = AcceptsDispatcher };
-        }
-        
-        inboundCache.Add(s);
-        inboundCache.DecodeAndDispatchMessage();
-    }
-    
-    process server issues s:VirtualTransport.VirtualDataSegment 
-        where s.SourcePort == Port.HTTPS && (SSLCondition(s.Payload) || outboundCache != null && outboundCache.IsReassembled)
-    {
-        if (outboundCache == null)
-        {
-            outboundCache = new DecodingCache{ Dispatcher = IssuesDispatcher };
-        }
-        
-        outboundCache.Add(s);
-        outboundCache.DecodeAndDispatchMessage();
-    }
-    
-    ~endpoint(VirtualTransport.Server e)
-    {
-        if (inboundCache != null)
-        {
-            inboundCache.Clear();
-        }
-        if (outboundCache != null)
-        {
-            outboundCache.Clear();    
-        }
+        return base.ToString();
     }
 }
 
-bool SSLCondition(stream s)
+message IncompleteRecordLayer : TLS.IncompleteRecordLayer
 {
-    // according to definition, there should be at least 5 bytes before fragment, ContentType, ProtocolVersion, Length
-    if (s.ByteLength() < 5)
+    override string ToString()
+    {
+        return base.ToString();
+    }
+}
+
+message V2ClientHello : TLS.V2ClientHello
+{
+    override string ToString()
+    {
+        return base.ToString();
+    }
+}
+
+// -------------------------------- SSL Decoding ----------------------------------
+type SSLDecodingHelper : TCPDecodingHelper
+{
+    void InitializeSSLHelper(TLS.Server ept)
+    {
+        SSLOverTCPDecodingCache acceptsCache;
+        SSLOverTCPDecodingCache issuesCahce;
+        InitializeSSLOverTCPDecodingCachePair(ref acceptsCache, ref issuesCahce, ept);
+        AcceptsCache = acceptsCache;
+        IssuesCache = issuesCahce;
+    }
+}
+
+optional any message DecodeIncompleteSSLRecordLayer(binary buffer, ref DecodingCacheContextWrapper contextWrapper, any decodingCache)
+{
+    var dc = decodingCache as DecodingUtility.StreamDecodingCache;
+    if (buffer != null && IsSSLHeader(buffer))
+    {
+        if (IsV2ClientHello(buffer))
+        {
+            contextWrapper.Context.HasChangeCipherSent = false;
+            if (BinaryDecoder<V2ClientHello>(buffer) is v2ClientHello:V2ClientHello)
+            {
+                return v2ClientHello;
+            }
+        }
+        else
+        {
+            stream s = buffer;
+            var res = SSLDecoder(s, contextWrapper.Context);
+            if (res is rls:RecordLayers)
+            {
+                ResetAfterDecodeIncompleteMessage(rls, s, ref contextWrapper, dc);
+                if (contextWrapper.IsInDestructor)
+                {
+                    DisplayTopLevelMessage(rls);
+                }
+                else
+                {
+                    dc.DispatchMessage(rls);
+                }
+            }
+            if (s.RemainingByteLength >= 5 &&
+                IsSSLHeader(s.PeekBytes(s.BitPosition, 5)) &&
+                BinaryDecoder<IncompleteRecordLayer>(dc.Buffer) is m:IncompleteRecordLayer)
+            {
+                return m as any message;
+            }
+        }
+    }
+    return nothing;
+}
+
+type SSLOverTCPDecodingCache : TLSOverTCPDecodingCache
+{    
+    void InitializeSSLCache(any endpoint ept, MessageDirection direction)
+    {
+        base.Initialize("SSL", ept, direction, IsSSLHeaderNullable, IsCompleteTlsRL, DecodeSSLMessage, DecodeIncompleteSSLRecordLayer);
+        Wrapper.Context = new SessionContext();
+        Wrapper.GetPayloadLength = GetTCPSegmentPayloadLength;
+    }
+
+    optional any message DecodeSSLMessage(stream s)
+    {
+        var res = SSLDecoder(s, Wrapper.Context);
+        if (res != nothing)
+        {
+            return res as any message;
+        }
+        return nothing;
+    }
+
+    optional any message DecodeIncompleteSSLRecordLayer(binary buffer)
+    {
+        return DecodeIncompleteSSLRecordLayer(buffer, ref Wrapper, this);
+    }
+}
+
+void InitializeSSLOverTCPDecodingCachePair(ref SSLOverTCPDecodingCache requestCache, ref SSLOverTCPDecodingCache responseCache, TLS.Server server)
+{
+    requestCache = new SSLOverTCPDecodingCache();
+    requestCache.InitializeSSLCache(server, MessageDirection.Accepts);
+        
+    responseCache = new SSLOverTCPDecodingCache();
+    responseCache.InitializeSSLCache(server, MessageDirection.Issues);
+        
+    responseCache.Wrapper.Context.ContextChanged = requestCache.Wrapper.Context.UpdateContext;
+}
+
+type SSLOverHTTPDecodingCache : TLSStreamDecodingCache
+{
+    void InitializeSSLCache(any endpoint ept, MessageDirection direction, int(any message) getPayloadLengthFunc)
+    {
+        assert getPayloadLengthFunc != null;
+
+        base.Initialize("SSL", ept, direction, IsSSLHeaderNullable, IsCompleteTlsRL, DecodeSSLMessage, DecodeIncompleteSSLRecordLayer);
+        Wrapper.Context = new SessionContext();
+        Wrapper.GetPayloadLength = getPayloadLengthFunc;
+    }
+
+    optional any message DecodeSSLMessage(stream s)
+    {
+        var res = SSLDecoder(s, Wrapper.Context);
+        if (res != nothing)
+        {
+            return res as any message;
+        }
+        return nothing;
+    }
+
+    optional any message DecodeIncompleteSSLRecordLayer(binary buffer)
+    {
+        return DecodeIncompleteSSLRecordLayer(buffer, ref Wrapper, this);
+    }
+}
+
+void InitializeSSLOverHTTPDecodingCachePair(ref SSLOverHTTPDecodingCache requestCache, ref SSLOverHTTPDecodingCache responseCache, TLS.Server server, int(any message) getPayloadLength)
+{
+    requestCache = new SSLOverHTTPDecodingCache();
+    requestCache.InitializeSSLCache(server, MessageDirection.Accepts, getPayloadLength);
+        
+    responseCache = new SSLOverHTTPDecodingCache();
+    responseCache.InitializeSSLCache(server, MessageDirection.Issues, getPayloadLength);
+        
+    responseCache.Wrapper.Context.ContextChanged = requestCache.Wrapper.Context.UpdateContext;
+}
+
+bool IsSSLHeader(binary data)
+{
+    return IsSSLHeaderNullable(data) == true;
+}
+bool? IsSSLHeaderNullable(binary data)
+{
+    // according to definition, there should be at least 5 bytes before fragment, ContentType, ProtocolVersion, Length    
+    if (data.Count < 5)
+        return null;
+    
+    // For V2ClientHello message, the highest bit MUST be 1.
+    if ((data[0] & 0x80) != 0)
+    {
+        return IsV2ClientHello(data);
+    }
+    else if (data[1] == 0x03 &&
+            data[2] == 0x00 &&
+            InRange<TLS.ContentType>(data[0])) // Currently, we only support SSL 3.0 [RFC 6101] message parsing.
+    {
+        return true;
+    }
+    else
+    {
         return false;
-    bool result = false;
-    if ((s.CurrentByte in {0x14, 0x15, 0x16, 0x17}) && BinaryDecoder<ProtocolVersion>(s.PeekBytes(8, 2)) != nothing)
-    {
-        result = true;
-    }
-    // Cannot find reference for this code, just leave as legacy, it's in range of 5 bytes
-    else if (s.CurrentByte >= 0x80 && BinaryDecoder<ProtocolVersion>(s.PeekBytes(24, 2)) != nothing)
-    {
-        result = true;
-    }
-    return result;
-}
-
-type DecodingCache : DecodingCacheBase
-{
-    void(RecordLayers) Dispatcher;
-    // Check Length field with binary length to detect 
-    // if need to wait for more TCP data segments for reassembly.
-    bool IsReassembled = false;
-    // Indicate if the data from client/server side has been encrypted, 
-    // once encrpted, the flag for the direction will not change untill the conversation ends.
-    bool IsEncrypted = false; 
-    
-    override void Clear()
-    {
-        base.Clear();
-        IsReassembled = false;
-    }
-    
-    void DecodeAndDispatchMessage()
-    {
-        if (HasSegmentLost && IsReassembled)
-        {
-            ValidationCheck(false, null, "SSL: TCP segment is lost.");
-            Clear();
-        }
-        else
-        {
-            // The temp variable just to workaround compiler error.
-            bool isEncrypted = IsEncrypted;
-            optional RecordLayers msg1 = SSLDecoder(Buffer, ref isEncrypted);
-            IsEncrypted = isEncrypted;
-            if (msg1 != nothing)
-            {
-                RecordLayers msg = msg1 as RecordLayers;
-                IsReassembled = false;
-                if (msg.RecordLayers[msg.RecordLayers.Count - 1].Record is ApplicationData)
-                {
-                    ApplicationData appData = msg.RecordLayers[msg.RecordLayers.Count - 1].Record as ApplicationData;
-                    // Binary is not enouhg
-                    if (appData.ApplicationData.Count < appData.Length)
-                    {
-                        if (HasIncompleteSegments)
-                        {
-                            ValidationCheck(false, null, "SSL: TCP segment is incomplete.");
-                            Clear();
-                        }
-                        else
-                        {
-                            IsReassembled = true;
-                        }
-                        return;
-                    }
-                }
-                else if (msg.RecordLayers[msg.RecordLayers.Count - 1].Record is Handshake)
-                {
-                    Handshake handshake = msg.RecordLayers[msg.RecordLayers.Count - 1].Record as Handshake;
-                    if (handshake.Body.Count > 0 && handshake.Body[0] is binary)
-                    {
-                        binary tmp = handshake.Body[0] as binary;
-                        // Binary is not enouhg
-                        if (tmp.Count < handshake.Length)
-                        {
-                            if (HasIncompleteSegments)
-                            {
-                                Clear();
-                                ValidationCheck(false, null, "SSL: TCP segment is incomplete.");
-                            }
-                            else
-                            {
-                                IsReassembled = true;
-                            }
-                            return;
-                        }
-                    }
-                }
-                if (!IsReassembled)
-                {
-                    msg.SourceData = Buffer;
-                    msg.Origins = Origins;
-                    Buffer = $[];
-                    Origins = [];
-                    Dispatcher(msg);
-                    IsReassembled = false;
-                }
-            }
-            else
-            {
-                Clear();
-                ThrowDecodingExceptionForTCP("SSL", "RecordLayers", HasIncompleteSegments, HasSegmentLost);
-            }
-        }
-    }
-    
-    override optional any message DecodePartialMessage()
-    {
-        // The temp variable just to workaround compiler error.
-        bool isEncrypted = IsEncrypted;
-        var omsg = SSLDecoder(Buffer, ref isEncrypted);
-        if (omsg == nothing)
-        {
-            return nothing;
-        }
-        else
-        {
-            var msg = omsg as RecordLayers;
-            ReportInsufficientData(msg, DiagnosisLevel.Warning, 
-                    "SSL: Incomplete SSL payload for full reassembly, missing contiguous message.");
-            msg.SourceData = Buffer;
-            return msg;
-        }
     }
 }
 
-optional RecordLayers SSLDecoder(stream s, ref bool isEncrypted)
+bool IsSslHeaderBySegment(TCP.TCPDecodingCache cache, Segment s)
 {
-    RecordLayers recordLayers = new RecordLayers{};
-    recordLayers.RecordLayers = [];
-    while (s.BytePosition < s.ByteLength)
+    if (cache == null)
     {
-        if (isEncrypted && (s.CurrentByte in {0x14, 0x15, 0x16}))
+        return false;
+    }
+
+    binary bin = cache.GetPayloadWithoutOverlapping(s);
+    return bin == null || IsSSLHeader(bin); // bin == null means it is a fully-retransmitted segment
+}
+
+bool IsV2ClientHello(binary data)
+{
+    if (data.Count >= 5 && 
+        ((data[0] & 0x80) != 0) &&
+        data[2] == 1 &&
+        data[3] == 3 &&
+        data[4] == 0)
+    {
+        return true;
+    }
+
+    return false;
+}
+
+optional (RecordLayers | V2ClientHello) SSLDecoder(stream s, TLS.SessionContext context)
+{
+    if (s.RemainingByteLength < 5)
+    {
+        return nothing;
+    }
+    
+    if (IsV2ClientHello(s.PeekBytes(s.BitPosition, 5)))
+    {
+        context.HasChangeCipherSent = false;
+        return (TLS.GetTLSRecordLength(s.PeekBytes(s.BitPosition, 5)) <= s.RemainingByteLength) ? BinaryDecoder<V2ClientHello>(s) : nothing;
+    }
+    
+    array<RecordLayer> recordArray = [];
+    int prePos = s.BitPosition;
+    int startPos = prePos;
+    array<DataChunks> chunks = [];
+    while (s.RemainingByteLength >= 5 && TLS.GetTLSRecordLength(s.PeekBytes(s.BitPosition, 5)) <= s.RemainingByteLength)
+    {
+        if (s.RemainingByteLength >= TLSHelloMessage_Length 
+            && IsUnencryptedHelloMessage(s.PeekBytes(s.BitPosition, 11)))
         {
-            // Decode encrypted record layers
-            optional EncrypteRecord eRecord1 = BinaryDecoder<EncrypteRecord>(s);
-            if (eRecord1 == nothing)
-            {
-                return nothing;
-            }
-            EncrypteRecord eRecord = eRecord1 as EncrypteRecord;
-            RecordLayerType recordLayerTypeTemp = new RecordLayerType{Record = eRecord};
-            recordLayerTypeTemp.AssignFieldEncodingInfo("Record", s.BitPosition - (eRecord.Length + 5) * 8, (eRecord.Length + 5) * 8);
-            recordLayers.RecordLayers += [recordLayerTypeTemp];
+            context.Reset();
         }
-        else
+        
+        var res = BinaryDecoder<RecordLayer[context.IsEncrypted(s.CurrentByte), context.GetMacLength()]>(s);
+        if (res == nothing)
         {
-            //Decode record layers
-            optional RecordLayerType record1 = BinaryDecoder<RecordLayerType>(s);
-            if (record1 == nothing)
+            break;
+        }
+        
+        RecordLayer msg = res as RecordLayer;
+        if (msg.$"type" is ContentType.handshake &&
+            msg.fragment is hsArray:array<Handshake>)
+        {
+            foreach (Handshake hs in hsArray)
             {
-                return nothing;
-            }
-            RecordLayerType record = record1 as RecordLayerType;
-            if (record.Record is ApplicationData)
-            {
-                ApplicationData appData = record.Record as ApplicationData;
-                // judge whether the binary data count is consistent with length in application data
-                if (appData.Length <= s.ByteLength - s.BytePosition)
+                if (hs.msg_type is HandshakeType.server_hello &&
+                    hs.body is sh:ServerHello)
                 {
-                    appData.AssignFieldEncodingInfo("ApplicationData", s.BitPosition, appData.Length * 8);
-                    appData.ApplicationData = (BinaryDecoder<Blob[appData.Length]>(s) as Blob).Data;
-                }
-                else
-                {
-                    appData.AssignFieldEncodingInfo("ApplicationData", s.BitPosition, (s.ByteLength - s.BytePosition) * 8);
-                    appData.ApplicationData = (BinaryDecoder<Blob[(s.ByteLength - s.BytePosition) as uint]>(s) as Blob).Data;
-                }
-                record.AssignFieldEncodingInfo("Record", s.BitPosition - (appData.Length + 5) * 8, (appData.Length + 5) * 8);
-            }
-            else if (record.Record is ChangeCipherSpec)
-            {
-                isEncrypted = true;
-            }
-            else if (record.Record is Handshake)
-            {
-                Handshake handshake = record.Record as Handshake;
-                handshake.Body = [];
-                int handShakeBodyPosition = s.BitPosition;
-                if (s.ByteLength - s.BytePosition < handshake.Length)
-                {
-                    handshake.Body += [(BinaryDecoder<Blob[(s.ByteLength - s.BytePosition) as uint]>(s) as Blob).Data];
-                }
-                else
-                {
-                    int handshakeEnd = s.BytePosition + handshake.Length;
-                    // decode handshake body
-                    while (s.BytePosition < handshakeEnd)
+                    context.IsEncryptedCipher = !(sh.cipher_suite in UnencryptedCipher);
+                    context.mac_length = GetMACLength(sh.cipher_suite);
+                    context.HasChangeCipherSent = false;
+                    if (context.ContextChanged != null)
                     {
-                        int handShakeBodyItemPosition = s.BitPosition;
-                        optional HandshakeBody hsBody1 = BinaryDecoder<HandshakeBody>(s);
-                        if (hsBody1 == nothing)
-                        {
-                            // handshake body decoding fail, it is encrypted data
-                            handshake.Body += [(BinaryDecoder<Blob[(handshakeEnd - s.BytePosition) as uint]>(s) as Blob).Data];
-                        }
-                        else
-                        {
-                            HandshakeBody hsBody = hsBody1 as HandshakeBody;
-                            if (hsBody.Handshake is Certificate)
-                            {
-                                Certificate certificate = hsBody.Handshake as Certificate;
-                                if (certificate.CertificateLength <= handshakeEnd - s.BytePosition)
-                                {
-                                    int certificateEnd = s.BytePosition + certificate.CertificateLength as int;
-                                    certificate.CertificateList = [];
-                                    int certificateListPosition = s.BitPosition;
-                                    // decode certificate
-                                    while (s.BytePosition < certificateEnd)
-                                    {
-                                        int certPosition = s.BitPosition;
-                                        optional Cert cert1 = BinaryDecoder<Cert>(s);
-                                        if (cert1 == nothing)
-                                        {
-                                            certificate.CertificateList += [(BinaryDecoder<Blob[(certificateEnd - s.BytePosition) as uint]>(s) as Blob).Data];
-                                        }
-                                        else
-                                        {
-                                            Cert cert = cert1 as Cert;
-                                            if (s.PeekBytes(s.BitPosition).Count < cert.Length)
-                                            {
-                                                cert.Cert = (BinaryDecoder<Blob[(certificateEnd - s.BytePosition) as uint]>(s) as Blob).Data;
-                                                cert.X509Cert = nothing;
-                                            }
-                                            else
-                                            {
-                                                optional X509.Certificate x509Cert1 = Asn1BerDecoder<X509.Certificate>(s);
-                                                if (x509Cert1 != nothing)
-                                                {
-                                                    cert.X509Cert = x509Cert1 as X509.Certificate;
-                                                    cert.Cert = nothing;
-                                                    cert.AssignFieldEncodingInfo("X509Cert", certPosition + 24, s.BitPosition - certPosition - 24);
-                                                }
-                                                else
-                                                {
-                                                    cert.Cert = (BinaryDecoder<Blob[(certificateEnd - s.BytePosition) as uint]>(s) as Blob).Data;
-                                                    cert.X509Cert = nothing;
-                                                }
-                                            }
-                                            certificate.CertificateList += [cert];
-                                        }
-                                    }
-                                    certificate.AssignFieldEncodingInfo("CertificateList", certificateListPosition, s.BitPosition - certificateListPosition);
-                                    hsBody.AssignFieldEncodingInfo("Handshake", handShakeBodyItemPosition, s.BitPosition - handShakeBodyItemPosition);
-                                    handshake.Body += [hsBody];
-                                }
-                                else
-                                {
-                                    // certificate length is larger than handshake body length, it is encrypted data
-                                    handshake.Body += [(BinaryDecoder<Blob[(handshakeEnd - s.BytePosition) as uint]>(s) as Blob).Data];
-                                }
-                            }
-                            else
-                            {
-                                hsBody.AssignFieldEncodingInfo("Handshake", handShakeBodyItemPosition, s.BitPosition - handShakeBodyItemPosition);
-                                handshake.Body += [hsBody];
-                            }
-                        }
+                        context.ContextChanged(context);
                     }
                 }
-                handshake.AssignFieldEncodingInfo("Body", handShakeBodyPosition, s.BitPosition - handShakeBodyPosition);
-                record.AssignFieldEncodingInfo("Record", s.BitPosition - (handshake.Length + 5) * 8, (handshake.Length + 5) * 8);
+                else if (hs.msg_type is HandshakeType.client_hello)
+                {
+                    context.HasChangeCipherSent = false;
+                }
             }
-            recordLayers.RecordLayers += [record];
         }
+        else if (msg.$"type" is ContentType.change_cipher_spec)
+        {
+            context.HasChangeCipherSent = true;
+        }
+        
+        recordArray += [msg];
+        chunks += [new DataChunks{DataSource = s, Chunks = [new BinaryChunk{BitPosition = prePos, BitLength = s.BitPosition - prePos}]}];
+        prePos = s.BitPosition;
     }
-    recordLayers.AssignFieldEncodingInfo("RecordLayers", 0, s.BitPosition);
+    
+    if (recordArray.Count == 0)
+    {
+        return nothing;
+    }
+    
+    RecordLayers recordLayers = new RecordLayers{records = recordArray};
+    recordLayers.SourceData = s.PeekBytes(startPos, (s.BytePosition - startPos / 8) as int);
+    DataChunks payloadChunk = new DataChunks
+    {
+        DataSource = s, 
+        Chunks = [new BinaryChunk{BitPosition = startPos, BitLength = s.BitPosition - startPos}]
+    };
+    recordLayers.AssociateArrayField("records", chunks);
+    recordLayers.AssociateField("records", payloadChunk);
+    
     return recordLayers;
 }
 
-message RecordLayers
+// Decoding SSL message and dispatch
+void TryDecodingAndDispatchingSSLMessage(binary bin, TLS.SessionContext context, TLS.Server server, MessageDirection direction)
 {
-    array<RecordLayerType> RecordLayers;
-    
-    override string ToString()
-    {
-        string summary;
-        if (RecordLayers.Count > 0)
-        {
-            summary += "Records: [";
-            foreach (RecordLayerType r in RecordLayers)
-            {
-                if (r.Record is ClientHelloV2)
-                {
-                    summary += "ClientHello, ";
-                }
-                else
-                {
-                    if (r.Record is ChangeCipherSpec)
-                    {
-                        summary += "ChangeCipherSpec, ";
-                    }
-                    else if (r.Record is Alert)
-                    {
-                        summary += "Alert, ";
-                    }
-                    else if (r.Record is ApplicationData)
-                    {
-                        summary += "ApplicationData, ";
-                    }
-                    else if (r.Record is EncrypteRecord)
-                    {
-                        EncrypteRecord er = r.Record as EncrypteRecord;
-                        summary += "EncryptedRecord, ";
-                    }
-                    else if (r.Record is Handshake)
-                    {
-                        summary += "Handshake, ";
-                    }
-                }
-            }
-            summary = summary.Segment(0, summary.Count() - 2);
-            summary += "]";
-        }
+    bool isV2ClientHello = IsV2ClientHello(bin);
         
-        return summary;
+    var res = SSLDecoder(bin, context);
+    if (res is rls:RecordLayers)
+    {
+        if (direction == MessageDirection.Accepts)
+        {
+            dispatch server accepts rls;
+        }
+        else
+        {
+            dispatch server issues rls;
+        }
     }
-}
-
-type ProtocolVersion
-{
-    (byte where value == 3) Major;
-    (byte where value == 0) Minor;
-}
-
-type RecordLayerType
-{
-    (ChangeCipherSpec
-    | Alert
-    | Handshake
-    | ApplicationData
-    | ClientHelloV2
-    | EncrypteRecord) Record;
-}
-
-type EncrypteRecord
-{
-    (byte where value == 20 || value == 21 || value == 22) ContentType;
-    ProtocolVersion Version;
-    ushort Length;
-    binary EncryptedMessage with BinaryEncoding{Length = Length as uint};
-}
-
-type ChangeCipherSpec
-{
-    (byte where value == 20) ContentType;
-    ProtocolVersion Version;
-    ushort Length;
-    byte ChangeCipherSpecValue;
-}
-
-type Alert
-{
-    (byte where value == 21) ContentType;
-    ProtocolVersion Version;
-    ushort Length;
-    binary EncryptedMessage with BinaryEncoding{Length = Length as uint};
-}
-
-type Handshake
-{
-    (byte where value == 22) ContentType;
-    ProtocolVersion Version;
-    ushort Length;
-    array<HandshakeBody | binary> Body with Encoding{Ignore = true};
-}
-
-type HandshakeBody
-{
-    (HelloRequest
-    | ClientHello
-    | ServerHello
-    | Certificate
-    | ServerKeyExchange
-    | CertificateRequest
-    | ServerHelloDone
-    | CertificateVerify
-    | ClientKeyExchange
-    | Finished) Handshake;
-}
-
-type ApplicationData
-{
-    (byte where value == 23) ContentType;
-    ProtocolVersion Version;
-    ushort Length;
-    binary ApplicationData with Encoding{Ignore = true};
-}
-
-type HelloRequest
-{
-    (byte where value == 0) HandshakeType;
-    uint Length with BinaryEncoding{Width = 24};
-}
-
-type Random
-{
-    uint GMTTime;
-    binary Random with BinaryEncoding{Length = 28};
-}
-
-type SessionId
-{
-    byte Length where ValidationCheck(value <= 32, null, "SSL: The Length in type SessionId must be equal to or less than 32.");
-    binary SessionId with BinaryEncoding{Length = Length as uint};
-}
-type ClientHello
-{
-    (byte where value == 1) HandshakeType;
-    uint Length with BinaryEncoding{Width = 24};
-    ProtocolVersion ClientVersion;
-    Random Random;
-    SessionId SessionId;
-    ushort CipherSuiteLength;
-    array<ushort> CipherSuites with BinaryEncoding{Length = (CipherSuiteLength / 2) as uint};
-    byte MethodLength;
-    array<byte> CompressedMethods with BinaryEncoding{Length = MethodLength as uint};
-}
-
-type ServerHello
-{
-    (byte where value == 2) HandshakeType;
-    uint Length with BinaryEncoding{Width = 24};
-    ProtocolVersion ServerVersion;
-    Random Random;
-    SessionId SessionId;
-    ushort CipherSuite;
-    byte CompressedMethod;
-}
-
-type Cert
-{
-    uint Length with BinaryEncoding{Width = 24};
-    optional binary Cert with Encoding{Ignore = true};
-    optional X509.Certificate X509Cert with Encoding{Ignore = true};
-}
-
-type Certificate
-{
-    (byte where value == 11) HandshakeType;
-    uint Length with BinaryEncoding{Width = 24};
-    uint CertificateLength with BinaryEncoding{Width = 24};
-    array<Cert | binary> CertificateList with Encoding{Ignore = true};
-}
-
-type ServerKeyExchange
-{
-    (byte where value == 12) HandshakeType;
-    uint Length with BinaryEncoding{Width = 24};
-    binary ServerKeyExchangeData with BinaryEncoding{Length = Length as uint};
-}
-
-type DistinguishedName
-{
-    ushort Length;
-    binary DistinguishedName with BinaryEncoding{Length = Length as uint};
-}
-
-type CertificateRequest
-{
-    (byte where value == 13) HandshakeType;
-    uint Length with BinaryEncoding{Width = 24};
-    ushort CertificateTypeLength;
-    array<byte> CertificateTypes with BinaryEncoding{Length = CertificateTypeLength as uint};
-    ushort CertificateAuthorityLength;
-    array<DistinguishedName> CertificateAuthorities with BinaryEncoding{Length = CertificateAuthorityLength as uint};
-}
-
-type ServerHelloDone
-{
-    (byte where value == 14) HandshakeType;
-    uint Length with BinaryEncoding{Width = 24};
-}
-
-type CertificateVerify
-{
-    (byte where value == 15) HandshakeType;
-    uint Length with BinaryEncoding{Width = 24};
-    binary CertificateVerifyData with BinaryEncoding{Length = Length as uint};
-}
-
-type ClientKeyExchange
-{
-    (byte where value == 16) HandshakeType;
-    uint Length with BinaryEncoding{Width = 24};
-    binary ClientKeyExchangeData with BinaryEncoding{Length = Length as uint};
-}
-
-type Finished
-{
-    (byte where value == 20) HandshakeType;
-    uint Length with BinaryEncoding{Width = 24};
-    binary FinishedData with BinaryEncoding{Length = Length as uint};
-}
-
-type CipherSpecV2
-{
-    uint CiperSpec with BinaryEncoding{Width = 24};
-}
-
-type ClientHelloV2
-{
-    ushort Length;
-    optional [|Length < 0x8000|] byte Padding;
-    (byte where value == 1) ContentType;
-    ProtocolVersion Version;
-    ushort CipherSpecLength;
-    ushort SessionIdLength;
-    ushort ChallengeLength;
-    array<CipherSpecV2> CipherSpecs with BinaryEncoding{Length = (CipherSpecLength / 3) as uint};
-    optional [|SessionIdLength > 0|] binary SessionId with BinaryEncoding{Length = SessionIdLength as uint};
-    binary Challenge with BinaryEncoding{Length = ChallengeLength as uint};
+    else
+    {
+        ThrowDecodingException("SSL", isV2ClientHello ? "V2ClientHello" : "RecordLayers");
+    }
 }

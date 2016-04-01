@@ -11,11 +11,12 @@ OPNAuthoring
     Copyright = "(c) Microsoft Corporation",
     References =
         [
-            new Reference{Name = "PEAPv2", Version = "2.0", Link = "http://potaroo.net/ietf/idref/draft-josefsson-pppext-eap-tls-eap/#page-27"},
+            new Reference{Name = "PEAPv2", Version = "2.0", Link = "https://tools.ietf.org/html/draft-josefsson-pppext-eap-tls-eap-10"},
+            new Reference{Name = "MS-PEAP", Version = "25.0", Date = "06/30/2015"},
         ],
     RevisionSummary =
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "12/27/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "380791", Date = "08/13/2015"}
         ]
 };
 
@@ -23,108 +24,78 @@ using Standard;
 using Utility;
 using EAP;
 using TLS;
-using IANA;
+using PPP;
+using Ethernet;
+using UDP;
 
 annotation int Packet#PEAPFragmentNumber;
 annotation uint Packet#PEAPPacketLength;
 
-const set<binary> PEAPSignature = {$[01], $[02], $[03]};
-
-endpoint Server over ReassemblyServer issues Packet accepts Packet
-{
-    bool isEncryptd = false;
-    process this accepts d:Packet where d.TLSData != nothing && d.TLSData != $[] 
-        && (d.TLSData as binary).Segment(1, 1) == $[03] && PEAPSignature[(d.TLSData as binary).Segment(2, 1)]
-    {
-        array<RecordLayer> records = TLSDecoder(d.TLSData as binary, ref isEncryptd);
-        if (records.Count == 0)
-        {
-            ThrowDecodingException("TLS");
-        }
-        else
-        {
-            TLS.RecordLayers rlsMsg = new RecordLayers{records = records};
-            rlsMsg.SourceData = d.TLSData as binary;
-            var n = endpoint TLS.Server;
-            dispatch n accepts rlsMsg;
-        }
-    }
-    
-    process this issues d:Packet where d.TLSData != nothing && d.TLSData != $[] 
-        && (d.TLSData as binary).Segment(1, 1) == $[03] && PEAPSignature[(d.TLSData as binary).Segment(2, 1)]
-    {
-        array<RecordLayer> records = TLSDecoder(d.TLSData as binary, ref isEncryptd);
-        if (records.Count == 0)
-        {
-            ThrowDecodingException("TLS");
-        }
-        else
-        {
-            TLS.RecordLayers rlsMsg = new RecordLayers{records = records};
-            rlsMsg.SourceData = d.TLSData as binary;
-            var n = endpoint TLS.Server;
-            dispatch n issues rlsMsg;
-        }
-    }
-}
-
+endpoint Server over ReassemblyServer issues Packet accepts Packet;
 client endpoint Client connected to Server;
 
 endpoint ReassemblyServer over EAP.Server issues Packet accepts Packet
 {
-    int fragmentNumber = 0;
-    array<Packet> fragments = [];
+    int sentFragmentNumber = 0;
+    array<Packet> sentFragments = [];
+    int receivedFragmentNumber = 0;
+    array<Packet> receivedFragments = [];
     process this accepts p:Packet
     {
-        ReassemblePEAPFragment(p, ref fragments, true, ref fragmentNumber);
+        ReassemblePEAPFragment(p, ref receivedFragments, true, ref receivedFragmentNumber, endpoint Server over this);
     }
     
     process this issues p:Packet
     {
-        ReassemblePEAPFragment(p, ref fragments, false, ref fragmentNumber);
+        ReassemblePEAPFragment(p, ref sentFragments, false, ref sentFragmentNumber, endpoint Server over this);
     }
-}
-
-autostart actor ReassemblyServerActor(ReassemblyServer reassemblyServer)
-{
+    
     // destructor
     ~endpoint(ReassemblyServer reassemblyServer)
     {
-        if (reassemblyServer.fragments.Count > 0)
+        if (reassemblyServer.sentFragments.Count > 0)
         {
-            foreach (var packet in reassemblyServer.fragments) // packet type is Packet
+            foreach (Packet packet in reassemblyServer.sentFragments) // packet type is Packet
             {
-                ReportInsufficientData(packet, DiagnosisLevel.Error, "PEAP: Insufficient fragments for full reassembly.");
-                DisplayTopLevelMessage(packet);
+                DisplayTopLevelMessage(packet, "PEAP: Insufficient fragments for full reassembly.");
             }
-            reassemblyServer.fragments = [];
+            reassemblyServer.sentFragments = [];
+        }
+        
+        if (reassemblyServer.receivedFragments.Count > 0)
+        {
+            foreach (Packet packet in reassemblyServer.receivedFragments) // packet type is Packet
+            {
+                DisplayTopLevelMessage(packet, "PEAP: Insufficient fragments for full reassembly.");
+            }
+            reassemblyServer.receivedFragments = [];
         }
     }
 }
 
 client endpoint ReassemblyClient connected to ReassemblyServer;
 
-void ReassemblePEAPFragment (Packet p, ref array<Packet> packetArray, bool isAccept, ref int fragmentNumber)
+void ReassemblePEAPFragment(Packet p, ref array<Packet> packetArray, bool isAccept, ref int fragmentNumber, Server ept)
 {
-    if ((p.FlagsAndVersion & 0x40) == 0x40)
+    if ((p.Flags & PacketFlags.M) > 0)
     {
-        p#PEAPFragmentNumber = fragmentNumber + 1;
         fragmentNumber++;
+        p#PEAPFragmentNumber = fragmentNumber;
         packetArray += [p];
     }
     else
     {
-        if (p.TLSData is nothing && p.OuterTLVs is nothing)
+        if (p.Data.TLS_Data is nothing && p.Data.Outer_TLV_Data is nothing)
         {
-            if ((p.FlagsAndVersion & 0x20) == 0x20 || packetArray.Count == 0)
+            if ((p.Flags & PacketFlags.S) > 0 || packetArray.Count == 0)
             {
                 if (isAccept)
                 {
-                    dispatch (endpoint PEAP.Server over endpoint PEAP.ReassemblyServer) accepts p;
+                    dispatch ept accepts p;
                 }
                 else
                 {
-                    dispatch (endpoint PEAP.Server over endpoint PEAP.ReassemblyServer) issues p;
+                    dispatch ept issues p;
                 }
             }
             else
@@ -138,80 +109,68 @@ void ReassemblePEAPFragment (Packet p, ref array<Packet> packetArray, bool isAcc
             uint totalLength = 0;
             if (packetArray.Count > 0)
             {
+                packetArray += [p];
+                
                 p#PEAPFragmentNumber = fragmentNumber + 1;
                 fragmentNumber = 0;
                 packet = new Packet{};
-                packet.TLSData = $[];
-                packet.Origins = [];
-                packet.OuterTLVs = [];
+                PacketData packetData = new PacketData{};
                 packet#PEAPPacketLength = 0;
+                
+                binary tls_Data = Utility.EmptyBinary;
+                array<TLVList> outer_TLV_Data = [];
                 for (int i = 0; i < packetArray.Count; i++)
                 {
-                    if (!(packetArray[i].TLSData is nothing) && ((packetArray[i].TLSData as binary).Count > 0))
+                    if (packetArray[i].Data.TLS_Data is bin:binary && bin.Count > 0)
                     {
-                        packet.TLSData = (packet.TLSData as binary) + (packetArray[i].TLSData as binary);
+                        tls_Data += bin;
                     }
-                    if (!(packetArray[i].OuterTLVs is nothing) && ((packetArray[i].OuterTLVs as array<TLVList>).Count > 0))
+                    if (packetArray[i].Data.Outer_TLV_Data is tlvList:array<TLVList> && tlvList.Count > 0)
                     {
-                        packet.OuterTLVs = (packet.OuterTLVs as array<TLVList>) + (packetArray[i].OuterTLVs as array<TLVList>);
+                        outer_TLV_Data += tlvList;
                     }
                 }
-                packet.TLSData = (packet.TLSData as binary) + (p.TLSData as binary);
-                if (!(p.OuterTLVs is nothing) && ((p.OuterTLVs as array<TLVList>).Count > 0))
-                {
-                    packet.OuterTLVs = (packet.OuterTLVs as array<TLVList>) + (p.OuterTLVs as array<TLVList>);
-                }
-                if (packet.TLSData == $[])
-                {
-                    packet.TLSData = nothing;
-                }
+                packetData.TLS_Data = tls_Data.Count > 0 ? tls_Data : nothing;
                 int outTlvsLength = 0;
-                if ((packet.OuterTLVs as array<TLVList>).Count == 0)
+                for (int j = 0; j < outer_TLV_Data.Count; j++)
                 {
-                    packet.OuterTLVs = nothing;
+                    outTlvsLength += outer_TLV_Data[j].GetLength() + 4;
+                }
+                packetData.Outer_TLV_Data = outer_TLV_Data.Count > 0 ? outer_TLV_Data : nothing;
+                packetData.TLS_Message_Length = packetArray[0].Data.TLS_Message_Length;
+                
+                int packetHeadLength = 1;
+                packet.Flags = packetArray[0].Flags;
+                packet.AssignFieldEncodingInfo("Flags", 0, 6);
+                packet.Ver = packetArray[0].Ver;
+                packet.AssignFieldEncodingInfo("Ver", 6, 2);
+
+                if (packetData.TLS_Message_Length != nothing)
+                {
+                    packetData.AssignFieldEncodingInfo("TLS_Message_Length", 8, 32);
+                    packetHeadLength += 4;
+                    totalLength = packetData.TLS_Message_Length as uint;
+                }
+                packetData.AssignFieldEncodingInfo("TLS_Data", (packetHeadLength + outTlvsLength) * 8, (packetData.TLS_Data as binary).Count * 8);
+                packet.Data = packetData;
+                packet#PEAPPacketLength = (outTlvsLength + (packet.Data.TLS_Data as binary).Count + packetHeadLength) as uint;
+                
+                if (totalLength == (packet.Data.TLS_Data as binary).Count)
+                {
+                    binary sourceData = Utility.EmptyBinary;
+                    for (int i = 0; i < packetArray.Count; i++)
+                    {
+                        packet.Origins += [packetArray[i]]; // packet.Origins = packetArray may cause compiling error
+                        sourceData += (packetArray[i].SourceData as binary);
+                    }
+                    packet.SourceData = sourceData;
                 }
                 else
                 {
-                    for (int j = 0; j < (packet.OuterTLVs as array<TLVList>).Count; j++)
-                    {
-                        outTlvsLength = outTlvsLength + ((packet.OuterTLVs as array<TLVList>)[j]).GetLength() + 4;
-                    }
-                }
-                int packetHeadLength = 1;
-                packet.FlagsAndVersion = packetArray[0].FlagsAndVersion;
-                packet.AssignFieldEncodingInfo("FlagsAndVersion", 0, 8);
-                packet.FragmentedMessageLength = packetArray[0].FragmentedMessageLength;
-                if (packet.FragmentedMessageLength != nothing)
-                {
-                    packet.AssignFieldEncodingInfo("FragmentedMessageLength", 8, 32);
-                    packetHeadLength += 4;
-                }
-                packet.TLSMessageLength = packetArray[0].TLSMessageLength;
-                if (packet.TLSMessageLength != nothing)
-                {
-                    packet.AssignFieldEncodingInfo("TLSMessageLength", packetHeadLength * 8, 32);
-                    packetHeadLength += 4;
-                }
-                
-                packet.AssignFieldEncodingInfo("TLSData", (packetHeadLength + outTlvsLength) * 8, (packet.TLSData as binary).Count * 8);
-                
-                packet#PEAPPacketLength = (outTlvsLength + (packet.TLSData as binary).Count + packetHeadLength) as uint;
-                
-                if (packetArray[0].FragmentedMessageLength != nothing)
-                {
-                    totalLength = packetArray[0].FragmentedMessageLength as uint;
-                }
-                packet.Origins = [];
-                packet.SourceData = $[];
-                if (totalLength == (packet.TLSData as binary).Count)
-                {
                     for (int i = 0; i < packetArray.Count; i++)
                     {
-                        packet.Origins += [packetArray[i]];
-                        packet.SourceData = (packet.SourceData as binary) + (packetArray[i].SourceData as binary);
+                        DisplayTopLevelMessage(packetArray[i], "PEAP: Insufficient fragments for full reassembly.");
                     }
-                    packet.Origins += [p];
-                    packet.SourceData = (packet.SourceData as binary) + (p.SourceData as binary);
                 }
                 packetArray = [];
             }
@@ -224,11 +183,11 @@ void ReassemblePEAPFragment (Packet p, ref array<Packet> packetArray, bool isAcc
             {
                 if (isAccept)
                 {
-                    dispatch (endpoint PEAP.Server over endpoint PEAP.ReassemblyServer) accepts packet;
+                    dispatch ept accepts packet;
                 }
                 else
                 {
-                    dispatch (endpoint PEAP.Server over endpoint PEAP.ReassemblyServer) issues packet;
+                    dispatch ept issues packet;
                 }
             }
         }
@@ -237,108 +196,257 @@ void ReassemblePEAPFragment (Packet p, ref array<Packet> packetArray, bool isAcc
 
 autostart actor PEAPOverEAP(EAP.Server node)
 {
-    process node issues p:EAP.Packet where (p.Data != nothing && p.Data is EAP.PEAP)
+    process node issues p:EAP.Packet where (p.Type == EAP.MethodType.PEAP && p.Type_Data is peapData:EAP.PEAP)
     {
-        switch ((p.Data as EAP.PEAP).PEAPData)
+        if (BinaryDecoder<PEAP.Packet[peapData.PEAPData.Count as uint]>(peapData.PEAPData) is packet:PEAP.Packet)
         {
-            case packet:Packet from PEAPDecoder =>
-                dispatch endpoint ReassemblyServer over node issues packet;
-            default =>
-                ThrowDecodingException("PEAP");
+            packet#PEAPPacketLength = peapData.PEAPData.Count as uint;
+            dispatch endpoint ReassemblyServer over node issues packet;
+        }
+        else
+        {
+            ThrowDecodingException("PEAP");
         }
     }
 
-    process node accepts p:EAP.Packet where (p.Data != nothing && p.Data is EAP.PEAP)
+    process node accepts p:EAP.Packet where (p.Type == EAP.MethodType.PEAP && p.Type_Data is peapData:EAP.PEAP)
     {
-        switch ((p.Data as EAP.PEAP).PEAPData)
+        if (BinaryDecoder<PEAP.Packet[peapData.PEAPData.Count as uint]>(peapData.PEAPData) is packet:PEAP.Packet)
         {
-            case packet:Packet from PEAPDecoder =>
-                dispatch endpoint ReassemblyServer over node accepts packet;
-            default =>
-                ThrowDecodingException("PEAP");
+            packet#PEAPPacketLength = peapData.PEAPData.Count as uint;
+            dispatch endpoint ReassemblyServer over node accepts packet;
+        }
+        else
+        {
+            ThrowDecodingException("PEAP");
+        }
+    }
+
+    observe node accepts p:EAP.Packet where (p.Type is methodType:MethodType && 
+        methodType == EAP.MethodType.ExtensionsMethods && p.Type_Data is typeData:EAP.ExtensionsMethods && 
+        typeData.Data is typeDataBin:binary)
+    {
+        if (BinaryDecoder<array<EAPTLVExtensionsMethodType> >(typeDataBin) is re:array<EAPTLVExtensionsMethodType>)
+        {
+            p.Type_Data = new ExtensionsMethodsEx
+                            {
+                                Data = re,
+                            };
+        }
+    }
+
+    observe node issues p:EAP.Packet where (p.Type is methodType:MethodType && 
+        methodType == EAP.MethodType.ExtensionsMethods && p.Type_Data is typeData:EAP.ExtensionsMethods && 
+        typeData.Data is typeDataBin:binary)
+    {
+        if (BinaryDecoder<array<EAPTLVExtensionsMethodType> >(typeDataBin) is re:array<EAPTLVExtensionsMethodType>)
+        {
+            p.Type_Data = new ExtensionsMethodsEx
+                            {
+                                Data = re,
+                            };
+        }
+    }
+
+    observe node accepts p:EAP.Packet where (p.Type is methodType:MethodType && 
+        methodType == EAP.MethodType.ExpandedTypes && p.Type_Data is typeData:EAP.ExpandedTypes && 
+        typeData.Vendor_Id == ExpandedTypesVendorId.Microsoft)
+    {
+        if (typeData.Vendor_Type == 0x21)
+        {
+            if (BinaryDecoder<SoHRequestTLV>(typeData.Vendor_Data) is re:SoHRequestTLV)
+            {
+                p.Type_Data = new ExpandedTypesEx
+                            {
+                                Vendor_Id = ExpandedTypesVendorId.Microsoft,
+                                Vendor_Type = 0x21,
+                                Vendor_Data = re,
+                            };
+            }
+        }
+        else if (typeData.Vendor_Type == 0x22)
+        {
+            if (BinaryDecoder<CapabilitiesMethodVendorData>(typeData.Vendor_Data) is re:CapabilitiesMethodVendorData)
+            {
+                p.Type_Data = new ExpandedTypesEx
+                            {
+                                Vendor_Id = ExpandedTypesVendorId.Microsoft,
+                                Vendor_Type = 0x22,
+                                Vendor_Data = re,
+                            };
+            }
+        }
+    }
+
+    observe node issues p:EAP.Packet where (p.Type is methodType:MethodType && 
+        methodType == EAP.MethodType.ExpandedTypes && p.Type_Data is typeData:EAP.ExpandedTypes && 
+        typeData.Vendor_Id == ExpandedTypesVendorId.Microsoft)
+    {
+        if (typeData.Vendor_Type == 0x21)
+        {
+            if (BinaryDecoder<SoHTLV>(typeData.Vendor_Data) is re:SoHTLV)
+            {
+                 p.Type_Data = new ExpandedTypesEx
+                            {
+                                Vendor_Id = ExpandedTypesVendorId.Microsoft,
+                                Vendor_Type = 0x21,
+                                Vendor_Data = re,
+                            };
+            }
+        }
+        else if (typeData.Vendor_Type == 0x22)
+        {
+            if (BinaryDecoder<CapabilitiesMethodVendorData>(typeData.Vendor_Data) is re:CapabilitiesMethodVendorData)
+            {
+                p.Type_Data = new ExpandedTypesEx
+                            {
+                                Vendor_Id = ExpandedTypesVendorId.Microsoft,
+                                Vendor_Type = 0x22,
+                                Vendor_Data = re,
+                            };
+            }
         }
     }
 }
 
-optional Packet PEAPDecoder(stream streamValue)
+autostart actor TLSOverPEAP(PEAP.Server server)
 {
-    if (streamValue == null)
+    TLS.SessionContext ClientContext = null;
+    TLS.SessionContext ServerContext = null;
+    TLS.Server TLSEPT = endpoint TLS.Server over server;
+
+    process server accepts d:PEAP.Packet where d.Data.TLS_Data is bin:binary && IsTlsHeader(bin)
     {
-        return nothing;
+        if (ClientContext == null)
+        {
+            InitializeContextPair(ref ClientContext, ref ServerContext);
+            InitializeTLSServerFromPEAP(DispathDecrytedMessageBack, TLSEPT, d, MessageDirection.Accepts);
+        }
+        
+        TLS.TryDecodingAndDispatchingTLSMessage(bin, ClientContext, TLSEPT, MessageDirection.Accepts);
     }
-    int totalLen = streamValue.ByteLength;
-    if (totalLen == 0)
-    {
-        return nothing;
-    }
-    Packet packet = new Packet{};
     
-    packet.AssignFieldEncodingInfo("FlagsAndVersion", 0, 8);
-    packet.FlagsAndVersion = BinaryDecoder<FlagsAndVersion>(streamValue) as FlagsAndVersion;
-    if ((packet.FlagsAndVersion & 0x80) == 0x80 && streamValue.BytePosition < totalLen)
+    process server issues d:PEAP.Packet where d.Data.TLS_Data is bin:binary && IsTlsHeader(bin)
     {
-        packet.AssignFieldEncodingInfo("FragmentedMessageLength", streamValue.BitPosition, 32);
-        packet.FragmentedMessageLength = (BinaryDecoder<UsignedInteger>(streamValue) as UsignedInteger).Value;
-    }
-    else
-    {
-        packet.FragmentedMessageLength = nothing;
-    }
-    if ((packet.FlagsAndVersion & 0x10) == 0x10 && streamValue.BytePosition < totalLen)
-    {
-        packet.AssignFieldEncodingInfo("TLSMessageLength", streamValue.BitPosition, 32);
-        packet.TLSMessageLength = (BinaryDecoder<UsignedInteger>(streamValue) as UsignedInteger).Value;
-    }
-    else
-    {
-        packet.TLSMessageLength = nothing;
-    }
-    if (streamValue.BytePosition >= totalLen)
-    {
-        packet.TLSData = nothing;
-        packet.OuterTLVs = nothing;
-    }
-    else
-    {
-        uint tlsDataLength;
-        if (packet.TLSMessageLength == nothing)
+        if (ServerContext == null)
         {
-            tlsDataLength = (totalLen - streamValue.BytePosition) as uint;
+            InitializeContextPair(ref ClientContext, ref ServerContext);
+            InitializeTLSServerFromPEAP(DispathDecrytedMessageBack, TLSEPT, d, MessageDirection.Issues);
         }
-        else
+        
+        TLS.TryDecodingAndDispatchingTLSMessage(bin, ServerContext, TLSEPT, MessageDirection.Issues);
+    }
+
+    void DispathDecrytedMessageBack(binary bin, RecordLayers rls, TLS.Server tlsServer, MessageDirection direction)
+    {
+        if (rls.Origins[0] is Packet:PEAP.Packet)
         {
-            tlsDataLength = packet.TLSMessageLength as uint;
-        }
-        packet.AssignFieldEncodingInfo("TLSData", streamValue.BitPosition as int, tlsDataLength * 8 as int);
-        packet.TLSData = (BinaryDecoder<Blob[tlsDataLength]>(streamValue) as Blob).Data;
-        if ((packet.FlagsAndVersion & 0x10) == 0x10 && streamValue.BytePosition < totalLen)
-        {
-            packet.OuterTLVs = BinaryDecoder<array<TLVList>>(streamValue);
-        }
-        else
-        {
-            packet.OuterTLVs = nothing;
+            EAP.PacketDecoder(bin, (endpoint EAP.Server over tlsServer));
         }
     }
-    packet.SourceData = streamValue.PeekBytes(0);
-    packet#PEAPPacketLength = totalLen as uint;
-    return packet;
 }
 
-message Packet
+void InitializeTLSServerFromPEAP(void(binary, RecordLayers, TLS.Server, MessageDirection) dispatchBack, 
+    TLS.Server tlsServer, any message topMsg, MessageDirection dir)
 {
-    FlagsAndVersion FlagsAndVersion where ValidationCheck((value & 0x04) == 0, null, "Reserved1 field must be zero.");
-    optional [|(FlagsAndVersion & 0x80) == 0x80|] uint FragmentedMessageLength;   // it is present only if the L(LengthIncluded) bit is set
-    optional [|(FlagsAndVersion & 0x10) == 0x10|] uint TLSMessageLength;          // it is present only if the T(TLSLengthIncluded) bit is set
-    optional binary TLSData;
-    optional array<TLVList> OuterTLVs;
+    binary srcAddr;
+    binary destAddr;
+    ushort srcPort;
+    ushort destPort;
+
+    any message currentMsg = topMsg;
+    while (currentMsg.Origins.Count != 0 && !(currentMsg.Origins[0] is UDP.Datagram)) // EAP over RADIUS and EAP over IKE
+    {
+        currentMsg = currentMsg.Origins[0];
+    }
+    if (currentMsg.Origins.Count != 0 && currentMsg.Origins[0] is udp:UDP.Datagram)
+    {
+        if (dir == MessageDirection.Accepts)
+        {
+            srcAddr = udp#DestinationAddress is b1:binary ? b1 : Utility.EmptyBinary;
+            destAddr = udp#SourceAddress is b2:binary ? b2 : Utility.EmptyBinary;
+            srcPort = udp.DestinationPort;
+            destPort = udp.SourcePort;
+        }
+        else
+        {
+            srcAddr = udp#SourceAddress is b1:binary ? b1 : Utility.EmptyBinary;
+            destAddr = udp#DestinationAddress is b2:binary ? b2 : Utility.EmptyBinary;
+            srcPort = udp.SourcePort;
+            destPort = udp.DestinationPort;
+        }
+    }
+    if (currentMsg.Origins.Count == 0)
+    {
+        currentMsg = topMsg;
+        while (currentMsg.Origins.Count != 0 && !(currentMsg.Origins[0] is PPP.Frame)) // EAP over PPP
+        {
+            currentMsg = currentMsg.Origins[0];
+        }
+        if (currentMsg.Origins.Count != 0 && currentMsg.Origins[0] is ppp:PPP.Frame)
+        {
+            if (dir == MessageDirection.Accepts)
+            {
+                srcAddr = (ppp#PPPDestinationAddress is str1:string ? str1.ToBinary() : nothing) is b1:binary ? b1 : Utility.EmptyBinary;
+                destAddr = (ppp#PPPSourceAddress is str2:string ? str2.ToBinary() : nothing) is b2:binary ? b2 : Utility.EmptyBinary;
+            }
+            else
+            {
+                srcAddr = (ppp#PPPSourceAddress is str1:string ? str1.ToBinary() : nothing) is b1:binary ? b1 : Utility.EmptyBinary;
+                destAddr = (ppp#PPPDestinationAddress is str2:string ? str2.ToBinary() : nothing) is b2:binary ? b2 : Utility.EmptyBinary;
+            }
+            srcPort = 0; // TLS need port to decrption, when no port in the lower layer, we make up one
+            destPort = 1;
+        }
+    }
+    if (currentMsg.Origins.Count == 0)
+    {
+        currentMsg = topMsg;
+        while (currentMsg.Origins.Count != 0 && !(currentMsg.Origins[0] is Ethernet.Frame)) // EAP over EAPOL
+        {
+            currentMsg = currentMsg.Origins[0];
+        }
+        if (currentMsg.Origins.Count != 0 && currentMsg.Origins[0] is ethernet:Ethernet.Frame)
+        {
+            if (dir == MessageDirection.Accepts)
+            {
+                srcAddr = ethernet.DestinationAddress is addr1:MacAddress ? addr1.Octets : Utility.EmptyBinary;
+                destAddr = ethernet.SourceAddress is addr2:MacAddress ? addr2.Octets : Utility.EmptyBinary;
+            }
+            else
+            {
+                srcAddr = ethernet.SourceAddress is addr1:MacAddress ? addr1.Octets : Utility.EmptyBinary;
+                destAddr = ethernet.DestinationAddress is addr2:MacAddress ? addr2.Octets : Utility.EmptyBinary;
+            }
+            srcPort = 0; // TLS need port to decrption, when no port in the lower layer, we make up one
+            destPort = 1;
+        }
+        else
+        {
+            srcAddr = Utility.EmptyBinary;
+            destAddr = Utility.EmptyBinary;
+            srcPort = 0; // TLS need port to decrption, when no port in the lower layer, we make up one
+            destPort = 1;
+        }
+    }
+    tlsServer.InitializeContext(srcAddr, destAddr, srcPort, destPort, dispatchBack);
+}
+
+// 2.2.2    PEAP Packet
+message Packet[uint Length]
+{
+    PacketFlags Flags where ValidationCheckReservedZero((value & PacketFlags.A) == 0 && (value & PacketFlags.B) == 0 && (value & PacketFlags.C) == 0, 
+        this, true, ReferenceType.Type, "PEAP", "A, B, C of Flags", "Packet", value) 
+        with BinaryEncoding{Width = 6};
+    PacketVer Ver with BinaryEncoding{Width = 2};
+    PacketData[(Flags & PacketFlags.L) > 0, Length] Data;
     
     override string ToString()
     {
-        string displayStr = "PEAP: ";
-        if (TLSData is nothing && OuterTLVs is nothing)
+        string displayStr = "";
+        if (Data.TLS_Data is nothing && Data.Outer_TLV_Data is nothing)
         {
-            if ((FlagsAndVersion & 0x20) == 0x20)
+            if ((Flags & PacketFlags.S) > 0)
             {
                 displayStr += "PEAP Start Message, ";
             }
@@ -349,36 +457,159 @@ message Packet
         }
         if ((this.Origins).Count > 1)
         {
-            displayStr += "[Reassembled, Count = " + (((this.Origins)[(this.Origins).Count - 1] as Packet)#PEAPFragmentNumber as string) + "], ";
+            displayStr += "[Reassembled, Count: " + (this.Origins.Count as string) + "] ";
         }
         else if (this#PEAPFragmentNumber != nothing)
         {
-            displayStr += "[Fragment, No." + (this#PEAPFragmentNumber as string) + "], ";
+            displayStr += "[Fragment, No." + (this#PEAPFragmentNumber as string) + "] ";
         }
-        displayStr += "Flags And Version: ";
-        displayStr += (FlagsAndVersion & 0x80) == 0 ? "." : "L";
-        displayStr += (FlagsAndVersion & 0x40) == 0 ? "." : "M";
-        displayStr += (FlagsAndVersion & 0x20) == 0 ? "." : "S";
-        displayStr += (FlagsAndVersion & 0x10) == 0 ? "." : "T";
-        displayStr += (FlagsAndVersion & 0x08) == 0 ? "." : "R";
-        displayStr += (FlagsAndVersion & 0x04) == 0 ? "." : "R";
-        displayStr += (FlagsAndVersion & 0x02) == 0 ? "." : "V";
-        displayStr += (FlagsAndVersion & 0x01) == 0 ? "., " : "V, ";
-        displayStr += "Length = " + (this#PEAPPacketLength as string);
+        if (Flags > 0)
+        {
+            displayStr += "Flags: " + EnumToString<PacketFlags>(Flags) + ", ";
+        }
+        displayStr += "Length: " + (this#PEAPPacketLength as string);
         return displayStr;
     }
 }
 
-pattern FlagsAndVersion = flags byte
+type PacketData[bool IsLSet, uint Length]
 {
-    LengthIncluded      = 0x80,     // L
-    MoreFragments       = 0x40,     // M
-    PEAPStart           = 0x20,     // S
-    TLSLengthIncluded   = 0x10,     // T
-    Reserved0           = 0x08,     // R
-    Reserved1           = 0x04,     // R
-    Version0            = 0x02,     // 1
-    Version1            = 0x01,     // 0
+    optional [|IsLSet == true|] uint TLS_Message_Length;
+    optional [|TLS_Message_Length == nothing ? Length > 1 : Length > 5|] binary TLS_Data with BinaryEncoding{MaxLength = (TLS_Message_Length == nothing ? Length - 1 : (TLS_Message_Length as uint))};
+    optional [|TLS_Message_Length == nothing ? false : Length - TLS_Message_Length > 5|] array<TLVList> Outer_TLV_Data;
+}
+
+pattern PacketFlags = flags byte
+{
+    L = 0x20,
+    M = 0x10,
+    S = 0x08,
+    A = 0x04,
+    B = 0x02,
+    C = 0x01
+};
+
+pattern PacketVer = flags byte
+{
+    R = 0x2,
+    V = 0x1
+};
+
+// 2.2.8.1    EAP TLV Extensions Method
+type ExtensionsMethodsEx : EAP.ExtensionsMethods
+{
+    new array<EAPTLVExtensionsMethodType> Data;
+}
+
+pattern EAPTLVExtensionsMethodType = [|RemainingBitLength(stream) >= 16|]
+    ([|(CurrentByte(stream) & 0xC0) == 0|] 
+        ([|PeekByte(stream, stream.BitPosition + 8) == 12|] CryptobindingTLV        // TLVType = 12, [MS-PEAP] 2.2.8.1.1
+        | [|PeekByte(stream, stream.BitPosition + 8) == 3|] SoHResponseTLV          // TLVType = 3, [MS-PEAP] 2.2.8.1.3
+        | binary)
+    | [|(CurrentByte(stream) & 0xC0) == 0x80 && PeekByte(stream, stream.BitPosition + 8) == 3|] ResultTLV // TLVType = 3, [MS-PEAP] 2.2.8.1.2
+    | binary);
+
+// 2.2.8.1.1    Cryptobinding TLV
+type CryptobindingTLV // 12
+{
+    byte M where ValidationCheckZero(value == 0, null, true, 
+        ReferenceType.Type, "PEAP", "M", "CryptobindingTLV", value)
+        with BinaryEncoding{Width = 1};
+    byte R where ValidationCheckReservedZero(value == 0, null, true, 
+        ReferenceType.Type, "PEAP", "R", "CryptobindingTLV", value) with BinaryEncoding{Width = 1};
+    ushort TLV_Type where value == 0x0C with BinaryEncoding{Width = 14};
+    ushort Length where ValidationCheckZero(value == 56, null, true, 
+        ReferenceType.Type, "PEAP", "Length", "CryptobindingTLV", value);
+    CryptobindingTLVValue Value;
+}
+
+type CryptobindingTLVValue
+{
+    byte Reserved where ValidationCheckReservedZero(value == 0, null, true, 
+        ReferenceType.Type, "PEAP", "Reserved", "CryptobindingTLVValue", value);
+    byte Version where ValidationCheckZero(value == 0, null, true, 
+        ReferenceType.Type, "PEAP", "Version", "CryptobindingTLVValue", value);
+    byte ReceivedVersion where ValidationCheckZero(value == 0, null, true, 
+        ReferenceType.Type, "PEAP", "Version", "CryptobindingTLVValue", value);
+    CryptobindingTLVSubType SubType;
+    binary Nonce with BinaryEncoding{Length = 32};
+    binary Compound_MAC with BinaryEncoding{Length = 20};
+}
+
+pattern CryptobindingTLVSubType = enum byte
+{
+    request = 0,
+    response = 1,
+    ...
+};
+
+// 2.2.8.1.2    Result TLV
+type ResultTLV // 3
+{
+    byte M where ValidationCheck(value == 1, null, "M field must be 1.") with BinaryEncoding{Width = 1};
+    byte R where ValidationCheckReservedZero(value == 0, null, true, 
+        ReferenceType.Type, "PEAP", "R", "ResultTLV", value) with BinaryEncoding{Width = 1};
+    ushort TLV_Type where value == 0x03 with BinaryEncoding{Width = 14};
+    ushort Length where ValidationCheckZero(value == 0, null, true, 
+        ReferenceType.Type, "PEAP", "Length", "ResultTLV", value);
+    ResultTLVValue Value;
+}
+type ResultTLVValue
+{
+    ResultTLVResult Result;
+}
+
+pattern ResultTLVResult = enum ushort
+{
+    Success = 1,
+    Failure = 2,
+    ...
+};
+
+// 2.2.8.1.3    SoH Response TLV
+type SoHResponseTLV // 3
+{
+    byte M where ValidationCheckZero(value == 0, null, true, 
+        ReferenceType.Type, "PEAP", "M", "SoHRequestTLV", value)
+        with BinaryEncoding{Width = 1};
+    byte R where ValidationCheckReservedZero(value == 0, null, true, 
+        ReferenceType.Type, "PEAP", "R", "SoHRequestTLV", value) with BinaryEncoding{Width = 1};
+    ushort TLV_Type where value == 0x03 with BinaryEncoding{Width = 14};
+    ushort Length;
+    binary Value with BinaryEncoding{Length = Length};
+}
+
+// 2.2.8.2.1    SoH Request TLV
+type SoHRequestTLV // 2
+{
+    byte M where ValidationCheckZero(value == 0, null, true, 
+        ReferenceType.Type, "PEAP", "M", "SoHRequestTLV", value)
+        with BinaryEncoding{Width = 1};
+    byte R where ValidationCheckReservedZero(value == 0, null, true, 
+        ReferenceType.Type, "PEAP", "R", "SoHRequestTLV", value) with BinaryEncoding{Width = 1};
+    ushort TLV_Type where value == 0x02 with BinaryEncoding{Width = 14};
+    ushort Length where ValidationCheckZero(value == 0, null, true, ReferenceType.Type, "PEAP", "Length", "SoHRequestTLV", value);
+}
+
+// 2.2.8.2.2    SoH TLV
+type SoHTLV // 1
+{
+    byte M where ValidationCheckZero(value == 0, null, true, 
+        ReferenceType.Type, "PEAP", "M", "SoHTLV", value)
+        with BinaryEncoding{Width = 1};
+    byte R where ValidationCheckReservedZero(value == 0, null, true, 
+        ReferenceType.Type, "PEAP", "R", "SoHTLV", value) with BinaryEncoding{Width = 1};
+    ushort TLV_Type where value == 0x01 with BinaryEncoding{Width = 14};
+    ushort Length;
+    binary Value with BinaryEncoding{Length = Length};
+}
+
+// 2.2.8.3.1    Capabilities Method Request
+pattern CapabilitiesMethodVendorData = flags uint
+{
+    Reserved= 0x7F,
+    F = 0x80,
+    ...
 };
 
 type UsignedInteger // To decode an uint from BinaryDecoder with Big encoding
@@ -386,26 +617,35 @@ type UsignedInteger // To decode an uint from BinaryDecoder with Big encoding
     uint Value;
 }
 
+pattern TLVListType = [|RemainingBitLength(stream) >= 16|]
+    ([|(CurrentByte(stream) & 0xC0) == 0|] 
+        ([|PeekByte(stream, stream.BitPosition + 8) == 12|] CryptobindingTLV         // TLVType = 12, [MS-PEAP] 2.2.8.1.1
+        | [|PeekByte(stream, stream.BitPosition + 8) == 3|] SoHResponseTLV          // TLVType = 3, [MS-PEAP] 2.2.8.1.3
+        | [|PeekByte(stream, stream.BitPosition + 8) == 2|] SoHRequestTLV           // TLVType = 2, [MS-PEAP] 2.2.8.2.1
+        | [|PeekByte(stream, stream.BitPosition + 8) == 1|] SoHTLV                  // TLVType = 4, [MS-PEAP] 2.2.8.2.2
+        | [|PeekByte(stream, stream.BitPosition + 8) == 4|] NAKTLV                  // TLVType = 4, 
+        | [|PeekByte(stream, stream.BitPosition + 8) == 4|] NAKTLV                  // TLVType = 4
+        | [|PeekByte(stream, stream.BitPosition + 8) == 5|] ErrorCodeTLV            // TLVType = 5
+        | [|PeekByte(stream, stream.BitPosition + 8) == 6|] ConnectionBindingTLV    // TLVType = 6
+        | [|PeekByte(stream, stream.BitPosition + 8) == 7|] VendorSpecificTLV       // TLVType = 7
+        | [|PeekByte(stream, stream.BitPosition + 8) == 8|] URITLV                  // TLVType = 8
+        | [|PeekByte(stream, stream.BitPosition + 8) == 9|] EAPPayloadTLV           // TLVType = 9
+        | [|PeekByte(stream, stream.BitPosition + 8) == 10|] IntermediateResultTLV  // TLVType = 10
+        | [|PeekByte(stream, stream.BitPosition + 8) == 13|] CallingStationIDTLV    // TLVType = 13
+        | [|PeekByte(stream, stream.BitPosition + 8) == 14|] CalledStationIDTLV     // TLVType = 14
+        | [|PeekByte(stream, stream.BitPosition + 8) == 15|] NASPortTypeTLV         // TLVType = 15
+        | [|PeekByte(stream, stream.BitPosition + 8) == 16|] ServerIdentifierTLV    // TLVType = 16
+        | [|PeekByte(stream, stream.BitPosition + 8) == 17|] IdentityTypeTLV        // TLVType = 17
+        | [|PeekByte(stream, stream.BitPosition + 8) == 18|] ServerTrustedRootTLV   // TLVType = 18
+        | [|PeekByte(stream, stream.BitPosition + 8) == 19|] RequestActionTLV       // TLVType = 19
+        | [|PeekByte(stream, stream.BitPosition + 8) == 20|] PKCS7TLV               // TLVType = 20
+        | binary) // Should not remove the 2 "binary" here
+    | [|(CurrentByte(stream) & 0xC0) == 0x80 && PeekByte(stream, stream.BitPosition + 8) == 3|] ResultTLV // TLVType = 3, [MS-PEAP] 2.2.8.1.2
+    | binary);
+
 type TLVList
 {
-    (ResultTLV                      // TLVType = 3
-        | NAKTLV                    // TLVType = 4
-        | ErrorCodeTLV              // TLVType = 5
-        | CryptoBindingTLV          // TLVType = 12
-        | ConnectionBindingTLV      // TLVType = 6
-        | VendorSpecificTLV         // TLVType = 7
-        | URITLV                    // TLVType = 8
-        | EAPPayloadTLV             // TLVType = 9
-        | IntermediateResultTLV     // TLVType = 10
-        | CallingStationIDTLV       // TLVType = 13
-        | CalledStationIDTLV        // TLVType = 14
-        | NASPortTypeTLV            // TLVType = 15
-        | ServerIdentifierTLV       // TLVType = 16
-        | IdentityTypeTLV           // TLVType = 17
-        | ServerTrustedRootTLV      // TLVType = 18
-        | RequestActionTLV          // TLVType = 19
-        | PKCS7TLV                  // TLVType = 20
-        ) TLVList;
+    TLVListType TLVList;
 
     ushort GetLength()
     {
@@ -417,7 +657,7 @@ type TLVList
                 return tlv.Length;
             case tlv: ErrorCodeTLV =>
                 return tlv.Length;
-            case tlv: CryptoBindingTLV =>
+            case tlv: CryptobindingTLV =>
                 return tlv.Length;
             case tlv: ConnectionBindingTLV =>
                 return tlv.Length;
@@ -448,17 +688,7 @@ type TLVList
         }
     }
 }
-
-type ResultTLV // 3
-{
-    byte M where ValidationCheck(value == 1, null, "M field must be 1.") with BinaryEncoding{Width = 1};
-    byte R where ValidationCheck(value == 0, null, "Reserved field must be zero.") with BinaryEncoding{Width = 1};
-    ushort TLVType with BinaryEncoding{Width = 14};
-    invariant TLVType == 3;
-    ushort Length;
-    ushort Status;
-}
-
+ // PEAPv2, http://potaroo.net/ietf/idref/draft-josefsson-pppext-eap-tls-eap/#page-27
 type NAKTLV // 4
 {
     byte M where ValidationCheck(value == 1, null, "M field must be 1.") with BinaryEncoding{Width = 1};
@@ -482,23 +712,6 @@ type ErrorCodeTLV // 5
     uint ErrorCode;
 }
 
-type CryptoBindingTLV // 12
-{
-    byte M where ValidationCheck(value == 1, null, "M field must be 1.") with BinaryEncoding{Width = 1};
-    byte R where ValidationCheck(value == 0, null, "Reserved field must be zero.") with BinaryEncoding{Width = 1};
-    ushort TLVType with BinaryEncoding{Width = 14};
-    invariant TLVType == 12;
-    ushort Length where ValidationCheck(value == 56, null, "Length field must be 56.");
-    byte Reserved where ValidationCheck(value == 0, null, "Reserved field must be zero.");
-    byte Version;
-    byte ReceivedVersion;
-    // There may be a mistake in the DOC here.
-    //ushort SubType;
-    byte SubType;
-    binary Nonce with BinaryEncoding{Length = 32};
-    binary CompoundMAC with BinaryEncoding{Length = 20};
-}
-
 type ConnectionBindingTLV // 6
 {
     byte M where ValidationCheck(value == 0, null, "M field must be zero.") with BinaryEncoding{Width = 1};
@@ -519,7 +732,7 @@ type VendorSpecificTLV // 7
     ushort Length where ValidationCheck(value >= 4, null, "Length field cannot be smaller than 4.");
     uint VendorId;
     // It contains vendor-specific TLVs, in a format defined by the vendor.
-    optional [|Length > 4|] binary VendorTLVs with BinaryEncoding{Length = Length - 4 as uint};
+    optional [|Length > 4|] binary VendorTLVs with BinaryEncoding{Length = Length - 4};
 }
 
 type URITLV // 8
@@ -659,4 +872,9 @@ type NASPortType
     byte Type;
     byte Length;
     ushort Value;
+}
+
+type ExpandedTypesEx : EAP.ExpandedTypes
+{
+    new (SoHRequestTLV | SoHTLV | CapabilitiesMethodVendorData) Vendor_Data;
 }

@@ -15,7 +15,7 @@ OPNAuthoring
         ],
     RevisionSummary =
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "11/09/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "362740", Date = "04/18/2014"}
         ]
 };
 
@@ -72,39 +72,38 @@ bool BinaryZeroBytes(binary binValue)
 type XdrOpaqueFixed[uint OpaqueLength]
 {
     binary Value with BinaryEncoding{Length = OpaqueLength};
-    binary Padding where ValidationCheck(BinaryZeroBytes(value), null, "Must be residual zero bytes to make the total byte count of the opaque object a multiple of four.") with BinaryEncoding{Length = ((4 - (OpaqueLength % 4)) % 4) as uint};
+    binary Padding where ValidationCheck(BinaryZeroBytes(value), null, "Must be residual zero bytes to make the total byte count of the opaque object a multiple of four.") with BinaryEncoding{Length = ((4 - (OpaqueLength % 4)) % 4)};
 }
 
 type XdrOpaqueVariable
 {
     uint Length;// where ValidationCheck(MaxOpaqueLength == 0 || value <= MaxOpaqueLength, null, "XDR: The Length in type XdrOpaqueVariable should be less than or equal to TD required MaxValue.");
     binary Value with BinaryEncoding{Length = Length};
-    binary Padding where ValidationCheck(BinaryZeroBytes(value), null, "Must be residual zero bytes to make the total byte count of the opaque object a multiple of four.") with BinaryEncoding{Length = ((4 - (Length % 4)) % 4) as uint};
+    binary Padding where ValidationCheck(BinaryZeroBytes(value), null, "Must be residual zero bytes to make the total byte count of the opaque object a multiple of four.") with BinaryEncoding{Length = ((4 - (Length % 4)) % 4)};
 }
 
 type XDRString
 {
     uint Length;// where ValidationCheck(MaxStringLength == 0 || value <= MaxStringLength, null, "Length of String should be less than TD required MaxValue or not set.");
     string Value with BinaryEncoding{Length = Length};
-    binary Padding where ValidationCheck(BinaryZeroBytes(value), null, "Must be residual zero bytes to make the total byte count of the string object a multiple of four.") with BinaryEncoding{Length = ((4 - (Length % 4)) % 4) as uint};
+    binary Padding where ValidationCheck(BinaryZeroBytes(value), null, "Must be residual zero bytes to make the total byte count of the string object a multiple of four.") with BinaryEncoding{Length = ((4 - (Length % 4)) % 4)};
 }
 
-// WORDAROUND:Bug#30723 Cannot reference gerneric type defined in another project
-//// Each element(T)'s size is a multiple of four bytes.
-//type XDRArrayFixed<T>[uint Length]
-//{
-    //array<T> Items with BinaryEncoding{Length = Length};
-//}
-//
-//// Each element(T)'s size is a multiple of four bytes.
-//type XDRArrayVariable<T>[uint MaxArrayLength]
-//{
-    //uint Length where ValidationCheck(MaxArrayLength == 0 || value <= MaxArrayLength, null, "Length of Array should be less than TD required MaxValue or not set.");
-    //array<T> Items with BinaryEncoding{Length = Length};
-//}
-//
-//type XDROptional<T>
-//{
-    //uint Opted where ValidationCheck(value == 0 || value == 1, null, "XDR optional data, opted should be zero or 1.");
-    //optional (T where Opted == 1) OptedValue;
-//}
+// Each element(T)'s size is a multiple of four bytes.
+type XDRArrayFixed<T>[uint Length]
+{
+    array<T> Items with BinaryEncoding{Length = Length};
+}
+
+// Each element(T)'s size is a multiple of four bytes.
+type XDRArrayVariable<T>[uint MaxArrayLength]
+{
+    uint Length where ValidationCheck(MaxArrayLength == 0 || value <= MaxArrayLength, null, "Length of Array should be less than TD required MaxValue or not set.");
+    array<T> Items with BinaryEncoding{Length = Length};
+}
+
+type XDROptional<T>
+{
+    uint Opted where ValidationCheck(value == 0 || value == 1, null, "XDR optional data, opted should be zero or 1.");
+    optional [|Opted == 1|] T OptedValue;
+}

@@ -14,10 +14,12 @@ OPNAuthoring
             new Reference{Name = "RFC 1305"},
             new Reference{Name = "RFC 2030"},
             new Reference{Name = "RFC 5905"},
+            new Reference{Name = "RFC 5906"},
+            new Reference{Name = "MS-SNTP", Version = "24.0", Date = "08/08/2013", ProgramName = ProgramName.MCPP},
         ],
     RevisionSummary =
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "11/14/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "362740", Date = "04/18/2014"}
         ]
 };
 
@@ -25,7 +27,7 @@ using Standard;
 using Utility;
 using IANA;
 using UDP;
-using IPv4;
+using PublicResources;
 
 endpoint Node 
     over UDP.Host 
@@ -33,123 +35,67 @@ endpoint Node
 
 autostart actor NTPOverUDP(UDP.Host host)
 {
-    process host accepts p:UDP.Datagram where p.DestinationPort == Port.NTP | p.SourcePort == Port.NTP
+    process host accepts p:UDP.Datagram where p.Payload.Count > 0 && p.DestinationPort == Port.NTP | p.SourcePort == Port.NTP
     {
-        switch (p.Payload)
+        if (p.Payload.Count >= 48 && BinaryDecoder<Message[(p.Payload.Count - 48) as uint]>(p.Payload) is m:Message)
         {
-            case m:Message from NTPDecoder =>
-                dispatch (endpoint NTP.Node over host) accepts m;
-            default =>
-                ThrowDecodingException("NTP");
+            dispatch (endpoint NTP.Node over host) accepts m;
+        }
+        else
+        {
+            ThrowDecodingException("NTP");
         }
     }
 }
 
-message Message
+message Message[uint ExtLen]
 {
-    byte Leap    with BinaryEncoding {Width = 2};
+    Leap Leap    with BinaryEncoding {Width = 2}, DisplayInfo{ToText = GetLeap};
     byte Version where ValidationCheck(value <= 4 && value > 0, this,"NTP: The Version in message Message should be less than or equal to 4.") with BinaryEncoding {Width = 3};
-    byte Mode    where ValidationCheck(value < 7 && value > 0, this, "Zero and 7 are reserved for Mode.") with BinaryEncoding {Width = 3};
-    byte Stratum;
+    Mode Mode    where ValidationCheck(value < 7 && value > 0, this, "Zero and 7 are reserved for Mode.") with BinaryEncoding {Width = 3}, DisplayInfo{ToText = GetMode};
+    Stratum Stratum with DisplayInfo{ToText = GetStratum};
     sbyte Poll;
     sbyte Precision;
     int RootDelay;
     uint RootDispersion;
     ([|Stratum == 0 || Stratum == 1|] ReferenceID | [|Stratum >= 2|] IPv4Address) ReferenceIdentifier;
-    long ReferenceTimestamp;
-    long OriginateTimestamp;
-    long ReceiveTimestamp;
-    long TransmitTimestamp;
-    optional (MD5key | MD5keyPlus | ExtendedAuthenticator | Autokey) ExtensionField with Encoding{Ignore = true};
+    ulong ReferenceTimestamp with DisplayInfo{ToText = NtpTimestampToString};
+    ulong OriginateTimestamp  with DisplayInfo{ToText = NtpTimestampToString};
+    ulong ReceiveTimestamp  with DisplayInfo{ToText = NtpTimestampToString};
+    ulong TransmitTimestamp  with DisplayInfo{ToText = NtpTimestampToString};
+    optional [|ExtLen > 0|] ([|ExtLen in {12, 20, 24}|] Authenticator[ExtLen] | [|ExtLen == 72 && Version == 3|] ExtendedAuthenticator | [|ExtLen > 26 && Version == 4|] Autokey | binary) ExtensionField
+        with BinaryEncoding{WidthForComposedType = (ExtLen) * 8 as int};
     
     override string ToString()
     {
         return "Leap: " + GetLeap(Leap) + ", Version: " + (Version as string) + ", Mode: " + GetMode(Mode) + ", Stratum: " + GetStratum(Stratum);
     }
+    
+    // RFC 1305, page 9
+    // NTP timestamps are represented as a 64-bit unsigned fixed-point number, in seconds relative to 0h on 1 January 1900.
+    // The integer part is in the first 32 bits and the fraction part in the last 32 bits.
+    string NtpTimestampToString(any intervals)
+    {
+        ulong interv = (intervals as ulong);
+        double sec = ((interv & 0xFFFFFFFF00000000) >> 32) + ((interv & 0x00000000FFFFFFFF) as double) / 4294967296; // 4294967296 = power(2, 32)
+        return CreateDateTime(1900, 1, 1).AddSeconds(sec).ToLocalTime().ToString("MM/dd/yyyy HH:mm:ss.fffffff K");
+    }
 }
 
-optional Message NTPDecoder(stream binaryValue)
+// RFC 1305 (http://www.ietf.org/rfc/rfc1305.pdf), Appendix C. Authentication Issues, page 63. (MessageDigest.Length = 8)
+// RFC 2030, 4. NTP Message Format, page 8. (MessageDigest.Length = 12)
+// RFC 5906, page 25. (MessageDigest.Length = 16)
+type Authenticator[uint Length]
 {
-    stream s = binaryValue;
-    
-    optional Message msg = BinaryDecoder<Message>(s);
-    if (msg == nothing)
-    {
-        return nothing;
-    }
-    
-    Message m = msg as Message;   
-    
-    // rfc 5906:
-    // If the remaining length is 20 (128-bit digest plus 4-octet key ID) or
-    // 22 (160-bit digest plus 4-octet key ID), the remaining data are the
-    // MAC and parsing is complete.  If the remaining length is greater than
-    // 22, an extension field is present.
-    if (s.ByteLength == 48)
-    {
-        return m;
-    }
-    
-    if (s.ByteLength - s.BytePosition == 20)
-    {
-        var a = BinaryDecoder<MD5key>(s);
-        if (a == nothing)
-        {
-            return nothing;
-        }
-        else
-        {
-            m.ExtensionField = a;
-            m.AssignFieldEncodingInfo("ExtensionField", 384, 20 * 8);
-        }
-    }
-    else if (s.ByteLength - s.BytePosition == 24)
-    {
-        var a = BinaryDecoder<MD5keyPlus>(s);
-        if (a == nothing)
-        {
-            return nothing;
-        }
-        else
-        {
-            m.ExtensionField = a;
-            m.AssignFieldEncodingInfo("ExtensionField", 384, 24 * 8);
-        }
-    }
-    else if (s.ByteLength - s.BytePosition == 72 && m.Version == 3)
-    {
-        var a = BinaryDecoder<ExtendedAuthenticator>(s);
-        if (a == nothing)
-        {
-            return nothing;
-        }
-        else
-        {
-            m.ExtensionField = a;
-            m.AssignFieldEncodingInfo("ExtensionField", 384, 72 * 8);
-        }
-    }
-    else if (s.ByteLength - s.BytePosition > 26 && m.Version == 4)
-    {
-            var a = BinaryDecoder<Autokey>(s);
-            if (a == nothing)
-            {
-                return nothing;
-            }
-            else
-            {
-                m.ExtensionField = a;
-                m.AssignFieldEncodingInfo("ExtensionField", 384, (a as Autokey).Length * 8);
-            }
-    }
-
-    return m;
+    uint KeyIdentifier;
+    binary MessageDigest with BinaryEncoding{Length = Length - 4};
 }
 
+// [MS-SNTP] 2.2.3 / 2.2.4
 type ExtendedAuthenticator
 {
-    KeyIdentifierFlags KeyIdentifier;
-    byte Reserved where ValidationCheck(value == 0, null, "Reserved: Must be set to zero and must be ignored upon receipt.");
+    KeyIdentifierFlags KeyIdentifier with BinaryEncoding{Endian = Endian.Little};
+    byte Reserved where ValidationCheck(0 == value, null, PublicResources.NTP_ExtendedAuthenticator_Reserved);
     byte Flags;
     byte ClientHashIDHints;
     byte SignatureHashID;
@@ -159,7 +105,7 @@ type ExtendedAuthenticator
 // RFC 5906: In Autokey the 8-bit Field Type field is interpreted as the version
 // number, currently 2.  For future versions, values 1-7 have been
 // reserved for Autokey; other values may be assigned for other
-// applications.
+// applications. Page 25.
 type Autokey
 {
     byte R    with BinaryEncoding{Width = 1};
@@ -171,25 +117,13 @@ type Autokey
     int TimeStamp;
     int FileStamp;
     uint ValueLength;
-    binary Value with BinaryEncoding{Length = ValueLength as uint};
+    binary Value with BinaryEncoding{Length = ValueLength};
     uint SignatureLength;
-    binary Signature with BinaryEncoding{Length = SignatureLength as uint};
-    binary Padding with BinaryEncoding{Length = 4 - ((Length - 24 - ValueLength - SignatureLength) % 4) as uint};
+    binary Signature with BinaryEncoding{Length = SignatureLength};
+    binary Padding with BinaryEncoding{Length = 4 - ((Length - 24 - ValueLength - SignatureLength) % 4)};
 }
 
-
-type MD5key
-{
-    KeyIdentifierFlags KeyIdentifier;
-    binary MsgDgt with BinaryEncoding{Length = 16};
-}
-
-type MD5keyPlus
-{
-    KeyIdentifierFlags KeyIdentifier;
-    binary MsgDgt with BinaryEncoding{Length = 20};
-}
-
+// [MS-SNTP] 2.2.3 / 2.2.4
 type KeyIdentifierFlags
 {
     int Rid  with BinaryEncoding {Width = 31};
@@ -198,7 +132,7 @@ type KeyIdentifierFlags
 
 type ReferenceID
 {
-    string ReferenceIdentifier with BinaryEncoding{TextEncoding = TextEncoding.ASCII,Length = 4};
+    string ReferenceIdentifier with BinaryEncoding{TextEncoding = TextEncoding.ASCII, Length = 4};
     override string ToString()
     {
         switch (ReferenceIdentifier)
@@ -262,79 +196,66 @@ type ReferenceID
     }
 }
 
-string GetStratum(byte s)
+string GetStratum(any s)
 {
-    switch (s)
+    if (s is val:byte)
     {
-        case 0 =>
-            return "unspecified or invalid";
-        case 1 =>
-            return "primary reference";
-        case 2 =>
+        if (val <= 1)
+        {
+            return EnumToString(val, "NTP.Stratum");
+        }
+        else if (val <= 16)
+        {
             return "secondary server(via NTP)";
-        case 3 =>
-            return "secondary server(via NTP)";
-        case 4 =>
-            return "secondary server(via NTP)";
-        case 5 =>
-            return "secondary server(via NTP)";
-        case 6 =>
-            return "secondary server(via NTP)";
-        case 7 =>
-            return "secondary server(via NTP)";
-        case 8 =>
-            return "secondary server(via NTP)";
-        case 9 =>
-            return "secondary server(via NTP)";
-        case 10 =>
-            return "secondary server(via NTP)";
-        case 11 =>
-            return "secondary server(via NTP)";
-        case 12 =>
-            return "secondary server(via NTP)";
-        case 14 =>
-            return "secondary server(via NTP)";
-        case 15 =>
-            return "secondary server(via NTP)";
-        case 16 =>
-            return "unsynchronized";
-        default =>
+        }
+        else
+        {
             return "reserved";
+        }
     }
+    return "Unrecognized Stratum";
 }
 
-string GetLeap(byte s)
+string GetLeap(any s)
 {
-    switch (s)
+    if (s is val:byte)
     {
-        case 0 =>
-            return "no warning";
-        case 1 =>
-            return "last minute has 61 seconds";
-        case 2 =>
-            return "last minute has 59 seconds";
-        default =>
-            return "alarm condition (clock not synchronized)";
+        return (val <= 2) ? EnumToString(val, "NTP.Leap") : "alarm condition (clock not synchronized)";
     }
+    return "Unrecognized Leap";
 }
 
-string GetMode(byte s)
+string GetMode(any s)
 {
-    switch (s)
+    if (s is val:byte)
     {
-        case 1 =>
-            return "symmetric active";
-        case 2 =>
-            return "symmetric passive";
-        case 3 =>
-            return "client";
-        case 4 =>
-            return "server";
-        case 5 =>
-            return "broadcast";
-        case 6 =>
-            return "NTP control messages";
-        default =>
-            return "reserved for private use";
+        return (val <= 6) ? EnumToString(val, "NTP.Mode") : "reserved for private use";
     }
+    return "Unrecognized Mode";
 }
+
+pattern Leap = enum byte
+{
+    $"no warning"                   = 0,
+    $"last minute has 61 seconds"   = 1,
+    $"last minute has 59 seconds"   = 2,
+    ...
+};
+
+pattern Mode = enum byte
+{
+    $"symmetric active"     = 1,
+    $"symmetric passive"    = 2,
+    $"client"               = 3,
+    $"server"               = 4,
+    $"broadcast"            = 5,
+    $"NTP control messages" = 6,
+    ...
+};
+
+pattern Stratum = enum byte
+{
+    $"unspecified or invalid"     = 0,
+    $"primary reference"    = 1,
+    ...
+};

@@ -16,13 +16,12 @@ OPNAuthoring
         ],
     RevisionSummary =
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "12/18/2011"},
+            new Revision{Class = RevisionClass.Major, Version = "381980", Date = "10/13/2015"},
         ]
 };
 
 using Standard;
 using Utility;
-using HTTP;
 using SIP;
 
 endpoint Server
@@ -33,11 +32,11 @@ client endpoint Client connected to Server;
 
 autostart actor SDPServerOverSIPServer(SIP.Server server)
 {
-    process server issues res:SIP.Response where res.Body != nothing && res.GetSIPContentType() != null && (res.GetSIPContentType() as HeaderFieldType).Value.Contains("application/sdp")
+    process server issues res:SIP.Response where res.Body != nothing && res.GetSIPContentType() != null && (res.GetSIPContentType() as SIP.HeaderFieldType).Value.Contains("application/sdp")
     {
         MessageDecoderAndDispatcher(res.Body as binary, IssuesDispatcher, server);
     }
-    process server accepts req:SIP.Request where req.Body != nothing && req.GetSIPContentType() != null && (req.GetSIPContentType() as HeaderFieldType).Value.Contains("application/sdp")
+    process server accepts req:SIP.Request where req.Body != nothing && req.GetSIPContentType() != null && (req.GetSIPContentType() as SIP.HeaderFieldType).Value.Contains("application/sdp")
     {
         MessageDecoderAndDispatcher(req.Body as binary, AcceptsDispatcher, server);
     }
@@ -64,20 +63,20 @@ void MessageDecoderAndDispatcher(stream s, void (SessionDescription, SIP.Server)
     }
     else
     {
-        ThrowDecodingException("SDP"); 
+        ThrowDecodingException("SDP");
     }
 }
 
 message SessionDescription
 {
     string ProtoVersion;
-    OriginFeildType OriginFeild;
-    string SessionNameFeild;
+    OriginFieldType OriginField;
+    string SessionNameField;
     optional string InformationField;
     optional string UriField;
-    optional array<EmailAddressType> EmailFields;
-    optional array<PhoneNumberType> PhoneFields;
-    optional ConnectionFeildType ConnectionFeild;
+    optional EmailAddressType EmailFields;
+    optional PhoneNumberType PhoneFields;
+    optional ConnectionFieldType ConnectionField;
     optional string BandwidthFields;
     string TimeFields;
     optional string KeyField;
@@ -86,9 +85,9 @@ message SessionDescription
     
     override string ToString()
     {
-        return "Name: " + SessionNameFeild
-            + ", Version: " + ProtoVersion
-            + (MediaDescriptions == [] ? "" : (", MediaDescriptions: " + ConvertMediaDescriptionsTypeArrayToString(MediaDescriptions)));
+        return "Name: " + SessionNameField + 
+            ", Version: " + ProtoVersion + 
+            (MediaDescriptions == [] ? "" : (", MediaDescriptions: " + ConvertMediaDescriptionsTypeArrayToString(MediaDescriptions)));
     }
 }
 
@@ -103,31 +102,31 @@ string ConvertMediaDescriptionsTypeArrayToString(optional array<MediaDescription
     return str;
 }
 
-syntax SessDescription   = s1:ProtoVersion s2:OriginFeild s3:SessionNameFeild 
-                              s4:InformationField s5:UriField s6:EmailFields s7:PhoneFields s8:ConnectionFeild
+syntax SessDescription   = s1:ProtoVersion s2:OriginField s3:SessionNameField 
+                              s4:InformationField s5:UriField s6:EmailFields s7:PhoneFields s8:ConnectionField
                               s9:BandwidthFields s10:TimeFields s11:KeyField s12:AttributeFields s13:MediaDescriptions
                                 => new SessionDescription
                                 {
                                     ProtoVersion              = s1,
-                                    OriginFeild               = s2,
-                                    SessionNameFeild          = s3,
+                                    OriginField               = s2,
+                                    SessionNameField          = s3,
                                     InformationField          = (s4.Count == 0 ? nothing : s4[0]),
                                     UriField                  = (s5.Count == 0 ? nothing : s5[0]),
-                                    EmailFields               = (s6 == [] ? nothing : s6),
-                                    PhoneFields               = (s7 == [] ? nothing : s7),
-                                    ConnectionFeild           = s8,
-                                    BandwidthFields           = s9,
+                                    EmailFields               = (s6.Count == 0 ? nothing : s6[0]),
+                                    PhoneFields               = (s7.Count == 0 ? nothing : s7[0]),
+                                    ConnectionField           = (s8.Count == 0 ? nothing : s8[0]),
+                                    BandwidthFields           = (s9.Count == 0 ? nothing : ConvertStringArrayToString(s9)),
                                     TimeFields                = s10,
-                                    KeyField                  = (s11.Count== 0 ? nothing : s11[0]),
-                                    AttributeFields           = (s12 == [] ? nothing : s12),
+                                    KeyField                  = (s11.Count == 0 ? nothing : s11[0]),
+                                    AttributeFields           = (s12.Count == 0 ? nothing : s12),
                                     MediaDescriptions         = s13,
                                 };
 
 syntax ProtoVersion         = "v=" s:Digits CRLF => s;
-syntax OriginFeild          = "o=" s1:UserName SP s2:SessId SP 
+syntax OriginField          = "o=" s1:UserName SP s2:SessId SP 
                                 s3:SessVersion SP s4:NetType SP s5:AddrType 
                                 SP s6:UnicastAddress CRLF
-                                => new OriginFeildType
+                                => new OriginFieldType
                                 {
                                     UserName              = s1,
                                     SessionId             = s2,
@@ -136,25 +135,24 @@ syntax OriginFeild          = "o=" s1:UserName SP s2:SessId SP
                                     AddressType           = s5,
                                     UnicastAddress        = s6,
                                 };
-syntax SessionNameFeild     = "s=" s:Text CRLF => s;
+syntax SessionNameField     = "s=" s:Text CRLF => s;
 syntax InformationField     = s:("i=" s1:Text CRLF => s1)? => s;
 syntax UriField             = s:("u=" s1:SIP.Uri CRLF => s1)? => s;
 syntax EmailFields          = ("e=" s:EmailAddress CRLF => new EmailAddressType{EmailAddress = s})*;
 syntax PhoneFields          = ("p=" s:PhoneNumber CRLF => new PhoneNumberType{PhoneNumber = s})*;
-/* WORKAROUND: This is optional feild. Avoid endless roop in MediaDescriptions, and defind it as common syntax here.
+/* WORKAROUND: This is optional field. Avoid endless roop in MediaDescriptions, and defind it as common syntax here.
  * Bug #32185 - Endless loop occurs for someSyntax* when someSyntax is optional
  */
-syntax ConnectionFeild      = "c=" s1:NetType s2:SP s3:AddrType s4:SP s5:ConnectionAddress s6:CRLF 
-                                => new ConnectionFeildType
+syntax ConnectionField      = s:("c=" s1:NetType SP s3:AddrType SP s5:ConnectionAddress CRLF 
+                                => new ConnectionFieldType
                                 {
                                     NetType            = s1,
                                     AddressType        = s3,
                                     ConnectionAddress  = s5,
-                                };
-syntax BandwidthFields      = s:("b=" s1: BWType s2:":" s3:Bandwidth CRLF => (s1 + s2 + s3))* 
-                                => (s == null ? nothing : ConvertStringArrayToString(s));
+                                })? => s;
+syntax BandwidthFields      = s:("b=" s1: BWType s2:":" s3:Bandwidth CRLF => (s1 + s2 + s3))* => s;
 syntax TimeFields           = s1:("t=" s11:StartTime s12:SP s13:StopTime
-                                  s14:RepeatFieldsReg* CRLF//s14:(CRLF s41:RepeatFields => s41)* CRLF
+                                  s14:RepeatFieldsReg* CRLF // s14:(CRLF s41:RepeatFields => s41)* CRLF
                                     => ("Start Time:" + s11 + s12 + "Stop Time:" + s13 + ConvertStringArrayToString(s14)))+ 
                               s2:(s21:ZoneAdjustments CRLF => s21)?
                                 => (ConvertStringArrayToString(s1) + (s2.Count == 0 ? "" : s2[0]));
@@ -171,22 +169,22 @@ syntax KeyField             = s:("k=" s1:KeyType CRLF => s1)? => s;
 
 syntax AttributeFields      = ("a=" s1:Attribute CRLF => new AttributeFieldType{Attribute = s1})*;
 
-syntax MediaDescriptions    = (s1:MediaField s2:InformationField s3:ConnectionFeild* s4:BandwidthFields s5:KeyField s6:AttributeFields
+syntax MediaDescriptions    = (s1:MediaField s2:InformationField s3:ConnectionField s4:BandwidthFields s5:KeyField s6:AttributeFields
                                 => new MediaDescriptionType
                                 {
                                     MediaField         = s1,
                                     InformationField   = (s2.Count == 0 ? nothing : s2[0]),
-                                    ConnectionFeilds   = (s3 == [] ? nothing : s3),
-                                    BandwidthFields    = s4,
+                                    ConnectionFields   = (s3.Count == 0 ? nothing : s3[0]),
+                                    BandwidthFields    = (s4.Count == 0 ? nothing : ConvertStringArrayToString(s4)),
                                     KeyField           = (s5.Count == 0 ? nothing : s5[0]),
-                                    AttributeFields    = (s6 == [] ? nothing : s6),
+                                    AttributeFields    = (s6.Count == 0 ? nothing : s6),
                                 })*;
 syntax MediaField           = "m=" s1:Media s2:SP s3:Port 
                                  s4:(s41:"/" s42:Integer => (s41 + s42))? s5:SP s6:Proto 
                                  s7:(s71:SP s72:FMT => (s71 + s72))+ CRLF 
                               => (s1 + s2 + s3 + (s4.Count == 0 ? "" : s4[0]) + s5 + s6 + ConvertStringArrayToString(s7));
 syntax UserName             = NonWSString;
-syntax SessId               = Digits;
+syntax SessId               = regex{[A-Za-z0-9]+};
 syntax SessVersion          = Digits;
 syntax NetType              = Token;
 syntax AddrType             = Token;
@@ -200,14 +198,14 @@ syntax PhoneNumber          = s:(s1:(s11:Phone s12:SP* s13:"(" s14:EmailSafe+
                                  s2:(s21:EmailSafe+ s22:"<" s23:Phone s24:">" 
                                     => (ConvertStringArrayToString(s21) + s22 + s23 + s24))                             | 
                                  Phone) => s;
-syntax Phone                = s1:"+"? s2:Digit s3:regex{[ 0-9\x2D]+} => ((s1.Count == 0 ? "" : s1[0]) + s2 + s3);// phone = ["+"] DIGIT 1*(SP / "-" / DIGIT)
+syntax Phone                = s1:"+"? s2:Digit s3:regex{[ 0-9\x2D]+} => ((s1.Count == 0 ? "" : s1[0]) + s2 + s3); // phone = ["+"] DIGIT 1*(SP / "-" / DIGIT)
 syntax ConnectionAddress    = s:(MulticastAddress | UnicastAddress) => s;
 syntax BWType               = Token;
 syntax Bandwidth            = Digits;
 syntax StartTime            = s:("0" | Time) => s;
 syntax StopTime             = s:("0" | Time) => s;
 syntax Time                 = s1:PosDigit s2:regex{[0-9]{9}[0-9]*} => (s1 + s2);
-syntax RepeatInterval       = s1:PosDigit s2:regex{[0-9]*} s3:FixedLenTimeUnit? => (s1 + s2 +(s3.Count == 0 ? "" : s3[0]));
+syntax RepeatInterval       = s1:PosDigit s2:regex{[0-9]*} s3:FixedLenTimeUnit? => (s1 + s2 + (s3.Count == 0 ? "" : s3[0]));
 syntax TypedTime            = s1:Digits s2:FixedLenTimeUnit? => (s1 + (s2.Count == 0 ? "" : s2[0]));
 syntax FixedLenTimeUnit     = regex{[\x64\x68\x6D\x73]};
 syntax KeyType              = s:("prompt" | 
@@ -253,8 +251,8 @@ syntax Integer              = s:regex{[1-9][0-9]*} =>s;
 syntax PosDigit             = s:regex{[1-9]} => s;
 
 // Bug #28338 - BytePosition doesnot move back, if match first sub-syntax successfully, but second sub-syntax failed.
-syntax DecimalUchar = s:(s1:"2" s2:"5" s3:( "0" | "1" | "2" | "3" | "4" | "5")  => (s1 + s2 + s3)   | 
-                         s4:"2" s5:( "0" | "1" | "2" | "3" | "4") s6:Digit  => (s4 + s5 + s6)       | 
+syntax DecimalUchar = s:(s1:"2" s2:"5" s3:("0" | "1" | "2" | "3" | "4" | "5")  => (s1 + s2 + s3)   | 
+                         s4:"2" s5:("0" | "1" | "2" | "3" | "4") s6:Digit  => (s4 + s5 + s6)       | 
                          s7:"1" s8:regex{[0-9][0-9]+}                           => (s7 + s8)        | 
                          s9:PosDigit s10:Digit                              => (s9 + s10)           | 
                          Digit)          => s;
@@ -277,9 +275,9 @@ syntax Alpha                = s:(UpAlpha | LoAlpha) => s;
 syntax UpAlpha              = s:regex{[A-Z]} => s;
 syntax LoAlpha              = s:regex{[a-z]} => s;
 syntax SP                   = s:" " => s;
-syntax CRLF                 = "\r\n";
+syntax CRLF                 = regex{[\x20]*}"\r\n";
 
-type OriginFeildType
+type OriginFieldType
 {
     string UserName;
     string SessionId;
@@ -289,7 +287,7 @@ type OriginFeildType
     string UnicastAddress;
 }
 
-type ConnectionFeildType
+type ConnectionFieldType
 {
     string NetType;
     string AddressType;
@@ -305,7 +303,7 @@ type MediaDescriptionType
 {
     string MediaField;
     optional string InformationField;
-    optional array<ConnectionFeildType> ConnectionFeilds;
+    optional ConnectionFieldType ConnectionFields;
     optional string BandwidthFields;
     optional string KeyField;
     optional array<AttributeFieldType> AttributeFields;

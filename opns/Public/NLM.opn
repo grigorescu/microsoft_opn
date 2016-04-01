@@ -16,7 +16,7 @@ OPNAuthoring
         ],
     RevisionSummary =
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "12/5/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "360482", Date = "03/21/2014"}
         ]
 };
 
@@ -24,9 +24,11 @@ using Standard;
 using XDR;
 using SunRPC;
 using Utility;
+using IANA;
+using TCP;
 using UDP;
 
-annotation uint NlmXid;
+annotation uint IMessage#SunRpcVers;
 
 endpoint Server over IntermediateServer provides NlmOperationContract;
 client endpoint Client connected to Server;
@@ -34,11 +36,106 @@ client endpoint Client connected to Server;
 endpoint IntermediateServer over SunRPC.Node provides NlmMessageContract consumes NlmMessageContract;
 client endpoint IntermediateClient connected to IntermediateServer;
 
+// SunRPC Over TCP actor
+autostart actor SunRPCOverTCP(TCP.Server server)
+{
+    bool IsSunRPCFlag = false;
+    bool IsSunRPCAssist= false; // Set and used only when port is NLM
+
+    process server accepts s:TCP.Segment where (Port.NLM == s.DestinationPort && IsSunRPC(s.Payload, ref IsSunRPCAssist)) || 
+        IsSunRPCRequest(s.Payload, NLMVers, NLM_PROGRAM, ref IsSunRPCFlag)
+    {
+        var ept = endpoint SunRPC.RecordMarking over server;
+        ept.ExpectedProgram = NLM_PROGRAM;
+        ept.VerSet = NLMVers;
+        dispatch ept accepts s;
+    }
+    
+    process server issues s:TCP.Segment where IsSunRPCFlag || 
+        (Port.NLM == s.SourcePort && IsSunRPC(s.Payload, ref IsSunRPCAssist))
+    {
+        dispatch (endpoint SunRPC.RecordMarking over server) issues s;
+    }
+    
+    // Below rules are added in case that TCP mistakes the Client for Server by port number for the trace without TCP 3-way handshake.
+    process server issues s:TCP.Segment where server.isMissingThreeWayHandshake && 
+        ((Port.NLM == s.DestinationPort && IsSunRPC(s.Payload, ref IsSunRPCAssist)) || 
+        IsSunRPCRequest(s.Payload, NLMVers, NLM_PROGRAM, ref IsSunRPCFlag))
+    {
+        var ept = endpoint SunRPC.RecordMarking over server;
+        ept.ExpectedProgram = NLM_PROGRAM;
+        ept.VerSet = NLMVers;
+        dispatch ept accepts s;
+    }
+    
+    process server accepts s:TCP.Segment where server.isMissingThreeWayHandshake && 
+        (IsSunRPCFlag || (Port.NLM == s.SourcePort && IsSunRPC(s.Payload, ref IsSunRPCAssist)))
+    {
+        dispatch (endpoint SunRPC.RecordMarking over server) issues s;
+    }
+}
+
+// SunRPC Over UDP actor
+autostart actor SunRPCOverUDP(UDP.Host host)
+{
+    set<uint> XidSet = {};
+
+    process host accepts d:UDP.Datagram where ((d.DestinationPort == Port.NLM || d.SourcePort == Port.NLM) && IsSunRPC(d.Payload)) || 
+        (IsSunRPCRequest(d.Payload, NLMVers, NLM_PROGRAM) is isSunRPCRequest:bool && isSunRPCRequest) || 
+        (IsSunRPCResponse(d.Payload, ref XidSet) is isSunRPCResponse:bool && isSunRPCResponse)
+    {
+        if (d.DestinationPort != Port.NLM && d.SourcePort != Port.NLM && isSunRPCRequest)
+        {
+            AddXidSet(d.Payload, ref XidSet, false);
+        }
+        if (d.DestinationPort != Port.NLM && d.SourcePort != Port.NLM && isSunRPCResponse)
+        {
+            RemoveXidSet(d.Payload, ref XidSet, false);
+        }
+        dispatch (endpoint SunRPC.RecordMarking over host) accepts d;
+    }
+    
+    // destructor
+    ~endpoint(UDP.Host host)
+    {
+        XidSet = {};
+    }
+}
+
+/* RFC 1813:
+6.1.2 Constants
+These are the RPC constants needed to call the NLM service.
+They are given in decimal.
+    PROGRAM    100021
+    VERSION    4
+*/
+const uint NLM_PROGRAM = 100021;
+const set<uint> NLMVers = {1, 2, 3, 4};
+
 autostart actor NlmNodeOverIntermediateServer(IntermediateServer node)
 {
+    NlmMessageContract.NlmNullRequest nlmNullRequest = null;
+    NlmMessageContract.NlmTestRequest nlmTestRequest = null;
+    NlmMessageContract.NlmLockRequest nlmLockRequest = null;
+    NlmMessageContract.NlmCancelRequest nlmCancelRequest = null;
+    NlmMessageContract.NlmUnlockRequest nlmUnlockRequest = null;
+    NlmMessageContract.NlmGrantedRequest nlmGrantedRequest = null;
+    NlmMessageContract.NlmShareRequest nlmShareRequest = null;
+    NlmMessageContract.NlmUnshareRequest nlmUnshareRequest = null;
+    NlmMessageContract.NlmNmLockRequest nlmNmLockRequest = null;
+    NlmMessageContract.NlmFreeAllRequest nlmFreeAllRequest = null;
+    NlmMessageContract.Nlm4TestRequest nlm4TestRequest = null;
+    NlmMessageContract.Nlm4LockRequest nlm4LockRequest = null;
+    NlmMessageContract.Nlm4CancelRequest nlm4CancelRequest = null;
+    NlmMessageContract.Nlm4UnlockRequest nlm4UnlockRequest = null;
+    NlmMessageContract.Nlm4GrantedRequest nlm4GrantedRequest = null;
+    NlmMessageContract.Nlm4ShareRequest nlm4ShareRequest = null;
+    NlmMessageContract.Nlm4UnshareRequest nlm4UnshareRequest = null;
+    NlmMessageContract.Nlm4NmLockRequest nlm4NmLockRequest = null;
+    NlmMessageContract.Nlm4FreeAllRequest nlm4FreeAllRequest = null;
+    
     // Buffer for Operation 0 to 5, 20 to 23
     // Use xid as key for binding
-    map <uint, any message> serverRequestBuffer = {};
     // Buffer for Operation 6 to 15
     // Operation 6 and 11 are grouped and they use RequestOperationBuffer[6] for binding
     // Operation 7 and 12 are grouped and they use RequestOperationBuffer[7] for binding
@@ -50,109 +147,153 @@ autostart actor NlmNodeOverIntermediateServer(IntermediateServer node)
     // 0
     process node accepts m:NlmMessageContract.NlmNullRequest
     {
-        if (!((m#NlmXid as uint) in serverRequestBuffer))
+        if (nlmNullRequest != null)
         {
-            serverRequestBuffer[m#NlmXid as uint] = m;
+            ReportInsufficientOperation(nlmNullRequest, "NLM", "NlmNull", false);
+            release nlmNullRequest;
         }
+        nlmNullRequest = m;
     }
     process node issues m:NlmMessageContract.NlmNullResponse
     {
-        NlmOperationContract.NlmNullOperation nullOperation = new NlmOperationContract.NlmNullOperation{};
-        nullOperation.Origins = [serverRequestBuffer[m#NlmXid as uint] as NlmMessageContract.NlmNullRequest];
-        nullOperation.Origins += [m];
-        serverRequestBuffer = serverRequestBuffer.Remove(m#NlmXid as uint);
-        dispatch (endpoint Server over node) accepts nullOperation;
+        if (nlmNullRequest == null)
+        {
+            ReportInsufficientOperation(m, "NLM", "NlmNull", true);
+            reject;
+        }
+        else
+        {
+            NlmOperationContract.NlmNullOperation nullOperation = new NlmOperationContract.NlmNullOperation{};
+            nullOperation.Origins = [nlmNullRequest as any message, m as any message];
+            nlmNullRequest = null;
+            dispatch (endpoint Server over node) accepts nullOperation;
+        }
     }
     // version 1/2/3
     // 1
     process node accepts m:NlmMessageContract.NlmTestRequest
     {
-        if (!((m#NlmXid as uint) in serverRequestBuffer))
+        if (nlmTestRequest != null)
         {
-            serverRequestBuffer[m#NlmXid as uint] = m;
+            ReportInsufficientOperation(nlmTestRequest, "NLM", "NlmTest", false);
+            release nlmTestRequest;
         }
+        nlmTestRequest = m;
     }
     process node issues m:NlmMessageContract.NlmTestResponse
     {
-        NlmOperationContract.NlmTestOperation testOperation = new NlmOperationContract.NlmTestOperation{};
-        testOperation.Testargs = (serverRequestBuffer[m#NlmXid as uint] as NlmMessageContract.NlmTestRequest).Testargs;
-        testOperation.Testres = m.Testres;
-        testOperation.Origins = [serverRequestBuffer[m#NlmXid as uint] as NlmMessageContract.NlmTestRequest];
-        testOperation.Origins += [m];
-        serverRequestBuffer = serverRequestBuffer.Remove(m#NlmXid as uint);
-        dispatch (endpoint Server over node) accepts testOperation;
+        if (nlmTestRequest == null)
+        {
+            ReportInsufficientOperation(m, "NLM", "NlmTest", true);
+            reject;
+        }
+        else
+        {
+            NlmOperationContract.NlmTestOperation testOperation = new NlmOperationContract.NlmTestOperation{Testargs = nlmTestRequest.Testargs, Testres = m.Testres};
+            testOperation.Origins = [nlmTestRequest as any message, m as any message];
+            nlmTestRequest = null;
+            dispatch (endpoint Server over node) accepts testOperation;
+        }
     }
     // 2
     process node accepts m:NlmMessageContract.NlmLockRequest
     {
-        if (!((m#NlmXid as uint) in serverRequestBuffer))
+        if (nlmLockRequest != null)
         {
-            serverRequestBuffer[m#NlmXid as uint] = m;
+            ReportInsufficientOperation(nlmLockRequest, "NLM", "NlmLock", false);
+            release nlmLockRequest;
         }
+        nlmLockRequest = m;
     }
     process node issues m:NlmMessageContract.NlmLockResponse
     {
-        NlmOperationContract.NlmLockOperation lockOperation = new NlmOperationContract.NlmLockOperation{};
-        lockOperation.Lockargs = (serverRequestBuffer[m#NlmXid as uint] as NlmMessageContract.NlmLockRequest).Lockargs;
-        lockOperation.Res = m.Res;
-        lockOperation.Origins = [serverRequestBuffer[m#NlmXid as uint] as NlmMessageContract.NlmLockRequest];
-        lockOperation.Origins += [m];
-        serverRequestBuffer = serverRequestBuffer.Remove(m#NlmXid as uint);
-        dispatch (endpoint Server over node) accepts lockOperation;
+        if (nlmLockRequest == null)
+        {
+            ReportInsufficientOperation(m, "NLM", "NlmLock", true);
+            reject;
+        }
+        else
+        {
+            NlmOperationContract.NlmLockOperation lockOperation = new NlmOperationContract.NlmLockOperation{Lockargs = nlmLockRequest.Lockargs, Res = m.Res};
+            lockOperation.Origins = [nlmLockRequest as any message, m as any message];
+            nlmLockRequest = null;
+            dispatch (endpoint Server over node) accepts lockOperation;
+        }
     }
     // 3
     process node accepts m:NlmMessageContract.NlmCancelRequest
     {
-        if (!((m#NlmXid as uint) in serverRequestBuffer))
+        if (nlmCancelRequest != null)
         {
-            serverRequestBuffer[m#NlmXid as uint] = m;
+            ReportInsufficientOperation(nlmCancelRequest, "NLM", "NlmCancel", false);
+            release nlmCancelRequest;
         }
+        nlmCancelRequest = m;
     }
     process node issues m:NlmMessageContract.NlmCancelResponse
     {
-        NlmOperationContract.NlmCancelOperation cancelOperation = new NlmOperationContract.NlmCancelOperation{};
-        cancelOperation.Cancargs = (serverRequestBuffer[m#NlmXid as uint] as NlmMessageContract.NlmCancelRequest).Cancargs;
-        cancelOperation.Res = m.Res;
-        cancelOperation.Origins = [serverRequestBuffer[m#NlmXid as uint] as NlmMessageContract.NlmCancelRequest];
-        cancelOperation.Origins += [m];
-        serverRequestBuffer = serverRequestBuffer.Remove(m#NlmXid as uint);
-        dispatch (endpoint Server over node) accepts cancelOperation;
+        if (nlmCancelRequest == null)
+        {
+            ReportInsufficientOperation(m, "NLM", "NlmCancel", true);
+            reject;
+        }
+        else
+        {
+            NlmOperationContract.NlmCancelOperation cancelOperation = new NlmOperationContract.NlmCancelOperation{Cancargs = nlmCancelRequest.Cancargs, Res = m.Res};
+            cancelOperation.Origins = [nlmCancelRequest as any message, m as any message];
+            nlmCancelRequest = null;
+            dispatch (endpoint Server over node) accepts cancelOperation;
+        }
     }
     // 4
     process node accepts m:NlmMessageContract.NlmUnlockRequest
     {
-        if (!((m#NlmXid as uint) in serverRequestBuffer))
+        if (nlmUnlockRequest != null)
         {
-            serverRequestBuffer[m#NlmXid as uint] = m;
+            ReportInsufficientOperation(nlmUnlockRequest, "NLM", "NlmUnlock", false);
+            release nlmUnlockRequest;
         }
+        nlmUnlockRequest = m;
     }
     process node issues m:NlmMessageContract.NlmUnlockResponse
     {
-        NlmOperationContract.NlmUnlockOperation unlockOperation = new NlmOperationContract.NlmUnlockOperation{};
-        unlockOperation.Unlockargs = (serverRequestBuffer[m#NlmXid as uint] as NlmMessageContract.NlmUnlockRequest).Unlockargs;
-        unlockOperation.Res = m.Res;
-        unlockOperation.Origins = [serverRequestBuffer[m#NlmXid as uint] as NlmMessageContract.NlmUnlockRequest];
-        unlockOperation.Origins += [m];
-        serverRequestBuffer = serverRequestBuffer.Remove(m#NlmXid as uint);
-        dispatch (endpoint Server over node) accepts unlockOperation;
+        if (nlmUnlockRequest == null)
+        {
+            ReportInsufficientOperation(m, "NLM", "NlmUnlock", true);
+            reject;
+        }
+        else
+        {
+            NlmOperationContract.NlmUnlockOperation unlockOperation = new NlmOperationContract.NlmUnlockOperation{Unlockargs = nlmUnlockRequest.Unlockargs, Res = m.Res};
+            unlockOperation.Origins = [nlmUnlockRequest as any message, m as any message];
+            nlmUnlockRequest = null;
+            dispatch (endpoint Server over node) accepts unlockOperation;
+        }
     }
     // 5
     process node accepts m:NlmMessageContract.NlmGrantedRequest
     {
-        if (!((m#NlmXid as uint) in serverRequestBuffer))
+        if (nlmGrantedRequest != null)
         {
-            serverRequestBuffer[m#NlmXid as uint] = m;
+            ReportInsufficientOperation(nlmGrantedRequest, "NLM", "NlmGranted", false);
+            release nlmGrantedRequest;
         }
+        nlmGrantedRequest = m;
     }
     process node issues m:NlmMessageContract.NlmGrantedResponse
     {
-        NlmOperationContract.NlmGrantedOperation grantedOperation = new NlmOperationContract.NlmGrantedOperation{};
-        grantedOperation.Testargs = (serverRequestBuffer[m#NlmXid as uint] as NlmMessageContract.NlmGrantedRequest).Testargs;
-        grantedOperation.Res = m.Res;
-        grantedOperation.Origins = [serverRequestBuffer[m#NlmXid as uint] as NlmMessageContract.NlmGrantedRequest];
-        grantedOperation.Origins += [m];
-        serverRequestBuffer = serverRequestBuffer.Remove(m#NlmXid as uint);
-        dispatch (endpoint Server over node) accepts grantedOperation;
+        if (nlmGrantedRequest == null)
+        {
+            ReportInsufficientOperation(m, "NLM", "NlmGranted", true);
+            reject;
+        }
+        else
+        {
+            NlmOperationContract.NlmGrantedOperation grantedOperation = new NlmOperationContract.NlmGrantedOperation{Testargs = nlmGrantedRequest.Testargs, Res = m.Res};
+            grantedOperation.Origins = [nlmGrantedRequest as any message, m as any message];
+            nlmGrantedRequest = null;
+            dispatch (endpoint Server over node) accepts grantedOperation;
+        }
     }
     // 6
     process node accepts m:NlmMessageContract.NlmTestMsgRequest
@@ -163,7 +304,7 @@ autostart actor NlmNodeOverIntermediateServer(IntermediateServer node)
         }
         else
         {
-            ValidationCheck(false, serverRequestOperationBuffer[6] as NlmMessageContract.NlmTestMsgRequest, "Incomplete Nlm Asynchronous Test Operation, Nlm Test Res Request is missing.");
+            ReportInsufficientOperation(serverRequestOperationBuffer[6] as NlmMessageContract.NlmTestMsgRequest, "NLM", "Nlm Asynchronous Test", false);
             serverRequestOperationBuffer[6] = m;
         }
     }
@@ -176,7 +317,7 @@ autostart actor NlmNodeOverIntermediateServer(IntermediateServer node)
         }
         else
         {
-            ValidationCheck(false, serverRequestOperationBuffer[7] as NlmMessageContract.NlmLockMsgRequest, "Incomplete Nlm Asynchronous Lock Operation, Nlm Lock Res Request is missing.");
+            ReportInsufficientOperation(serverRequestOperationBuffer[7] as NlmMessageContract.NlmLockMsgRequest, "NLM", "Nlm Asynchronous Lock", false);
             serverRequestOperationBuffer[7] = m;
         }
     }
@@ -189,7 +330,7 @@ autostart actor NlmNodeOverIntermediateServer(IntermediateServer node)
         }
         else
         {
-            ValidationCheck(false, serverRequestOperationBuffer[8] as NlmMessageContract.NlmCancelMsgRequest, "NLM: Incomplete Cancel operation due to request is missing when operation is constructed.");
+            ReportInsufficientOperation(serverRequestOperationBuffer[8] as NlmMessageContract.NlmCancelMsgRequest, "NLM", "Nlm Asynchronous Cancel", false);
             serverRequestOperationBuffer[8] = m;
         }
     }
@@ -202,7 +343,7 @@ autostart actor NlmNodeOverIntermediateServer(IntermediateServer node)
         }
         else
         {
-            ValidationCheck(false, serverRequestOperationBuffer[9] as NlmMessageContract.NlmUnlockMsgRequest, "Incomplete Nlm Asynchronous Unlock Operation, Nlm Unlock Res Request is missing.");
+            ReportInsufficientOperation(serverRequestOperationBuffer[9] as NlmMessageContract.NlmUnlockMsgRequest, "NLM", "Nlm Asynchronous Unlock", false);
             serverRequestOperationBuffer[9] = m;
         }
     }
@@ -215,7 +356,7 @@ autostart actor NlmNodeOverIntermediateServer(IntermediateServer node)
         }
         else
         {
-            ValidationCheck(false, serverRequestOperationBuffer[10] as NlmMessageContract.NlmGrantedMsgRequest, "Incomplete Nlm Asynchronous Granted Operation, Nlm Granted Res Request is missing.");
+            ReportInsufficientOperation(serverRequestOperationBuffer[10] as NlmMessageContract.NlmGrantedMsgRequest, "NLM", "Nlm Asynchronous Granted", false);
             serverRequestOperationBuffer[10] = m;
         }
     }
@@ -224,7 +365,7 @@ autostart actor NlmNodeOverIntermediateServer(IntermediateServer node)
     {
         if (!(6 in serverRequestOperationBuffer))
         {
-            ValidationCheck(false, m, "Incomplete Nlm Asynchronous Test Operation, Nlm Test Msg Request is missing.");
+            ReportInsufficientOperation(m, "NLM", "Nlm Asynchronous Test", true);
             reject;
         }
         else
@@ -243,7 +384,7 @@ autostart actor NlmNodeOverIntermediateServer(IntermediateServer node)
     {
         if (!(7 in serverRequestOperationBuffer))
         {
-            ValidationCheck(false, m, "Incomplete Nlm Asynchronous Lock Operation, Nlm Lock Msg Request is missing.");
+            ReportInsufficientOperation(m, "NLM", "Nlm Asynchronous Lock", true);
             reject;
         }
         else
@@ -262,7 +403,7 @@ autostart actor NlmNodeOverIntermediateServer(IntermediateServer node)
     {
         if (!(8 in serverRequestOperationBuffer))
         {
-            ValidationCheck(false, m, "Incomplete Nlm Asynchronous Lock Operation, Nlm Cancel Msg Request is missing.");
+            ReportInsufficientOperation(m, "NLM", "Nlm Asynchronous Cancel", true);
             reject;
         }
         else
@@ -281,7 +422,7 @@ autostart actor NlmNodeOverIntermediateServer(IntermediateServer node)
     {
         if (!(9 in serverRequestOperationBuffer))
         {
-            ValidationCheck(false, m, "Incomplete Nlm Asynchronous Lock Operation, Nlm Unlock Msg Request is missing.");
+            ReportInsufficientOperation(m, "NLM", "Nlm Asynchronous Unlock", true);
             reject;
         }
         else
@@ -300,7 +441,7 @@ autostart actor NlmNodeOverIntermediateServer(IntermediateServer node)
     {
         if (!(10 in serverRequestOperationBuffer))
         {
-            ValidationCheck(false, m, "Incomplete Nlm Asynchronous Lock Operation, Nlm Granted Msg Request is missing.");
+            ReportInsufficientOperation(m, "NLM", "Nlm Asynchronous Granted", true);
             reject;
         }
         else
@@ -318,164 +459,228 @@ autostart actor NlmNodeOverIntermediateServer(IntermediateServer node)
     // 20
     process node accepts m:NlmMessageContract.NlmShareRequest
     {
-        if (!((m#NlmXid as uint) in serverRequestBuffer))
+        if (nlmShareRequest != null)
         {
-            serverRequestBuffer[m#NlmXid as uint] = m;
+            ReportInsufficientOperation(nlmShareRequest, "NLM", "NlmShare", false);
+            release nlmShareRequest;
         }
+        nlmShareRequest = m;
     }
     process node issues m:NlmMessageContract.NlmShareResponse
     {
-        NlmOperationContract.NlmShareOperation shareOperation = new NlmOperationContract.NlmShareOperation{};
-        shareOperation.Shareargs = (serverRequestBuffer[m#NlmXid as uint] as NlmMessageContract.NlmShareRequest).Shareargs;
-        shareOperation.Shareres = m.Shareres;
-        shareOperation.Origins = [serverRequestBuffer[m#NlmXid as uint] as NlmMessageContract.NlmShareRequest];
-        shareOperation.Origins += [m];
-        serverRequestBuffer = serverRequestBuffer.Remove(m#NlmXid as uint);
-        dispatch (endpoint Server over node) accepts shareOperation;
+        if (nlmShareRequest == null)
+        {
+            ReportInsufficientOperation(m, "NLM", "NlmShare", true);
+            reject;
+        }
+        else
+        {
+            NlmOperationContract.NlmShareOperation shareOperation = new NlmOperationContract.NlmShareOperation{Shareargs = nlmShareRequest.Shareargs, Shareres = m.Shareres};
+            shareOperation.Origins = [nlmShareRequest as any message, m as any message];
+            nlmShareRequest = null;
+            dispatch (endpoint Server over node) accepts shareOperation;
+        }
     }
     // 21
     process node accepts m:NlmMessageContract.NlmUnshareRequest
     {
-        if (!((m#NlmXid as uint) in serverRequestBuffer))
+        if (nlmUnshareRequest != null)
         {
-            serverRequestBuffer[m#NlmXid as uint] = m;
+            ReportInsufficientOperation(nlmUnshareRequest, "NLM", "NlmUnshare", false);
+            release nlmUnshareRequest;
         }
+        nlmUnshareRequest = m;
     }
     process node issues m:NlmMessageContract.NlmUnshareResponse
     {
-        NlmOperationContract.NlmUnshareOperation unshareOperation = new NlmOperationContract.NlmUnshareOperation{};
-        unshareOperation.Shareargs = (serverRequestBuffer[m#NlmXid as uint] as NlmMessageContract.NlmUnshareRequest).Shareargs;
-        unshareOperation.Shareres = m.Shareres;
-        unshareOperation.Origins = [serverRequestBuffer[m#NlmXid as uint] as NlmMessageContract.NlmUnshareRequest];
-        unshareOperation.Origins += [m];
-        serverRequestBuffer = serverRequestBuffer.Remove(m#NlmXid as uint);
-        dispatch (endpoint Server over node) accepts unshareOperation;
+        if (nlmUnshareRequest == null)
+        {
+            ReportInsufficientOperation(m, "NLM", "NlmUnshare", true);
+            reject;
+        }
+        else
+        {
+            NlmOperationContract.NlmUnshareOperation unshareOperation = new NlmOperationContract.NlmUnshareOperation{Shareargs = nlmUnshareRequest.Shareargs, Shareres = m.Shareres};
+            unshareOperation.Origins = [nlmUnshareRequest as any message, m as any message];
+            nlmUnshareRequest = null;
+            dispatch (endpoint Server over node) accepts unshareOperation;
+        }
     }
     // 22
     process node accepts m:NlmMessageContract.NlmNmLockRequest
     {
-        if (!((m#NlmXid as uint) in serverRequestBuffer))
+        if (nlmNmLockRequest != null)
         {
-            serverRequestBuffer[m#NlmXid as uint] = m;
+            ReportInsufficientOperation(nlmNmLockRequest, "NLM", "NlmNmLock", false);
+            release nlmNmLockRequest;
         }
+        nlmNmLockRequest = m;
     }
     process node issues m:NlmMessageContract.NlmNmLockResponse
     {
-        NlmOperationContract.NlmNmLockOperation nmLockOperation = new NlmOperationContract.NlmNmLockOperation{};
-        nmLockOperation.Lockargs = (serverRequestBuffer[m#NlmXid as uint] as NlmMessageContract.NlmNmLockRequest).Lockargs;
-        nmLockOperation.Res = m.Res;
-        nmLockOperation.Origins = [serverRequestBuffer[m#NlmXid as uint] as NlmMessageContract.NlmNmLockRequest];
-        nmLockOperation.Origins += [m];
-        serverRequestBuffer = serverRequestBuffer.Remove(m#NlmXid as uint);
-        dispatch (endpoint Server over node) accepts nmLockOperation;
+        if (nlmNmLockRequest == null)
+        {
+            ReportInsufficientOperation(m, "NLM", "NlmNmLock", true);
+            reject;
+        }
+        else
+        {
+            NlmOperationContract.NlmNmLockOperation nmLockOperation = new NlmOperationContract.NlmNmLockOperation{Lockargs = nlmNmLockRequest.Lockargs, Res = m.Res};
+            nmLockOperation.Origins = [nlmNmLockRequest as any message, m as any message];
+            nlmNmLockRequest = null;
+            dispatch (endpoint Server over node) accepts nmLockOperation;
+        }
     }
     // 23
     process node accepts m:NlmMessageContract.NlmFreeAllRequest
     {
-        if (!((m#NlmXid as uint) in serverRequestBuffer))
+        if (nlmFreeAllRequest != null)
         {
-            serverRequestBuffer[m#NlmXid as uint] = m;
+            ReportInsufficientOperation(nlmFreeAllRequest, "NLM", "NlmFreeAll", false);
+            release nlmFreeAllRequest;
         }
+        nlmFreeAllRequest = m;
     }
     process node issues m:NlmMessageContract.NlmFreeAllResponse
     {
-        NlmOperationContract.NlmFreeAllOperation freeAllOperation = new NlmOperationContract.NlmFreeAllOperation{};
-        freeAllOperation.Notify = (serverRequestBuffer[m#NlmXid as uint] as NlmMessageContract.NlmFreeAllRequest).Notify;
-        freeAllOperation.Origins = [serverRequestBuffer[m#NlmXid as uint] as NlmMessageContract.NlmFreeAllRequest];
-        freeAllOperation.Origins += [m];
-        serverRequestBuffer = serverRequestBuffer.Remove(m#NlmXid as uint);
-        dispatch (endpoint Server over node) accepts freeAllOperation;
+        if (nlmFreeAllRequest == null)
+        {
+            ReportInsufficientOperation(m, "NLM", "NlmFreeAll", true);
+            reject;
+        }
+        else
+        {
+            NlmOperationContract.NlmFreeAllOperation freeAllOperation = new NlmOperationContract.NlmFreeAllOperation{Notify = nlmFreeAllRequest.Notify};
+            freeAllOperation.Origins = [nlmFreeAllRequest as any message, m as any message];
+            nlmFreeAllRequest = null;
+            dispatch (endpoint Server over node) accepts freeAllOperation;
+        }
     }
     // version 4
     // 1
     process node accepts m:NlmMessageContract.Nlm4TestRequest
     {
-        if (!((m#NlmXid as uint) in serverRequestBuffer))
+        if (nlm4TestRequest != null)
         {
-            serverRequestBuffer[m#NlmXid as uint] = m;
+            ReportInsufficientOperation(nlm4TestRequest, "NLM", "Nlm4Test", false);
+            release nlm4TestRequest;
         }
+        nlm4TestRequest = m;
     }
     process node issues m:NlmMessageContract.Nlm4TestResponse
     {
-        NlmOperationContract.Nlm4TestOperation testOperation = new NlmOperationContract.Nlm4TestOperation{};
-        testOperation.Testargs = (serverRequestBuffer[m#NlmXid as uint] as NlmMessageContract.Nlm4TestRequest).Testargs;
-        testOperation.Testres = m.Testres;
-        testOperation.Origins = [serverRequestBuffer[m#NlmXid as uint] as NlmMessageContract.Nlm4TestRequest];
-        testOperation.Origins += [m];
-        serverRequestBuffer = serverRequestBuffer.Remove(m#NlmXid as uint);
-        dispatch (endpoint Server over node) accepts testOperation;
+        if (nlm4TestRequest == null)
+        {
+            ReportInsufficientOperation(m, "NLM", "Nlm4Test", true);
+            reject;
+        }
+        else
+        {
+            NlmOperationContract.Nlm4TestOperation testOperation = new NlmOperationContract.Nlm4TestOperation{Testargs = nlm4TestRequest.Testargs, Testres = m.Testres};
+            testOperation.Origins = [nlm4TestRequest as any message, m as any message];
+            nlm4TestRequest = null;
+            dispatch (endpoint Server over node) accepts testOperation;
+        }
     }
     // 2
     process node accepts m:NlmMessageContract.Nlm4LockRequest
     {
-        if (!((m#NlmXid as uint) in serverRequestBuffer))
+        if (nlm4LockRequest != null)
         {
-            serverRequestBuffer[m#NlmXid as uint] = m;
+            ReportInsufficientOperation(nlm4LockRequest, "NLM", "Nlm4Lock", false);
+            release nlm4LockRequest;
         }
+        nlm4LockRequest = m;
     }
     process node issues m:NlmMessageContract.Nlm4LockResponse
     {
-        NlmOperationContract.Nlm4LockOperation lockOperation = new NlmOperationContract.Nlm4LockOperation{};
-        lockOperation.Lockargs = (serverRequestBuffer[m#NlmXid as uint] as NlmMessageContract.Nlm4LockRequest).Lockargs;
-        lockOperation.Res = m.Res;
-        lockOperation.Origins = [serverRequestBuffer[m#NlmXid as uint] as NlmMessageContract.Nlm4LockRequest];
-        lockOperation.Origins += [m];
-        serverRequestBuffer = serverRequestBuffer.Remove(m#NlmXid as uint);
-        dispatch (endpoint Server over node) accepts lockOperation;
+        if (nlm4LockRequest == null)
+        {
+            ReportInsufficientOperation(m, "NLM", "Nlm4Lock", true);
+            reject;
+        }
+        else
+        {
+            NlmOperationContract.Nlm4LockOperation lockOperation = new NlmOperationContract.Nlm4LockOperation{Lockargs = nlm4LockRequest.Lockargs, Res = m.Res};
+            lockOperation.Origins = [nlm4LockRequest as any message, m as any message];
+            nlm4LockRequest = null;
+            dispatch (endpoint Server over node) accepts lockOperation;
+        }
     }
     // 3
     process node accepts m:NlmMessageContract.Nlm4CancelRequest
     {
-        if (!((m#NlmXid as uint) in serverRequestBuffer))
+        if (nlm4CancelRequest != null)
         {
-            serverRequestBuffer[m#NlmXid as uint] = m;
+            ReportInsufficientOperation(nlmCancelRequest, "NLM", "NlmCancel", false);
+            release nlm4CancelRequest;
         }
+        nlm4CancelRequest = m;
     }
     process node issues m:NlmMessageContract.Nlm4CancelResponse
     {
-        NlmOperationContract.Nlm4CancelOperation cancelOperation = new NlmOperationContract.Nlm4CancelOperation{};
-        cancelOperation.Cancargs = (serverRequestBuffer[m#NlmXid as uint] as NlmMessageContract.Nlm4CancelRequest).Cancargs;
-        cancelOperation.Res = m.Res;
-        cancelOperation.Origins = [serverRequestBuffer[m#NlmXid as uint] as NlmMessageContract.Nlm4CancelRequest];
-        cancelOperation.Origins += [m];
-        serverRequestBuffer = serverRequestBuffer.Remove(m#NlmXid as uint);
-        dispatch (endpoint Server over node) accepts cancelOperation;
+        if (nlm4CancelRequest == null)
+        {
+            ReportInsufficientOperation(m, "NLM", "NlmCancel", true);
+            reject;
+        }
+        else
+        {
+            NlmOperationContract.Nlm4CancelOperation cancelOperation = new NlmOperationContract.Nlm4CancelOperation{Cancargs = nlm4CancelRequest.Cancargs, Res = m.Res};
+            cancelOperation.Origins = [nlm4CancelRequest as any message, m as any message];
+            nlm4CancelRequest = null;
+            dispatch (endpoint Server over node) accepts cancelOperation;
+        }
     }
     // 4
     process node accepts m:NlmMessageContract.Nlm4UnlockRequest
     {
-        if (!((m#NlmXid as uint) in serverRequestBuffer))
+        if (nlm4UnlockRequest != null)
         {
-            serverRequestBuffer[m#NlmXid as uint] = m;
+            ReportInsufficientOperation(nlm4UnlockRequest, "NLM", "NlmUnlock", false);
+            release nlm4UnlockRequest;
         }
+        nlm4UnlockRequest = m;
     }
     process node issues m:NlmMessageContract.Nlm4UnlockResponse
     {
-        NlmOperationContract.Nlm4UnlockOperation unlockOperation = new NlmOperationContract.Nlm4UnlockOperation{};
-        unlockOperation.Unlockargs = (serverRequestBuffer[m#NlmXid as uint] as NlmMessageContract.Nlm4UnlockRequest).Unlockargs;
-        unlockOperation.Res = m.Res;
-        unlockOperation.Origins = [serverRequestBuffer[m#NlmXid as uint] as NlmMessageContract.Nlm4UnlockRequest];
-        unlockOperation.Origins += [m];
-        serverRequestBuffer = serverRequestBuffer.Remove(m#NlmXid as uint);
-        dispatch (endpoint Server over node) accepts unlockOperation;
+        if (nlm4UnlockRequest == null)
+        {
+            ReportInsufficientOperation(m, "NLM", "NlmUnlock", true);
+            reject;
+        }
+        else
+        {
+            NlmOperationContract.Nlm4UnlockOperation unlockOperation = new NlmOperationContract.Nlm4UnlockOperation{Unlockargs = nlm4UnlockRequest.Unlockargs, Res = m.Res};
+            unlockOperation.Origins = [nlm4UnlockRequest as any message, m as any message];
+            nlm4UnlockRequest = null;
+            dispatch (endpoint Server over node) accepts unlockOperation;
+        }
     }
     // 5
     process node accepts m:NlmMessageContract.Nlm4GrantedRequest
     {
-        if (!((m#NlmXid as uint) in serverRequestBuffer))
+        if (nlm4GrantedRequest != null)
         {
-            serverRequestBuffer[m#NlmXid as uint] = m;
+            ReportInsufficientOperation(nlm4GrantedRequest, "NLM", "NlmGranted", false);
+            release nlm4GrantedRequest;
         }
+        nlm4GrantedRequest = m;
     }
     process node issues m:NlmMessageContract.Nlm4GrantedResponse
     {
-        NlmOperationContract.Nlm4GrantedOperation grantedOperation = new NlmOperationContract.Nlm4GrantedOperation{};
-        grantedOperation.Testargs = (serverRequestBuffer[m#NlmXid as uint] as NlmMessageContract.Nlm4GrantedRequest).Testargs;
-        grantedOperation.Res = m.Res;
-        grantedOperation.Origins = [serverRequestBuffer[m#NlmXid as uint] as NlmMessageContract.Nlm4GrantedRequest];
-        grantedOperation.Origins += [m];
-        serverRequestBuffer = serverRequestBuffer.Remove(m#NlmXid as uint);
-        dispatch (endpoint Server over node) accepts grantedOperation;
+        if (nlm4GrantedRequest == null)
+        {
+            ReportInsufficientOperation(m, "NLM", "NlmGranted", true);
+            reject;
+        }
+        else
+        {
+            NlmOperationContract.Nlm4GrantedOperation grantedOperation = new NlmOperationContract.Nlm4GrantedOperation{Testargs = nlm4GrantedRequest.Testargs, Res = m.Res};
+            grantedOperation.Origins = [nlm4GrantedRequest as any message, m as any message];
+            nlm4GrantedRequest = null;
+            dispatch (endpoint Server over node) accepts grantedOperation;
+        }
     }
     // 6
     process node accepts m:NlmMessageContract.Nlm4TestMsgRequest
@@ -486,7 +691,7 @@ autostart actor NlmNodeOverIntermediateServer(IntermediateServer node)
         }
         else
         {
-            ValidationCheck(false, serverRequestOperationBuffer[6] as NlmMessageContract.Nlm4TestMsgRequest, "Incomplete Nlm4 Asynchronous Test Operation, Nlm4 Test Res Request is missing.");
+            ReportInsufficientOperation(serverRequestOperationBuffer[6] as NlmMessageContract.Nlm4TestMsgRequest, "NLM", "Nlm4 Asynchronous Test", false);
             serverRequestOperationBuffer[6] = m;
         }
     }
@@ -499,7 +704,7 @@ autostart actor NlmNodeOverIntermediateServer(IntermediateServer node)
         }
         else
         {
-            ValidationCheck(false, serverRequestOperationBuffer[7] as NlmMessageContract.Nlm4LockMsgRequest, "Incomplete Nlm4 Asynchronous Lock Operation, Nlm4 Lock Res Request is missing.");
+            ReportInsufficientOperation(serverRequestOperationBuffer[7] as NlmMessageContract.Nlm4LockMsgRequest, "NLM", "Nlm4 Asynchronous Lock", false);
             serverRequestOperationBuffer[7] = m;
         }
     }
@@ -512,7 +717,7 @@ autostart actor NlmNodeOverIntermediateServer(IntermediateServer node)
         }
         else
         {
-            ValidationCheck(false, serverRequestOperationBuffer[8] as NlmMessageContract.Nlm4CancelMsgRequest, "Incomplete Nlm4 Asynchronous Cancel Operation, Nlm Cancel Res Request is missing.");
+            ReportInsufficientOperation(serverRequestOperationBuffer[8] as NlmMessageContract.Nlm4CancelMsgRequest, "NLM", "Nlm4 Asynchronous Cancel", false);
             serverRequestOperationBuffer[8] = m;
         }
     }
@@ -525,7 +730,7 @@ autostart actor NlmNodeOverIntermediateServer(IntermediateServer node)
         }
         else
         {
-            ValidationCheck(false, serverRequestOperationBuffer[9] as NlmMessageContract.Nlm4UnlockMsgRequest, "Incomplete Nlm4 Asynchronous Unlock Operation, Nlm4 Unlock Res Request is missing.");
+            ReportInsufficientOperation(serverRequestOperationBuffer[9] as NlmMessageContract.Nlm4UnlockMsgRequest, "NLM", "Nlm4 Asynchronous Unlock", false);
             serverRequestOperationBuffer[9] = m;
         }
     }
@@ -538,7 +743,7 @@ autostart actor NlmNodeOverIntermediateServer(IntermediateServer node)
         }
         else
         {
-            ValidationCheck(false, serverRequestOperationBuffer[10] as NlmMessageContract.Nlm4GrantedMsgRequest, "Incomplete Nlm4 Asynchronous Granted Operation, Nlm4 Granted Res Request is missing.");
+            ReportInsufficientOperation(serverRequestOperationBuffer[10] as NlmMessageContract.Nlm4GrantedMsgRequest, "NLM", "Nlm4 Asynchronous Granted", false);
             serverRequestOperationBuffer[10] = m;
         }
     }
@@ -547,7 +752,7 @@ autostart actor NlmNodeOverIntermediateServer(IntermediateServer node)
     {
         if (!(6 in serverRequestOperationBuffer))
         {
-            ValidationCheck(false, m, "Incomplete Nlm4 Asynchronous Test Operation, Nlm4 Test Msg Request is missing.");
+            ReportInsufficientOperation(m, "NLM", "Nlm4 Asynchronous Test", true);
             reject;
         }
         else
@@ -566,7 +771,7 @@ autostart actor NlmNodeOverIntermediateServer(IntermediateServer node)
     {
         if (!(7 in serverRequestOperationBuffer))
         {
-            ValidationCheck(false, m, "Incomplete Nlm4 Asynchronous Lock Operation, Nlm4 Lock Msg Request is missing.");
+            ReportInsufficientOperation(m, "NLM", "Nlm4 Asynchronous Lock", true);
             reject;
         }
         else
@@ -585,7 +790,7 @@ autostart actor NlmNodeOverIntermediateServer(IntermediateServer node)
     {
         if (!(8 in serverRequestOperationBuffer))
         {
-            ValidationCheck(false, m, "Incomplete Nlm4 Asynchronous Lock Operation, Nlm4 Cancel Msg Request is missing.");
+            ReportInsufficientOperation(m, "NLM", "Nlm4 Asynchronous Cancel", true);
             reject;
         }
         else
@@ -604,7 +809,7 @@ autostart actor NlmNodeOverIntermediateServer(IntermediateServer node)
     {
         if (!(9 in serverRequestOperationBuffer))
         {
-            ValidationCheck(false, m, "Incomplete Nlm4 Asynchronous Lock Operation, Nlm4 Unlock Msg Request is missing.");
+            ReportInsufficientOperation(m, "NLM", "Nlm4 Asynchronous Unlock", true);
             reject;
         }
         else
@@ -623,7 +828,7 @@ autostart actor NlmNodeOverIntermediateServer(IntermediateServer node)
     {
         if (!(10 in serverRequestOperationBuffer))
         {
-            ValidationCheck(false, m, "Incomplete Nlm4 Asynchronous Lock Operation, Nlm4 Granted Msg Request is missing.");
+            ReportInsufficientOperation(m, "NLM", "Nlm4 Asynchronous Granted", true);
             reject;
         }
         else
@@ -640,96 +845,209 @@ autostart actor NlmNodeOverIntermediateServer(IntermediateServer node)
     // 20
     process node accepts m:NlmMessageContract.Nlm4ShareRequest
     {
-        if (!((m#NlmXid as uint) in serverRequestBuffer))
+        if (nlm4ShareRequest != null)
         {
-            serverRequestBuffer[m#NlmXid as uint] = m;
+            ReportInsufficientOperation(nlm4ShareRequest, "NLM", "Nlm4Share", false);
+            release nlm4ShareRequest;
         }
+        nlm4ShareRequest = m;
     }
     process node issues m:NlmMessageContract.Nlm4ShareResponse
     {
-        NlmOperationContract.Nlm4ShareOperation shareOperation = new NlmOperationContract.Nlm4ShareOperation{};
-        shareOperation.Shareargs = (serverRequestBuffer[m#NlmXid as uint] as NlmMessageContract.Nlm4ShareRequest).Shareargs;
-        shareOperation.Shareres = m.Shareres;
-        shareOperation.Origins = [serverRequestBuffer[m#NlmXid as uint] as NlmMessageContract.Nlm4ShareRequest];
-        shareOperation.Origins += [m];
-        serverRequestBuffer = serverRequestBuffer.Remove(m#NlmXid as uint);
-        dispatch (endpoint Server over node) accepts shareOperation;
+        if (nlm4ShareRequest == null)
+        {
+            ReportInsufficientOperation(m, "NLM", "Nlm4Share", true);
+            reject;
+        }
+        else
+        {
+            NlmOperationContract.Nlm4ShareOperation shareOperation = new NlmOperationContract.Nlm4ShareOperation{Shareargs = nlm4ShareRequest.Shareargs, Shareres = m.Shareres};
+            shareOperation.Origins = [nlm4ShareRequest as any message, m as any message];
+            nlm4ShareRequest = null;
+            dispatch (endpoint Server over node) accepts shareOperation;
+        }
     }
     // 21
     process node accepts m:NlmMessageContract.Nlm4UnshareRequest
     {
-        if (!((m#NlmXid as uint) in serverRequestBuffer))
+        if (nlm4UnshareRequest != null)
         {
-            serverRequestBuffer[m#NlmXid as uint] = m;
+            ReportInsufficientOperation(nlm4UnshareRequest, "NLM", "Nlm4Unshare", false);
+            release nlm4UnshareRequest;
         }
+        nlm4UnshareRequest = m;
     }
     process node issues m:NlmMessageContract.Nlm4UnshareResponse
     {
-        NlmOperationContract.Nlm4UnshareOperation unshareOperation = new NlmOperationContract.Nlm4UnshareOperation{};
-        unshareOperation.Shareargs = (serverRequestBuffer[m#NlmXid as uint] as NlmMessageContract.Nlm4UnshareRequest).Shareargs;
-        unshareOperation.Shareres = m.Shareres;
-        unshareOperation.Origins = [serverRequestBuffer[m#NlmXid as uint] as NlmMessageContract.Nlm4UnshareRequest];
-        unshareOperation.Origins += [m];
-        serverRequestBuffer = serverRequestBuffer.Remove(m#NlmXid as uint);
-        dispatch (endpoint Server over node) accepts unshareOperation;
+        if (nlm4UnshareRequest == null)
+        {
+            ReportInsufficientOperation(m, "NLM", "Nlm4Unshare", true);
+            reject;
+        }
+        else
+        {
+            NlmOperationContract.Nlm4UnshareOperation unshareOperation = new NlmOperationContract.Nlm4UnshareOperation{Shareargs = nlm4UnshareRequest.Shareargs, Shareres = m.Shareres};
+            unshareOperation.Origins = [nlm4UnshareRequest as any message, m as any message];
+            nlm4UnshareRequest = null;
+            dispatch (endpoint Server over node) accepts unshareOperation;
+        }
     }
     // 22
     process node accepts m:NlmMessageContract.Nlm4NmLockRequest
     {
-        if (!((m#NlmXid as uint) in serverRequestBuffer))
+        if (nlm4NmLockRequest != null)
         {
-            serverRequestBuffer[m#NlmXid as uint] = m;
+            ReportInsufficientOperation(nlm4NmLockRequest, "NLM", "Nlm4NmLock", false);
+            release nlm4NmLockRequest;
         }
+        nlm4NmLockRequest = m;
     }
     process node issues m:NlmMessageContract.Nlm4NmLockResponse
     {
-        NlmOperationContract.Nlm4NmLockOperation nmLockOperation = new NlmOperationContract.Nlm4NmLockOperation{};
-        nmLockOperation.Lockargs = (serverRequestBuffer[m#NlmXid as uint] as NlmMessageContract.Nlm4NmLockRequest).Lockargs;
-        nmLockOperation.Res = m.Res;
-        nmLockOperation.Origins = [serverRequestBuffer[m#NlmXid as uint] as NlmMessageContract.Nlm4NmLockRequest];
-        nmLockOperation.Origins += [m];
-        serverRequestBuffer = serverRequestBuffer.Remove(m#NlmXid as uint);
-        dispatch (endpoint Server over node) accepts nmLockOperation;
+        if (nlm4NmLockRequest == null)
+        {
+            ReportInsufficientOperation(m, "NLM", "Nlm4NmLock", true);
+            reject;
+        }
+        else
+        {
+            NlmOperationContract.Nlm4NmLockOperation nmLockOperation = new NlmOperationContract.Nlm4NmLockOperation{Lockargs = nlm4NmLockRequest.Lockargs, Res = m.Res};
+            nmLockOperation.Origins = [nlm4NmLockRequest as any message, m as any message];
+            nlm4NmLockRequest = null;
+            dispatch (endpoint Server over node) accepts nmLockOperation;
+        }
     }
     // 23
     process node accepts m:NlmMessageContract.Nlm4FreeAllRequest
     {
-        if (!((m#NlmXid as uint) in serverRequestBuffer))
+        if (nlm4FreeAllRequest != null)
         {
-            serverRequestBuffer[m#NlmXid as uint] = m;
+            ReportInsufficientOperation(nlm4FreeAllRequest, "NLM", "Nlm4FreeAll", false);
+            release nlm4FreeAllRequest;
         }
+        nlm4FreeAllRequest = m;
     }
     process node issues m:NlmMessageContract.Nlm4FreeAllResponse
     {
-        NlmOperationContract.Nlm4FreeAllOperation freeAllOperation = new NlmOperationContract.Nlm4FreeAllOperation{};
-        freeAllOperation.Notify = (serverRequestBuffer[m#NlmXid as uint] as NlmMessageContract.Nlm4FreeAllRequest).Notify;
-        freeAllOperation.Origins = [serverRequestBuffer[m#NlmXid as uint] as NlmMessageContract.Nlm4FreeAllRequest];
-        freeAllOperation.Origins += [m];
-        serverRequestBuffer = serverRequestBuffer.Remove(m#NlmXid as uint);
-        dispatch (endpoint Server over node) accepts freeAllOperation;
+        if (nlm4FreeAllRequest == null)
+        {
+            ReportInsufficientOperation(m, "NLM", "Nlm4FreeAll", true);
+            reject;
+        }
+        else
+        {
+            NlmOperationContract.Nlm4FreeAllOperation freeAllOperation = new NlmOperationContract.Nlm4FreeAllOperation{Notify = nlm4FreeAllRequest.Notify};
+            freeAllOperation.Origins = [nlm4FreeAllRequest as any message, m as any message];
+            nlm4FreeAllRequest = null;
+            dispatch (endpoint Server over node) accepts freeAllOperation;
+        }
     }
 
     // destructor
     ~endpoint(IntermediateServer intermediateServer)
     {
-        // map <uint, any message> serverRequestBuffer
-        if ((serverRequestBuffer.Values).Count > 0)
+        if (nlmNullRequest != null)
         {
-            foreach (var msg in serverRequestBuffer.Values)
-            {
-                ReportInsufficientData(msg, DiagnosisLevel.Error, "NLM: Insufficient fragments for full reassembly.");
-                DisplayTopLevelMessage(msg);
-            }
-            serverRequestBuffer = {};
+            ReportInsufficientOperation(nlmNullRequest, "NLM", "NlmNull", false);
+            release nlmNullRequest;
+        }
+        if (nlmTestRequest != null)
+        {
+            ReportInsufficientOperation(nlmTestRequest, "NLM", "NlmTest", false);
+            release nlmTestRequest;
+        }
+        if (nlmLockRequest != null)
+        {
+            ReportInsufficientOperation(nlmLockRequest, "NLM", "NlmLock", false);
+            release nlmLockRequest;
+        }
+        if (nlmCancelRequest != null)
+        {
+            ReportInsufficientOperation(nlmCancelRequest, "NLM", "NlmCancel", false);
+            release nlmCancelRequest;
+        }
+        if (nlmUnlockRequest != null)
+        {
+            ReportInsufficientOperation(nlmUnlockRequest, "NLM", "NlmUnlock", false);
+            release nlmUnlockRequest;
+        }
+        if (nlmGrantedRequest != null)
+        {
+            ReportInsufficientOperation(nlmGrantedRequest, "NLM", "NlmGranted", false);
+            release nlmGrantedRequest;
+        }
+        if (nlmShareRequest != null)
+        {
+            ReportInsufficientOperation(nlmShareRequest, "NLM", "NlmShare", false);
+            release nlmShareRequest;
+        }
+        if (nlmUnshareRequest != null)
+        {
+            ReportInsufficientOperation(nlmUnshareRequest, "NLM", "NlmUnshare", false);
+            release nlmUnshareRequest;
+        }
+        if (nlmNmLockRequest != null)
+        {
+            ReportInsufficientOperation(nlmNmLockRequest, "NLM", "NlmNmLock", false);
+            release nlmNmLockRequest;
+        }
+        if (nlmFreeAllRequest != null)
+        {
+            ReportInsufficientOperation(nlmFreeAllRequest, "NLM", "NlmFreeAllRequest", false);
+            release nlmFreeAllRequest;
+        }
+        if (nlm4TestRequest != null)
+        {
+            ReportInsufficientOperation(nlm4TestRequest, "NLM", "Nlm4Test", false);
+            release nlm4TestRequest;
+        }
+        if (nlm4LockRequest != null)
+        {
+            ReportInsufficientOperation(nlm4LockRequest, "NLM", "Nlm4Lock", false);
+            release nlm4LockRequest;
+        }
+        if (nlm4CancelRequest != null)
+        {
+            ReportInsufficientOperation(nlm4CancelRequest, "NLM", "Nlm4Cancel", false);
+            release nlm4CancelRequest;
+        }
+        if (nlm4UnlockRequest != null)
+        {
+            ReportInsufficientOperation(nlm4UnlockRequest, "NLM", "Nlm4Unlock", false);
+            release nlm4UnlockRequest;
+        }
+        if (nlm4GrantedRequest != null)
+        {
+            ReportInsufficientOperation(nlm4GrantedRequest, "NLM", "Nlm4Granted", false);
+            release nlm4GrantedRequest;
+        }
+        if (nlm4ShareRequest != null)
+        {
+            ReportInsufficientOperation(nlm4ShareRequest, "NLM", "Nlm4Share", false);
+            release nlm4ShareRequest;
+        }
+        if (nlm4UnshareRequest != null)
+        {
+            ReportInsufficientOperation(nlm4UnshareRequest, "NLM", "Nlm4Unshare", false);
+            release nlm4UnshareRequest;
+        }
+        if (nlm4NmLockRequest != null)
+        {
+            ReportInsufficientOperation(nlm4NmLockRequest, "NLM", "Nlm4NmLock", false);
+            release nlm4NmLockRequest;
+        }
+        if (nlm4FreeAllRequest != null)
+        {
+            ReportInsufficientOperation(nlm4FreeAllRequest, "NLM", "nlm4FreeAll", false);
+            release nlm4FreeAllRequest;
         }
         
-        // map <uint, any message> serverRequestOperationBuffer
         if ((serverRequestOperationBuffer.Values).Count > 0)
         {
             foreach (var msg in serverRequestOperationBuffer.Values)
             {
                 ReportInsufficientData(msg, DiagnosisLevel.Error, "NLM: Insufficient fragments for full reassembly.");
-                DisplayTopLevelMessage(msg);
+                release msg;
             }
             serverRequestOperationBuffer = {};
         }
@@ -772,7 +1090,7 @@ autostart actor NlmMessageOverSunRPC(SunRPC.Node node)
     {
         mapVersionByXID[r.Xid] = (r.Body as CallBody).Vers;
         mapProcedureByXID[r.Xid] = (r.Body as CallBody).Proc;
-        NlmMessageProcessing(mapProcedureByXID[r.Xid],mapVersionByXID[r.Xid], ((r.Body as CallBody).CallData as SunRPC.BinaryCallDataType).Data as stream, true, r.Xid, AcceptsDispatcher);
+        NlmMessageProcessing(mapProcedureByXID[r.Xid], mapVersionByXID[r.Xid], ((r.Body as CallBody).CallData as SunRPC.BinaryCallDataType).Data as stream, true, r.Xid, AcceptsDispatcher);
     }
     
     void AcceptsDispatcher(any message m)
@@ -795,240 +1113,150 @@ bool NlmMessageProcessing(uint procedureNumber, uint version, stream messagePayl
             case 0 =>
                 if (isCall)
                 {
+                    // case 0 is Null Request, decode alway succeed, no need check
                     NlmMessageContract.NlmNullRequest NlmNullRequestMessage = BinaryDecoder<NlmMessageContract.NlmNullRequest>(messagePayload) as NlmMessageContract.NlmNullRequest;
-                    NlmNullRequestMessage#NlmXid = xid;
+                    NlmNullRequestMessage#SunRpcVers = version;
                     dispatcher(NlmNullRequestMessage);
                 }
                 else
                 {
+                    // case 0 is Null Response, decode alway succeed, no need check
                     NlmMessageContract.NlmNullResponse NlmNullResponseMessage = BinaryDecoder<NlmMessageContract.NlmNullResponse>(messagePayload) as NlmMessageContract.NlmNullResponse;
-                    NlmNullResponseMessage#NlmXid = xid;
+                    NlmNullResponseMessage#SunRpcVers = version;
                     dispatcher(NlmNullResponseMessage);
                 }
                 return true;
             case 1 =>
                 if (isCall)
                 {
-                    optional NlmMessageContract.NlmTestRequest NlmTestRequestMessage = BinaryDecoder<NlmMessageContract.NlmTestRequest>(messagePayload);
-                    if (NlmTestRequestMessage is nothing)
-                    {
-                        return false;
-                    }
-                    else
-                    {
-                        NlmMessageContract.NlmTestRequest tempMsg = NlmTestRequestMessage as NlmMessageContract.NlmTestRequest;
-                        tempMsg#NlmXid = xid;
-                        dispatcher(tempMsg);
-                    }
+                    return DecodeNLMMessage<NlmMessageContract.NlmTestRequest>(dispatcher, messagePayload, version, "NlmTestRequest");
                 }
                 else
                 {
-                    optional NlmMessageContract.NlmTestResponse NlmTestResponseMessage = BinaryDecoder<NlmMessageContract.NlmTestResponse>(messagePayload);
-                    if (NlmTestResponseMessage is nothing)
-                    {
-                        return false;
-                    }
-                    else
-                    {
-                        NlmMessageContract.NlmTestResponse tempMsg = NlmTestResponseMessage as NlmMessageContract.NlmTestResponse;
-                        tempMsg#NlmXid = xid;
-                        dispatcher(tempMsg);
-                    }
+                    return DecodeNLMMessage<NlmMessageContract.NlmTestResponse>(dispatcher, messagePayload, version, "NlmTestResponse");
                 }
-                return true;
             case 2 =>
                 if (isCall)
                 {
-                    NlmMessageContract.NlmLockRequest NlmLockRequestMessage = BinaryDecoder<NlmMessageContract.NlmLockRequest>(messagePayload) as NlmMessageContract.NlmLockRequest;
-                    NlmLockRequestMessage#NlmXid = xid;
-                    dispatcher(NlmLockRequestMessage);
-
+                    return DecodeNLMMessage<NlmMessageContract.NlmLockRequest>(dispatcher, messagePayload, version, "NlmLockRequest");
                 }
                 else
                 {
-                    NlmMessageContract.NlmLockResponse NlmLockResponseMessage = BinaryDecoder<NlmMessageContract.NlmLockResponse>(messagePayload) as NlmMessageContract.NlmLockResponse;
-                    NlmLockResponseMessage#NlmXid = xid;
-                    dispatcher(NlmLockResponseMessage);
+                    return DecodeNLMMessage<NlmMessageContract.NlmLockResponse>(dispatcher, messagePayload, version, "NlmLockResponse");
                 }
-                return true;
             case 3 =>
                 if (isCall)
                 {
-                    NlmMessageContract.NlmCancelRequest NlmCancelRequestMessage = BinaryDecoder<NlmMessageContract.NlmCancelRequest>(messagePayload) as NlmMessageContract.NlmCancelRequest;
-                    NlmCancelRequestMessage#NlmXid = xid;
-                    dispatcher(NlmCancelRequestMessage);
+                    return DecodeNLMMessage<NlmMessageContract.NlmCancelRequest>(dispatcher, messagePayload, version, "NlmCancelRequest");
                 }
                 else
                 {
-                    NlmMessageContract.NlmCancelResponse NlmCancelResponseMessage = BinaryDecoder<NlmMessageContract.NlmCancelResponse>(messagePayload) as NlmMessageContract.NlmCancelResponse;
-                    NlmCancelResponseMessage#NlmXid = xid;
-                    dispatcher(NlmCancelResponseMessage);
+                    return DecodeNLMMessage<NlmMessageContract.NlmCancelResponse>(dispatcher, messagePayload, version, "NlmCancelResponse");
                 }
-                return true;
             case 4 =>
                 if (isCall)
                 {
-                    NlmMessageContract.NlmUnlockRequest NlmUnlockRequestMessage = BinaryDecoder<NlmMessageContract.NlmUnlockRequest>(messagePayload) as NlmMessageContract.NlmUnlockRequest;
-                    NlmUnlockRequestMessage#NlmXid = xid;
-                    dispatcher(NlmUnlockRequestMessage);
+                    return DecodeNLMMessage<NlmMessageContract.NlmUnlockRequest>(dispatcher, messagePayload, version, "NlmUnlockRequest");
                 }
                 else
                 {
-                    NlmMessageContract.NlmUnlockResponse NlmUnlockResponseMessage = BinaryDecoder<NlmMessageContract.NlmUnlockResponse>(messagePayload) as NlmMessageContract.NlmUnlockResponse;
-                    NlmUnlockResponseMessage#NlmXid = xid;
-                    dispatcher(NlmUnlockResponseMessage);
+                    return DecodeNLMMessage<NlmMessageContract.NlmUnlockResponse>(dispatcher, messagePayload, version, "NlmUnlockResponse");
                 }
-                return true;
             case 5 =>
                 if (isCall)
                 {
-                    NlmMessageContract.NlmGrantedRequest NlmGrantedRequestMessage = BinaryDecoder<NlmMessageContract.NlmGrantedRequest>(messagePayload) as NlmMessageContract.NlmGrantedRequest;
-                    NlmGrantedRequestMessage#NlmXid = xid;
-                    dispatcher(NlmGrantedRequestMessage);
+                    return DecodeNLMMessage<NlmMessageContract.NlmGrantedRequest>(dispatcher, messagePayload, version, "NlmGrantedRequest");
                 }
                 else
                 {
-                    NlmMessageContract.NlmGrantedResponse NlmGrantedResponseMessage = BinaryDecoder<NlmMessageContract.NlmGrantedResponse>(messagePayload) as NlmMessageContract.NlmGrantedResponse;
-                    NlmGrantedResponseMessage#NlmXid = xid;
-                    dispatcher(NlmGrantedResponseMessage);
+                    return DecodeNLMMessage<NlmMessageContract.NlmGrantedResponse>(dispatcher, messagePayload, version, "NlmGrantedResponse");
                 }
-                return true;
             case 6 =>
                 if (isCall)
                 {
-                    NlmMessageContract.NlmTestMsgRequest NlmTestMsgRequestMessage = BinaryDecoder<NlmMessageContract.NlmTestMsgRequest>(messagePayload) as NlmMessageContract.NlmTestMsgRequest;
-                    //NlmTestMsgRequestMessage#NlmXid = xid;
-                    dispatcher(NlmTestMsgRequestMessage);
+                    return DecodeNLMMessage<NlmMessageContract.NlmTestMsgRequest>(dispatcher, messagePayload, version, "NlmTestMsgRequest");
                 }
-                return true;
             case 7 =>
                 if (isCall)
                 {
-                    NlmMessageContract.NlmLockMsgRequest NlmLockMsgRequestMessage = BinaryDecoder<NlmMessageContract.NlmLockMsgRequest>(messagePayload) as NlmMessageContract.NlmLockMsgRequest;
-                    //NlmLockMsgRequestMessage#NlmXid = xid;
-                    dispatcher(NlmLockMsgRequestMessage);
+                    return DecodeNLMMessage<NlmMessageContract.NlmLockMsgRequest>(dispatcher, messagePayload, version, "NlmLockMsgRequest");
                 }
-                return true;
             case 8 =>
                 if (isCall)
                 {
-                    NlmMessageContract.NlmCancelMsgRequest NlmCancelMsgRequestMessage = BinaryDecoder<NlmMessageContract.NlmCancelMsgRequest>(messagePayload) as NlmMessageContract.NlmCancelMsgRequest;
-                    //NlmCancelMsgRequestMessage#NlmXid = xid;
-                    dispatcher(NlmCancelMsgRequestMessage);
+                    return DecodeNLMMessage<NlmMessageContract.NlmCancelMsgRequest>(dispatcher, messagePayload, version, "NlmCancelMsgRequest");
                 }
-                return true;
             case 9 =>
                 if (isCall)
                 {
-                    NlmMessageContract.NlmUnlockMsgRequest NlmUnlockMsgRequestMessage = BinaryDecoder<NlmMessageContract.NlmUnlockMsgRequest>(messagePayload) as NlmMessageContract.NlmUnlockMsgRequest;
-                    //NlmUnlockMsgRequestMessage#NlmXid = xid;
-                    dispatcher(NlmUnlockMsgRequestMessage);
+                    return DecodeNLMMessage<NlmMessageContract.NlmUnlockMsgRequest>(dispatcher, messagePayload, version, "NlmUnlockMsgRequest");
                 }
-                return true;
             case 10 =>
                 if (isCall)
                 {
-                    NlmMessageContract.NlmGrantedMsgRequest NlmGrantedMsgRequestMessage = BinaryDecoder<NlmMessageContract.NlmGrantedMsgRequest>(messagePayload) as NlmMessageContract.NlmGrantedMsgRequest;
-                    //NlmGrantedMsgRequestMessage#NlmXid = xid;
-                    dispatcher(NlmGrantedMsgRequestMessage);
+                    return DecodeNLMMessage<NlmMessageContract.NlmGrantedMsgRequest>(dispatcher, messagePayload, version, "NlmGrantedMsgRequest");
                 }
-                return true;
             case 11 =>
                 if (isCall)
                 {
-                    NlmMessageContract.NlmTestResRequest NlmTestResRequestMessage = BinaryDecoder<NlmMessageContract.NlmTestResRequest>(messagePayload) as NlmMessageContract.NlmTestResRequest;
-                    //NlmTestResRequestMessage#NlmXid = xid;
-                    dispatcher(NlmTestResRequestMessage);
+                    return DecodeNLMMessage<NlmMessageContract.NlmTestResRequest>(dispatcher, messagePayload, version, "NlmTestResRequest");
                 }
-                return true;
             case 12 =>
                 if (isCall)
                 {
-                    NlmMessageContract.NlmLockResRequest NlmLockResRequestMessage = BinaryDecoder<NlmMessageContract.NlmLockResRequest>(messagePayload) as NlmMessageContract.NlmLockResRequest;
-                    //NlmLockResRequestMessage#NlmXid = xid;
-                    dispatcher(NlmLockResRequestMessage);
+                    return DecodeNLMMessage<NlmMessageContract.NlmLockResRequest>(dispatcher, messagePayload, version, "NlmLockResRequest");
                 }
-                return true;
             case 13 =>
                 if (isCall)
                 {
-                    NlmMessageContract.NlmCancelResRequest NlmCancelResRequestMessage = BinaryDecoder<NlmMessageContract.NlmCancelResRequest>(messagePayload) as NlmMessageContract.NlmCancelResRequest;
-                    //NlmCancelResRequestMessage#NlmXid = xid;
-                    dispatcher(NlmCancelResRequestMessage);
+                    return DecodeNLMMessage<NlmMessageContract.NlmCancelResRequest>(dispatcher, messagePayload, version, "NlmCancelResRequest");
                 }
-                return true;
             case 14 =>
                 if (isCall)
                 {
-                    NlmMessageContract.NlmUnlockResRequest NlmUnlockResRequestMessage = BinaryDecoder<NlmMessageContract.NlmUnlockResRequest>(messagePayload) as NlmMessageContract.NlmUnlockResRequest;
-                    //NlmUnlockResRequestMessage#NlmXid = xid;
-                    dispatcher(NlmUnlockResRequestMessage);
+                    return DecodeNLMMessage<NlmMessageContract.NlmUnlockResRequest>(dispatcher, messagePayload, version, "NlmUnlockResRequest");
                 }
-                return true;
             case 15 =>
                 if (isCall)
                 {
-                    NlmMessageContract.NlmGrantedResRequest NlmGrantedResRequestMessage = BinaryDecoder<NlmMessageContract.NlmGrantedResRequest>(messagePayload) as NlmMessageContract.NlmGrantedResRequest;
-                    //NlmGrantedResRequestMessage#NlmXid = xid;
-                    dispatcher(NlmGrantedResRequestMessage);
+                    return DecodeNLMMessage<NlmMessageContract.NlmGrantedResRequest>(dispatcher, messagePayload, version, "NlmGrantedResRequest");
                 }
-                return true;
             case 20 =>
                 if (isCall)
                 {
-                    NlmMessageContract.NlmShareRequest NlmShareRequestMessage = BinaryDecoder<NlmMessageContract.NlmShareRequest>(messagePayload) as NlmMessageContract.NlmShareRequest;
-                    NlmShareRequestMessage#NlmXid = xid;
-                    dispatcher(NlmShareRequestMessage);
+                    return DecodeNLMMessage<NlmMessageContract.NlmShareRequest>(dispatcher, messagePayload, version, "NlmShareRequest");
                 }
                 else
                 {
-                    NlmMessageContract.NlmShareResponse NlmShareResponseMessage = BinaryDecoder<NlmMessageContract.NlmShareResponse>(messagePayload) as NlmMessageContract.NlmShareResponse;
-                    NlmShareResponseMessage#NlmXid = xid;
-                    dispatcher(NlmShareResponseMessage);
+                    return DecodeNLMMessage<NlmMessageContract.NlmShareResponse>(dispatcher, messagePayload, version, "NlmShareResponse");
                 }
-                return true;
             case 21 =>
                 if (isCall)
                 {
-                    NlmMessageContract.NlmUnshareRequest NlmUnshareRequestMessage = BinaryDecoder<NlmMessageContract.NlmUnshareRequest>(messagePayload) as NlmMessageContract.NlmUnshareRequest;
-                    NlmUnshareRequestMessage#NlmXid = xid;
-                    dispatcher(NlmUnshareRequestMessage);
+                    return DecodeNLMMessage<NlmMessageContract.NlmUnshareRequest>(dispatcher, messagePayload, version, "NlmUnshareRequest");
                 }
                 else
                 {
-                    NlmMessageContract.NlmUnshareResponse NlmUnshareResponseMessage = BinaryDecoder<NlmMessageContract.NlmUnshareResponse>(messagePayload) as NlmMessageContract.NlmUnshareResponse;
-                    NlmUnshareResponseMessage#NlmXid = xid;
-                    dispatcher(NlmUnshareResponseMessage);
+                    return DecodeNLMMessage<NlmMessageContract.NlmUnshareResponse>(dispatcher, messagePayload, version, "NlmUnshareResponse");
                 }
-                return true;
             case 22 =>
                 if (isCall)
                 {
-                    NlmMessageContract.NlmNmLockRequest NlmNmLockRequestMessage = BinaryDecoder<NlmMessageContract.NlmNmLockRequest>(messagePayload) as NlmMessageContract.NlmNmLockRequest;
-                    NlmNmLockRequestMessage#NlmXid = xid;
-                    dispatcher(NlmNmLockRequestMessage);
+                    return DecodeNLMMessage<NlmMessageContract.NlmNmLockRequest>(dispatcher, messagePayload, version, "NlmNmLockRequest");
                 }
                 else
                 {
-                    NlmMessageContract.NlmNmLockResponse NlmNmLockResponseMessage = BinaryDecoder<NlmMessageContract.NlmNmLockResponse>(messagePayload) as NlmMessageContract.NlmNmLockResponse;
-                    NlmNmLockResponseMessage#NlmXid = xid;
-                    dispatcher(NlmNmLockResponseMessage);
+                    return DecodeNLMMessage<NlmMessageContract.NlmNmLockResponse>(dispatcher, messagePayload, version, "NlmNmLockResponse");
                 }
-                return true;
             case 23 =>
                 if (isCall)
                 {
-                    NlmMessageContract.NlmFreeAllRequest NlmFreeAllRequestMessage = BinaryDecoder<NlmMessageContract.NlmFreeAllRequest>(messagePayload) as NlmMessageContract.NlmFreeAllRequest;
-                    NlmFreeAllRequestMessage#NlmXid = xid;
-                    dispatcher(NlmFreeAllRequestMessage);
+                    return DecodeNLMMessage<NlmMessageContract.NlmFreeAllRequest>(dispatcher, messagePayload, version, "NlmFreeAllRequest");
                 }
                 else
                 {
-                    NlmMessageContract.NlmFreeAllResponse NlmFreeAllResponseMessage = BinaryDecoder<NlmMessageContract.NlmFreeAllResponse>(messagePayload) as NlmMessageContract.NlmFreeAllResponse;
-                    NlmFreeAllResponseMessage#NlmXid = xid;
-                    dispatcher(NlmFreeAllResponseMessage);
+                    return DecodeNLMMessage<NlmMessageContract.NlmFreeAllResponse>(dispatcher, messagePayload, version, "NlmFreeAllResponse");
                 }
-                return true;
             default =>
                 throw ("The procedure number in Nlm must be in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 20, 21, 22, 23].");
                 return false;
@@ -1041,223 +1269,153 @@ bool NlmMessageProcessing(uint procedureNumber, uint version, stream messagePayl
             case 0 =>
                 if (isCall)
                 {
+                    // case 0 is Null Request, decode alway succeed, no need check
                     NlmMessageContract.NlmNullRequest NlmNullRequestMessage = BinaryDecoder<NlmMessageContract.NlmNullRequest>(messagePayload) as NlmMessageContract.NlmNullRequest;
-                    NlmNullRequestMessage#NlmXid = xid;
+                    NlmNullRequestMessage#SunRpcVers = version;
                     dispatcher(NlmNullRequestMessage);
                 }
                 else
                 {
+                    // case 0 is Null Response, decode alway succeed, no need check
                     NlmMessageContract.NlmNullResponse NlmNullResponseMessage = BinaryDecoder<NlmMessageContract.NlmNullResponse>(messagePayload) as NlmMessageContract.NlmNullResponse;
-                    NlmNullResponseMessage#NlmXid = xid;
+                    NlmNullResponseMessage#SunRpcVers = version;
                     dispatcher(NlmNullResponseMessage);
                 }
                 return true;
             case 1 =>
                 if (isCall)
                 {
-                    NlmMessageContract.Nlm4TestRequest Nlm4TestRequestMessage = BinaryDecoder<NlmMessageContract.Nlm4TestRequest>(messagePayload) as NlmMessageContract.Nlm4TestRequest;
-                    Nlm4TestRequestMessage#NlmXid = xid;
-                    dispatcher(Nlm4TestRequestMessage);
+                    return DecodeNLMMessage<NlmMessageContract.Nlm4TestRequest>(dispatcher, messagePayload, version, "Nlm4TestRequest");
                 }
                 else
                 {
-                    NlmMessageContract.Nlm4TestResponse Nlm4TestResponseMessage = BinaryDecoder<NlmMessageContract.Nlm4TestResponse>(messagePayload) as NlmMessageContract.Nlm4TestResponse;
-                    Nlm4TestResponseMessage#NlmXid = xid;
-                    dispatcher(Nlm4TestResponseMessage);
+                    return DecodeNLMMessage<NlmMessageContract.Nlm4TestResponse>(dispatcher, messagePayload, version, "Nlm4TestResponse");
                 }
-                return true;
             case 2 =>
                 if (isCall)
                 {
-                    NlmMessageContract.Nlm4LockRequest Nlm4LockRequestMessage = BinaryDecoder<NlmMessageContract.Nlm4LockRequest>(messagePayload) as NlmMessageContract.Nlm4LockRequest;
-                    Nlm4LockRequestMessage#NlmXid = xid;
-                    dispatcher(Nlm4LockRequestMessage);
+                    return DecodeNLMMessage<NlmMessageContract.Nlm4LockRequest>(dispatcher, messagePayload, version, "Nlm4LockRequest");
                 }
                 else
                 {
-                    NlmMessageContract.Nlm4LockResponse Nlm4LockResponseMessage = BinaryDecoder<NlmMessageContract.Nlm4LockResponse>(messagePayload) as NlmMessageContract.Nlm4LockResponse;
-                    Nlm4LockResponseMessage#NlmXid = xid;
-                    dispatcher(Nlm4LockResponseMessage);
+                    return DecodeNLMMessage<NlmMessageContract.Nlm4LockResponse>(dispatcher, messagePayload, version, "Nlm4LockResponse");
                 }
-                return true;
             case 3 =>
                 if (isCall)
                 {
+                    return DecodeNLMMessage<NlmMessageContract.NlmGrantedResponse>(dispatcher, messagePayload, version, "NlmGrantedResponse");
                     NlmMessageContract.Nlm4CancelRequest Nlm4CancelRequestMessage = BinaryDecoder<NlmMessageContract.Nlm4CancelRequest>(messagePayload) as NlmMessageContract.Nlm4CancelRequest;
-                    Nlm4CancelRequestMessage#NlmXid = xid;
-                        dispatcher(Nlm4CancelRequestMessage);
+                    Nlm4CancelRequestMessage#SunRpcVers = version;
+                    dispatcher(Nlm4CancelRequestMessage);
                 }
                 else
                 {
-                    NlmMessageContract.Nlm4CancelResponse Nlm4CancelResponseMessage = BinaryDecoder<NlmMessageContract.Nlm4CancelResponse>(messagePayload) as NlmMessageContract.Nlm4CancelResponse;
-                    Nlm4CancelResponseMessage#NlmXid = xid;
-                        dispatcher(Nlm4CancelResponseMessage);
+                    return DecodeNLMMessage<NlmMessageContract.Nlm4CancelResponse>(dispatcher, messagePayload, version, "Nlm4CancelResponse");
                 }
-                return true;
             case 4 =>
                 if (isCall)
                 {
-                    NlmMessageContract.Nlm4UnlockRequest Nlm4UnlockRequestMessage = BinaryDecoder<NlmMessageContract.Nlm4UnlockRequest>(messagePayload) as NlmMessageContract.Nlm4UnlockRequest;
-                    Nlm4UnlockRequestMessage#NlmXid = xid;
-                        dispatcher(Nlm4UnlockRequestMessage);
+                    return DecodeNLMMessage<NlmMessageContract.Nlm4UnlockRequest>(dispatcher, messagePayload, version, "Nlm4UnlockRequest");
                 }
                 else
                 {
-                    NlmMessageContract.Nlm4UnlockResponse Nlm4UnlockResponseMessage = BinaryDecoder<NlmMessageContract.Nlm4UnlockResponse>(messagePayload) as NlmMessageContract.Nlm4UnlockResponse;
-                    Nlm4UnlockResponseMessage#NlmXid = xid;
-                        dispatcher(Nlm4UnlockResponseMessage);
+                    return DecodeNLMMessage<NlmMessageContract.Nlm4UnlockResponse>(dispatcher, messagePayload, version, "Nlm4UnlockResponse");
                 }
-                return true;
             case 5 =>
                 if (isCall)
                 {
-                    NlmMessageContract.Nlm4GrantedRequest Nlm4GrantedRequestMessage = BinaryDecoder<NlmMessageContract.Nlm4GrantedRequest>(messagePayload) as NlmMessageContract.Nlm4GrantedRequest;
-                    Nlm4GrantedRequestMessage#NlmXid = xid;
-                        dispatcher(Nlm4GrantedRequestMessage);
+                    return DecodeNLMMessage<NlmMessageContract.Nlm4GrantedRequest>(dispatcher, messagePayload, version, "Nlm4GrantedRequest");
                 }
                 else
                 {
-                    NlmMessageContract.Nlm4GrantedResponse Nlm4GrantedResponseMessage = BinaryDecoder<NlmMessageContract.Nlm4GrantedResponse>(messagePayload) as NlmMessageContract.Nlm4GrantedResponse;
-                    Nlm4GrantedResponseMessage#NlmXid = xid;
-                        dispatcher(Nlm4GrantedResponseMessage);
+                    return DecodeNLMMessage<NlmMessageContract.Nlm4GrantedResponse>(dispatcher, messagePayload, version, "Nlm4GrantedResponse");
                 }
-                return true;
             case 6 =>
                 if (isCall)
                 {
-                    NlmMessageContract.Nlm4TestMsgRequest Nlm4TestMsgRequestMessage = BinaryDecoder<NlmMessageContract.Nlm4TestMsgRequest>(messagePayload) as NlmMessageContract.Nlm4TestMsgRequest;
-                    //Nlm4TestMsgRequestMessage#NlmXid = xid;
-                        dispatcher(Nlm4TestMsgRequestMessage);
+                    return DecodeNLMMessage<NlmMessageContract.Nlm4TestMsgRequest>(dispatcher, messagePayload, version, "Nlm4TestMsgRequest");
                 }
-                return true;
             case 7 =>
                 if (isCall)
                 {
-                    NlmMessageContract.Nlm4LockMsgRequest Nlm4LockMsgRequestMessage = BinaryDecoder<NlmMessageContract.Nlm4LockMsgRequest>(messagePayload) as NlmMessageContract.Nlm4LockMsgRequest;
-                    //Nlm4LockMsgRequestMessage#NlmXid = xid;
-                        dispatcher(Nlm4LockMsgRequestMessage);
+                    return DecodeNLMMessage<NlmMessageContract.Nlm4LockMsgRequest>(dispatcher, messagePayload, version, "Nlm4LockMsgRequest");
                 }
-                return true;
             case 8 =>
                 if (isCall)
                 {
-                    NlmMessageContract.Nlm4CancelMsgRequest Nlm4CancelMsgRequestMessage = BinaryDecoder<NlmMessageContract.Nlm4CancelMsgRequest>(messagePayload) as NlmMessageContract.Nlm4CancelMsgRequest;
-                    //Nlm4CancelMsgRequestMessage#NlmXid = xid;
-                        dispatcher(Nlm4CancelMsgRequestMessage);
+                    return DecodeNLMMessage<NlmMessageContract.Nlm4CancelMsgRequest>(dispatcher, messagePayload, version, "Nlm4CancelMsgRequest");
                 }
-                return true;
             case 9 =>
                 if (isCall)
                 {
-                    NlmMessageContract.Nlm4UnlockMsgRequest Nlm4UnlockMsgRequestMessage = BinaryDecoder<NlmMessageContract.Nlm4UnlockMsgRequest>(messagePayload) as NlmMessageContract.Nlm4UnlockMsgRequest;
-                    //Nlm4UnlockMsgRequestMessage#NlmXid = xid;
-                        dispatcher(Nlm4UnlockMsgRequestMessage);
+                    return DecodeNLMMessage<NlmMessageContract.Nlm4UnlockMsgRequest>(dispatcher, messagePayload, version, "Nlm4UnlockMsgRequest");
                 }
-                return true;
             case 10 =>
                 if (isCall)
                 {
-                    NlmMessageContract.Nlm4GrantedMsgRequest Nlm4GrantedMsgRequestMessage = BinaryDecoder<NlmMessageContract.Nlm4GrantedMsgRequest>(messagePayload) as NlmMessageContract.Nlm4GrantedMsgRequest;
-                    //Nlm4GrantedMsgRequestMessage#NlmXid = xid;
-                        dispatcher(Nlm4GrantedMsgRequestMessage);
+                    return DecodeNLMMessage<NlmMessageContract.Nlm4GrantedMsgRequest>(dispatcher, messagePayload, version, "Nlm4GrantedMsgRequest");
                 }
-                return true;
             case 11 =>
                 if (isCall)
                 {
-                    NlmMessageContract.Nlm4TestResRequest Nlm4TestResRequestMessage = BinaryDecoder<NlmMessageContract.Nlm4TestResRequest>(messagePayload) as NlmMessageContract.Nlm4TestResRequest;
-                    //Nlm4TestResRequestMessage#NlmXid = xid;
-                        dispatcher(Nlm4TestResRequestMessage);
+                    return DecodeNLMMessage<NlmMessageContract.Nlm4TestResRequest>(dispatcher, messagePayload, version, "Nlm4TestResRequest");
                 }
-                return true;
             case 12 =>
                 if (isCall)
                 {
-                    NlmMessageContract.Nlm4LockResRequest Nlm4LockResRequestMessage = BinaryDecoder<NlmMessageContract.Nlm4LockResRequest>(messagePayload) as NlmMessageContract.Nlm4LockResRequest;
-                    //Nlm4LockResRequestMessage#NlmXid = xid;
-                        dispatcher(Nlm4LockResRequestMessage);
+                    return DecodeNLMMessage<NlmMessageContract.Nlm4LockResRequest>(dispatcher, messagePayload, version, "Nlm4LockResRequest");
                 }
-                return true;
             case 13 =>
                 if (isCall)
                 {
-                    NlmMessageContract.Nlm4CancelResRequest Nlm4CancelResRequestMessage = BinaryDecoder<NlmMessageContract.Nlm4CancelResRequest>(messagePayload) as NlmMessageContract.Nlm4CancelResRequest;
-                    //Nlm4CancelResRequestMessage#NlmXid = xid;
-                        dispatcher(Nlm4CancelResRequestMessage);
+                    return DecodeNLMMessage<NlmMessageContract.Nlm4CancelResRequest>(dispatcher, messagePayload, version, "Nlm4CancelResRequest");
                 }
-                return true;
             case 14 =>
                 if (isCall)
                 {
-                    NlmMessageContract.Nlm4UnlockResRequest Nlm4UnlockResRequestMessage = BinaryDecoder<NlmMessageContract.Nlm4UnlockResRequest>(messagePayload) as NlmMessageContract.Nlm4UnlockResRequest;
-                    //Nlm4UnlockResRequestMessage#NlmXid = xid;
-                        dispatcher(Nlm4UnlockResRequestMessage);
+                    return DecodeNLMMessage<NlmMessageContract.Nlm4UnlockResRequest>(dispatcher, messagePayload, version, "Nlm4UnlockResRequest");
                 }
-                return true;
             case 15 =>
                 if (isCall)
                 {
-                    NlmMessageContract.Nlm4GrantedResRequest Nlm4GrantedResRequestMessage = BinaryDecoder<NlmMessageContract.Nlm4GrantedResRequest>(messagePayload) as NlmMessageContract.Nlm4GrantedResRequest;
-                    //Nlm4GrantedResRequestMessage#NlmXid = xid;
-                        dispatcher(Nlm4GrantedResRequestMessage);
+                    return DecodeNLMMessage<NlmMessageContract.Nlm4GrantedResRequest>(dispatcher, messagePayload, version, "Nlm4GrantedResRequest");
                 }
-                return true;
             case 20 =>
                 if (isCall)
                 {
-                    NlmMessageContract.Nlm4ShareRequest Nlm4ShareRequestMessage = BinaryDecoder<NlmMessageContract.Nlm4ShareRequest>(messagePayload) as NlmMessageContract.Nlm4ShareRequest;
-                    Nlm4ShareRequestMessage#NlmXid = xid;
-                        dispatcher(Nlm4ShareRequestMessage);
+                    return DecodeNLMMessage<NlmMessageContract.Nlm4ShareRequest>(dispatcher, messagePayload, version, "Nlm4ShareRequest");
                 }
                 else
                 {
-                    NlmMessageContract.Nlm4ShareResponse Nlm4ShareResponseMessage = BinaryDecoder<NlmMessageContract.Nlm4ShareResponse>(messagePayload) as NlmMessageContract.Nlm4ShareResponse;
-                    Nlm4ShareResponseMessage#NlmXid = xid;
-                        dispatcher(Nlm4ShareResponseMessage);
+                    return DecodeNLMMessage<NlmMessageContract.Nlm4ShareResponse>(dispatcher, messagePayload, version, "Nlm4ShareResponse");
                 }
-                return true;
             case 21 =>
                 if (isCall)
                 {
-                    NlmMessageContract.Nlm4UnshareRequest Nlm4UnshareRequestMessage = BinaryDecoder<NlmMessageContract.Nlm4UnshareRequest>(messagePayload) as NlmMessageContract.Nlm4UnshareRequest;
-                    Nlm4UnshareRequestMessage#NlmXid = xid;
-                        dispatcher(Nlm4UnshareRequestMessage);
+                    return DecodeNLMMessage<NlmMessageContract.Nlm4UnshareRequest>(dispatcher, messagePayload, version, "Nlm4UnshareRequest");
                 }
                 else
                 {
-                    NlmMessageContract.Nlm4UnshareResponse Nlm4UnshareResponseMessage = BinaryDecoder<NlmMessageContract.Nlm4UnshareResponse>(messagePayload) as NlmMessageContract.Nlm4UnshareResponse;
-                    Nlm4UnshareResponseMessage#NlmXid = xid;
-                        dispatcher(Nlm4UnshareResponseMessage);
+                    return DecodeNLMMessage<NlmMessageContract.Nlm4UnshareResponse>(dispatcher, messagePayload, version, "Nlm4UnshareResponse");
                 }
-                return true;
             case 22 =>
                 if (isCall)
                 {
-                    NlmMessageContract.Nlm4NmLockRequest Nlm4NmLockRequestMessage = BinaryDecoder<NlmMessageContract.Nlm4NmLockRequest>(messagePayload) as NlmMessageContract.Nlm4NmLockRequest;
-                    Nlm4NmLockRequestMessage#NlmXid = xid;
-                        dispatcher(Nlm4NmLockRequestMessage);
+                    return DecodeNLMMessage<NlmMessageContract.Nlm4NmLockRequest>(dispatcher, messagePayload, version, "Nlm4NmLockRequest");
                 }
                 else
                 {
-                    NlmMessageContract.Nlm4NmLockResponse Nlm4NmLockResponseMessage = BinaryDecoder<NlmMessageContract.Nlm4NmLockResponse>(messagePayload) as NlmMessageContract.Nlm4NmLockResponse;
-                    Nlm4NmLockResponseMessage#NlmXid = xid;
-                        dispatcher(Nlm4NmLockResponseMessage);
+                    return DecodeNLMMessage<NlmMessageContract.Nlm4NmLockResponse>(dispatcher, messagePayload, version, "Nlm4NmLockResponse");
                 }
-                return true;
             case 23 =>
                 if (isCall)
                 {
-                    NlmMessageContract.Nlm4FreeAllRequest Nlm4FreeAllRequestMessage = BinaryDecoder<NlmMessageContract.Nlm4FreeAllRequest>(messagePayload) as NlmMessageContract.Nlm4FreeAllRequest;
-                    Nlm4FreeAllRequestMessage#NlmXid = xid;
-                        dispatcher(Nlm4FreeAllRequestMessage);
+                    return DecodeNLMMessage<NlmMessageContract.Nlm4FreeAllRequest>(dispatcher, messagePayload, version, "Nlm4FreeAllRequest");
                 }
                 else
                 {
-                    NlmMessageContract.Nlm4FreeAllResponse Nlm4FreeAllResponseMessage = BinaryDecoder<NlmMessageContract.Nlm4FreeAllResponse>(messagePayload) as NlmMessageContract.Nlm4FreeAllResponse;
-                    Nlm4FreeAllResponseMessage#NlmXid = xid;
-                        dispatcher(Nlm4FreeAllResponseMessage);
+                    return DecodeNLMMessage<NlmMessageContract.Nlm4FreeAllResponse>(dispatcher, messagePayload, version, "Nlm4FreeAllResponse");
                 }
-                return true;
             default =>
                 throw ("NLM: The procedure number in Nlm must be one of the values [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 20, 21, 22, 23].");
                 return false;
@@ -1271,13 +1429,29 @@ bool NlmMessageProcessing(uint procedureNumber, uint version, stream messagePayl
     return false;
 }
 
+bool DecodeNLMMessage<T>(void(T) dispatcher, stream messagePayload, uint version, string messageName)
+{
+    if (BinaryDecoder<T>(messagePayload) is m:T)
+    {
+        IMessage im = m as IMessage;
+        im#SunRpcVers = version;
+        dispatcher(m);
+    }
+    else
+    {
+        ThrowDecodingException("NLM", messageName);
+        return false;
+    }
+    return true;
+}
+
 contract NlmOperationContract
 {
     accepts operation NlmNullOperation // 0
     {
         override string ToString()
         {
-            return  "Nlm: Version 1/2/3/4, Nlm Null Service (0)";
+            return "NLM_NULL, Version: " + (this.Origins[0] as IMessage)#SunRpcVers.ToString();
         }
     }
 
@@ -1289,7 +1463,7 @@ contract NlmOperationContract
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm Test Service (1)";
+            return "NLM_TEST, Version: " + (this.Origins[0] as IMessage)#SunRpcVers.ToString();
         }
     }
     
@@ -1300,7 +1474,7 @@ contract NlmOperationContract
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm Lock Service (2)";
+            return "NLM_LOCK, Version: " + (this.Origins[0] as IMessage)#SunRpcVers.ToString();
         }
     }
     
@@ -1311,7 +1485,7 @@ contract NlmOperationContract
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm Cancel Service (3)";
+            return "NLM_CANCEL, Version: " + (this.Origins[0] as IMessage)#SunRpcVers.ToString();
         }
     }
     
@@ -1322,7 +1496,7 @@ contract NlmOperationContract
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm Unlock Service (4)";
+            return "NLM_UNLOCK, Version: " + (this.Origins[0] as IMessage)#SunRpcVers.ToString();
         }
     }
     
@@ -1333,7 +1507,7 @@ contract NlmOperationContract
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm Granted Service (5)";
+            return "NLM_GRANTED, Version: " + (this.Origins[0] as IMessage)#SunRpcVers.ToString();
         }
     }
     
@@ -1344,7 +1518,7 @@ contract NlmOperationContract
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm Asynchronous Test Service (6, 11)";
+            return "Asynchronous NLM_TEST, Version: " + (this.Origins[0] as IMessage)#SunRpcVers.ToString();
         }
     }
     
@@ -1355,7 +1529,7 @@ contract NlmOperationContract
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm Asynchronous Lock Service (7, 12)";
+            return "Asynchronous NLM_LOCK, Version: " + (this.Origins[0] as IMessage)#SunRpcVers.ToString();
         }
     }
     
@@ -1366,7 +1540,7 @@ contract NlmOperationContract
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm Asynchronous Cancel Service (8, 13)";
+            return "Asynchronous NLM_CANCEL, Version: " + (this.Origins[0] as IMessage)#SunRpcVers.ToString();
         }
     }
     
@@ -1377,7 +1551,7 @@ contract NlmOperationContract
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm Asynchronous Unlock Service (9, 14)";
+            return "Asynchronous NLM_UNLOCK, Version: " + (this.Origins[0] as IMessage)#SunRpcVers.ToString();
         }
     }
     
@@ -1388,7 +1562,7 @@ contract NlmOperationContract
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm Asynchronous Granted Service (10, 15)";
+            return "Asynchronous NLM_GRANTED, Version: " + (this.Origins[0] as IMessage)#SunRpcVers.ToString();
         }
     }
     
@@ -1399,7 +1573,7 @@ contract NlmOperationContract
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm Share Service (20)";
+            return "Asynchronous NLM_SHARE, Version: " + (this.Origins[0] as  IMessage)#SunRpcVers.ToString();
         }
     }
     
@@ -1410,7 +1584,7 @@ contract NlmOperationContract
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm Unshare Service (21)";
+            return "Asynchronous NLM_UNSHARE, Version" + (this.Origins[0] as  IMessage)#SunRpcVers.ToString();
         }
     }
     
@@ -1421,7 +1595,7 @@ contract NlmOperationContract
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm NmLock Service (22)";
+            return "Asynchronous NLM_LOCK, Version: " + (this.Origins[0] as IMessage)#SunRpcVers.ToString();
         }
     }
     
@@ -1431,7 +1605,7 @@ contract NlmOperationContract
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm FreeAll Service (23)";
+            return "Asynchronous NLM_FREE_All, Version: " + (this.Origins[0] as IMessage)#SunRpcVers.ToString();
         }
     }
 
@@ -1443,7 +1617,7 @@ contract NlmOperationContract
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm Test Service (1)";
+            return "NLM4_TEST, Version: 4";
         }
     }
     
@@ -1454,7 +1628,7 @@ contract NlmOperationContract
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm Lock Service (2)";
+            return "NLM4_LOCK, Version: 4";
         }
     }
     
@@ -1465,7 +1639,7 @@ contract NlmOperationContract
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm Cancel Service (3)";
+            return "NLM4_CANCEL, Version: 4";
         }
     }
     
@@ -1476,7 +1650,7 @@ contract NlmOperationContract
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm Unlock Service (4)";
+            return "NLM4_UNLOCK, Version: 4";
         }
     }
     
@@ -1487,7 +1661,7 @@ contract NlmOperationContract
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm Granted Service (5)";
+            return "NLM4_GRANTED, Version: 4";
         }
     }
     
@@ -1498,7 +1672,7 @@ contract NlmOperationContract
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm4 Asynchronous Test Service (6, 11)";
+            return "Asynchronous NLM4_Test, Version: 4";
         }
     }
     
@@ -1508,7 +1682,7 @@ contract NlmOperationContract
         out Nlm4Res Res;
         static string Nlm4AsynchronousLockToText(any data)
         {
-            return "Nlm: Version 4, Nlm4 Asynchronous Lock Service (7, 12)";
+            return "Asynchronous NLM4_LOCK, Version: 4";
         }
     }
     
@@ -1519,7 +1693,7 @@ contract NlmOperationContract
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm4 Asynchronous Cancel Service (8, 13)";
+            return "Asynchronous NLM4_CANCEL, Version: 4";
         }
     }
     
@@ -1530,7 +1704,7 @@ contract NlmOperationContract
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm4 Asynchronous Unlock Service (9, 14)";
+            return "Asynchronous NLM4_UNLOCK, Version: 4";
         }
     }
     
@@ -1541,7 +1715,7 @@ contract NlmOperationContract
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm4 Asynchronous Granted Service (10, 15)";
+            return "Asynchronous NLM4_GRANTED, Version: 4";
         }
     }
     
@@ -1552,7 +1726,7 @@ contract NlmOperationContract
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm Share Service (20)";
+            return "NLM4_SHARE, Version: 4";
         }
     }
     
@@ -1563,7 +1737,7 @@ contract NlmOperationContract
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm Unshare Service (21)";
+            return "NLM4_UNSHARE, Version: 4";
         }
     }
     
@@ -1574,7 +1748,7 @@ contract NlmOperationContract
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm NmLock Service (22)";
+            return "NLM4_NMLOCK, Version: 4";
         }
     }
     
@@ -1584,642 +1758,626 @@ contract NlmOperationContract
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm FreeAll Service (23)";
+            return "NLM4_FREE_ALL, Version: 4";
         }
     }
+}
+
+message IMessage
+{
 }
 
 contract NlmMessageContract
 {
     // 0
-    accepts message NlmNullRequest
+    accepts message NlmNullRequest:IMessage
     {
         override string ToString()
         {
-            return "Nlm: Version 1/2/3/4, Nlm Null Request Message (0)";
+            return "NLM_NULL Request, Version: " + this#SunRpcVers.ToString();
         }
     }
     
-    issues message NlmNullResponse
+    issues message NlmNullResponse:IMessage
     {
         override string ToString()
         {
-            return "Nlm: Version 1/2/3/4, Nlm Null Response Message (0)";
+            return "NLM_NULL Response, Version: " + this#SunRpcVers.ToString();
         }
     }
 /******************************* For Verion 1/2/3 *******************************/
     // 1
-    accepts message NlmTestRequest
+    accepts message NlmTestRequest:IMessage
     {
         NlmTestargs Testargs;
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm Test Request Message (1)";
+            return "NLM_TEST Request, Version: " + this#SunRpcVers.ToString();
         }
     }
     
-    issues message NlmTestResponse
+    issues message NlmTestResponse:IMessage
     {
         NlmTestres Testres;
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm Test Response Message (1)";
+            return "NLM_TEST Response, Version: " + this#SunRpcVers.ToString();
         }
     }
     
     // 2
-    accepts message NlmLockRequest
+    accepts message NlmLockRequest:IMessage
     {
         NlmLockargs Lockargs;
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm Lock Request Message (2)";
+            return "NLM_LOCK Request, Version: " + this#SunRpcVers.ToString();
         }
     }
     
-    issues message NlmLockResponse
+    issues message NlmLockResponse:IMessage
     {
         NlmRes Res;
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm Lock Response Message (2)";
+            return "NLM_LOCK Response, Version: " + this#SunRpcVers.ToString();
         }
     }
     
     // 3
-    accepts message NlmCancelRequest
+    accepts message NlmCancelRequest:IMessage
     {
         NlmCancargs Cancargs;
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm Cancel Request Message (3)";
+            return "NLM_CANCEL Request, Version: " + this#SunRpcVers.ToString();
         }
     }
     
-    issues message NlmCancelResponse
+    issues message NlmCancelResponse:IMessage
     {
         NlmRes Res;
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm Cancel Response Message (3)";
+            return "NLM_CANCEL Response, Version: " + this#SunRpcVers.ToString();
         }
     }
     
     // 4
-    accepts message NlmUnlockRequest
+    accepts message NlmUnlockRequest:IMessage
     {
         NlmUnlockargs Unlockargs;
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm Unlock Request Message (4)";
+            return "NLM_UNLOCK Request, Version: " + this#SunRpcVers.ToString();
         }
     }
     
-    issues message NlmUnlockResponse
+    issues message NlmUnlockResponse:IMessage
     {
         NlmRes Res;
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm Unlock Response Message (4)";
+            return "NLM_UNLOCK Response, Version: " + this#SunRpcVers.ToString();
         }
     }
     
     // 5
-    accepts message NlmGrantedRequest
+    accepts message NlmGrantedRequest:IMessage
     {
         NlmTestargs Testargs;
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm Granted Request Message (5)";
+            return "NLM_GRANTED Request, Version: " + this#SunRpcVers.ToString();
         }
     }
     
-    issues message NlmGrantedResponse
+    issues message NlmGrantedResponse:IMessage
     {
         NlmRes Res;
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm Granted Response Message (5)";
+            return "NLM_GRANTED Response, Version: " + this#SunRpcVers.ToString();
         }
     }
     
     // 6
-    accepts message NlmTestMsgRequest
+    accepts message NlmTestMsgRequest:IMessage
     {
         NlmTestargs Testargs;
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm Test Msg Request Message (6)";
+            return "NLM_TEST_ MSG Request, Version: " + this#SunRpcVers.ToString();
         }
     }
-    //message NlmTestMsgResponse{}
     
     // 7
-    accepts message NlmLockMsgRequest
+    accepts message NlmLockMsgRequest:IMessage
     {
         NlmLockargs Lockargs;
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm Lock Msg Request Message (7)";
+            return "NLM_LOCK_ MSG Request, Version: " + this#SunRpcVers.ToString();
         }
     }
-    //message NlmLockMsgResponse{}
     
     // 8
-    accepts message NlmCancelMsgRequest
+    accepts message NlmCancelMsgRequest:IMessage
     {
         NlmCancargs Cancargs;
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm Cancel Msg Request Message (8)";
+            return "NLM_CANCEL_ MSG Request, Version: " + this#SunRpcVers.ToString();
         }
     }
-    //message NlmCancelMsgResponse{}
     
     // 9
-    accepts message NlmUnlockMsgRequest
+    accepts message NlmUnlockMsgRequest:IMessage
     {
         NlmUnlockargs Unlockargs;
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm Unlock Msg Request Message (9)";
+            return "NLM_UNLOCK_ MSG Request, Version: " + this#SunRpcVers.ToString();
         }
     }
-    //message NlmUnlockMsgResponse{}
     
     // 10
-    accepts message NlmGrantedMsgRequest
+    accepts message NlmGrantedMsgRequest:IMessage
     {
         NlmTestargs Testargs;
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm Granted Msg Request (10)";
+            return "NLM_CANCEl Request, Version: " + this#SunRpcVers.ToString();
         }
     }
-    //message NlmGrantedMsgResponse{}
     
     // 11
-    issues message NlmTestResRequest
+    issues message NlmTestResRequest:IMessage
     {
         NlmTestres Testres;
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm Test Res Request (11)";
+            return "NLM_TEST_RES Request, Version: " + this#SunRpcVers.ToString();
         }
     }
-    //message NlmTestResResponse{}
     
     // 12
-    issues message NlmLockResRequest
+    issues message NlmLockResRequest:IMessage
     {
         NlmRes Res;
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm Lock Res Request (12)";
+            return "NLM_LOCK_RES Request, Version: " + this#SunRpcVers.ToString();
         }
     }
-    //message NlmLockResResponse{}
     
     // 13
-    issues message NlmCancelResRequest
+    issues message NlmCancelResRequest:IMessage
     {
         NlmRes Res;
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm Cancel Res Request (13)";
+            return "NLM_CANCEL_RES Request, Version: " + this#SunRpcVers.ToString();
         }
     }
-    //message NlmCancelResResponse{}
     
     // 14
-    issues message NlmUnlockResRequest
+    issues message NlmUnlockResRequest:IMessage
     {
         NlmRes Res;
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm Unlock Res Request (14)";
+            return "NLM_UNLCOK_RES Request, Version: " + this#SunRpcVers.ToString();
         }
     }
-    //message NlmUnlockResResponse{}
     
     // 15
-    issues message NlmGrantedResRequest
+    issues message NlmGrantedResRequest:IMessage
     {
         NlmRes Res;
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm Granted Res Request (15)";
+            return "NLM_GRANTED_RES Request, Version: " + this#SunRpcVers.ToString();
         }
     }
-    //message NlmGrantedResResponse{}
     
     // 20
-    accepts message NlmShareRequest
+    accepts message NlmShareRequest:IMessage
     {
         NlmShareargs Shareargs;
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm Share Request (20)";
+            return "NLM_SHARE Request, Version: " + this#SunRpcVers.ToString();
         }
     }
     
-    issues message NlmShareResponse
+    issues message NlmShareResponse:IMessage
     {
         NlmShareres Shareres;
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm Share Response (20)";
+            return "NLM_SHARE Response, Version: " + this#SunRpcVers.ToString();
         }
     }
     
     // 21
-    accepts message NlmUnshareRequest
+    accepts message NlmUnshareRequest:IMessage
     {
         NlmShareargs Shareargs;
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm Unshare Request (21)";
+            return "NLM_UNSHARE Request, Version: " + this#SunRpcVers.ToString();
         }
     }
     
-    issues message NlmUnshareResponse
+    issues message NlmUnshareResponse:IMessage
     {
         NlmShareres Shareres;
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm Unshare Response (21)";
+            return "NLM_UNSHARE Response, Version: " + this#SunRpcVers.ToString();
         }
     }
     
     // 22
-    accepts message NlmNmLockRequest
+    accepts message NlmNmLockRequest:IMessage
     {
         NlmLockargs Lockargs;
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm NmLock Request (22)";
+            return "NLM_NMLOCK Request, Version: " + this#SunRpcVers.ToString();
         }
     }
     
-    issues message NlmNmLockResponse
+    issues message NlmNmLockResponse:IMessage
     {
         NlmRes Res;
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm NmLock Response (22)";
+            return "NLM_NMLOCK Response, Version: " + this#SunRpcVers.ToString();
         }
     }
     
     // 23
-    accepts message NlmFreeAllRequest
+    accepts message NlmFreeAllRequest:IMessage
     {
         NlmNotify Notify;
         
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm Free All Request (23)";
+            return "NLM_FREE_ALL Request, Version: " + this#SunRpcVers.ToString();
         }
     }
     
-    issues message NlmFreeAllResponse
+    issues message NlmFreeAllResponse:IMessage
     {
         override string ToString()
         {
-            return "Nlm: Version 1/2/3, Nlm Free All Response (23)";
+            return "NLM_FREE_ALL Response, Version: " + this#SunRpcVers.ToString();
         }
     }
     
 /******************************* For Verion 4 *******************************/
     // 1
-    accepts message Nlm4TestRequest
+    accepts message Nlm4TestRequest:IMessage
     {
         Nlm4Testargs Testargs;
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm Test Request Message (1)";
+            return "NLM4_TEST Request, Version: 4";
         }
     }
     
-    issues message Nlm4TestResponse
+    issues message Nlm4TestResponse:IMessage
     {
         Nlm4Testres Testres;
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm Test Response Message (1)";
+            return "NLM4_TEST Response, Version: 4";
         }
     }
     
     // 2
-    accepts message Nlm4LockRequest
+    accepts message Nlm4LockRequest:IMessage
     {
         Nlm4Lockargs Lockargs;
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm Lock Request Message (2)";
+            return "NLM4_LOCK Request, Version: 4";
         }
     }
     
-    issues message Nlm4LockResponse
+    issues message Nlm4LockResponse:IMessage
     {
         Nlm4Res Res;
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm Lock Response Message (2)";
+            return "NLM4_LOCK Response, Version: 4";
         }
     }
     
     // 3
-    accepts message Nlm4CancelRequest
+    accepts message Nlm4CancelRequest:IMessage
     {
         Nlm4Cancargs Cancargs;
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm Cancel Request Message (3)";
+            return "NLM4_CANCEL Request, Version: 4";
         }
     }
     
-    issues message Nlm4CancelResponse
+    issues message Nlm4CancelResponse:IMessage
     {
         Nlm4Res Res;
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm Cancel Response Message (3)";
+            return "NLM4_CANCEL Response, Version: 4)";
         }
     }
     
     // 4
-    accepts message Nlm4UnlockRequest
+    accepts message Nlm4UnlockRequest:IMessage
     {
         Nlm4Unlockargs Unlockargs;
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm Unlock Request Message (4)";
+            return "NLM4_UNLOCK Request, Version: 4";
         }
     }
     
-    issues message Nlm4UnlockResponse
+    issues message Nlm4UnlockResponse:IMessage
     {
         Nlm4Res Res;
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm Unlock Response Message (4)";
+            return "NLM4_UNLOCK Response, Version: 4";
         }
     }
     
     // 5
-    accepts message Nlm4GrantedRequest
+    accepts message Nlm4GrantedRequest:IMessage
     {
         Nlm4Testargs Testargs;
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm Granted Request Message (5)";
+            return "NLM4_GRANTED Request, Version: 4";
         }
     }
     
-    issues message Nlm4GrantedResponse
+    issues message Nlm4GrantedResponse:IMessage
     {
         Nlm4Res Res;
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm Granted Response Message (5)";
+            return "NLM4_GRANTED Response, Version: 4";
         }
     }
     
     // 6
-    accepts message Nlm4TestMsgRequest
+    accepts message Nlm4TestMsgRequest:IMessage
     {
         Nlm4Testargs Testargs;
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm Test Msg Request Message (6)";
+            return "NLM4_TEST_MSG Request, Version: 4";
         }
     }
-    //message Nlm4TestMsgResponse{}
     
     // 7
-    accepts message Nlm4LockMsgRequest
+    accepts message Nlm4LockMsgRequest:IMessage
     {
         Nlm4Lockargs Lockargs;
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm Lock Msg Request Message (7)";
+            return "NLM4_LOCK_MSG Request, Version: 4";
         }
     }
-    //message Nlm4LockMsgResponse{}
     
     // 8
-    accepts message Nlm4CancelMsgRequest
+    accepts message Nlm4CancelMsgRequest:IMessage
     {
         Nlm4Cancargs Cancargs;
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm Cancel Msg Request Message (8)";
+            return "NLM4_CANCEL_MSG Request, Version: 4";
         }
     }
-    //message Nlm4CancelMsgResponse{}
     
     // 9
-    accepts message Nlm4UnlockMsgRequest
+    accepts message Nlm4UnlockMsgRequest:IMessage
     {
         Nlm4Unlockargs Unlockargs;
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm Unlock Msg Request Message (9)";
+            return "NLM4_UNLOCK_MSG Request, Version: 4";
         }
     }
-    //message Nlm4UnlockMsgResponse{}
     
     // 10
-    accepts message Nlm4GrantedMsgRequest
+    accepts message Nlm4GrantedMsgRequest:IMessage
     {
         Nlm4Testargs Testargs;
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm Granted Msg Request (10)";
+            return "NLM4_GRANTED_MSG Request, Version: 4";
         }
     }
-    //message Nlm4GrantedMsgResponse{}
     
     // 11
-    issues message Nlm4TestResRequest
+    issues message Nlm4TestResRequest:IMessage
     {
         Nlm4Testres Testres;
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm Test Res Request (11)";
+            return "NLM4_TEST_RES Request, Version: 4";
         }
     }
-    //message Nlm4TestResResponse{}
     
     // 12
-    issues message Nlm4LockResRequest
+    issues message Nlm4LockResRequest:IMessage
     {
         Nlm4Res Res;
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm Lock Res Request (12)";
+            return "NLM4_LOCK_RES Request, Version: 4";
         }
     }
-    //message Nlm4LockResResponse{}
     
     // 13
-    issues message Nlm4CancelResRequest
+    issues message Nlm4CancelResRequest:IMessage
     {
         Nlm4Res Res;
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm Cancel Res Request (13)";
+            return "NLM4_CANCEL_RES Request, Version: 4";
         }
     }
-    //message Nlm4CancelResResponse{}
     
     // 14
-    issues message Nlm4UnlockResRequest
+    issues message Nlm4UnlockResRequest:IMessage
     {
         Nlm4Res Res;
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm Unlock Res Request (14)";
+            return "NLM4_UNLOCK_RES Request, Version: 4";
         }
     }
-    //message Nlm4UnlockResResponse{}
     
     // 15
-    issues message Nlm4GrantedResRequest
+    issues message Nlm4GrantedResRequest:IMessage
     {
         Nlm4Res Res;
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm Granted Res Request (15)";
+            return "NLM4_GRANTED_RES Request, Version: 4";
         }
     }
-    //message Nlm4GrantedResResponse{}
     
     // 20
-    accepts message Nlm4ShareRequest
+    accepts message Nlm4ShareRequest:IMessage
     {
         Nlm4Shareargs Shareargs;
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm Share Request (20)";
+            return "NLM4_SHARE Request, Version: 4";
         }
     }
     
-    issues message Nlm4ShareResponse
+    issues message Nlm4ShareResponse:IMessage
     {
         Nlm4Shareres Shareres;
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm Share Response (20)";
+            return "NLM4_SHARE Response, Version: 4";
         }
     }
     
     // 21
-    accepts message Nlm4UnshareRequest
+    accepts message Nlm4UnshareRequest:IMessage
     {
         Nlm4Shareargs Shareargs;
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm Unshare Request (21)";
+            return "NLM4_UNSHARE Request, Version: 4";
         }
     }
     
-    issues message Nlm4UnshareResponse
+    issues message Nlm4UnshareResponse:IMessage
     {
         Nlm4Shareres Shareres;
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm Unshare Response (21)";
+            return "NLM4_UNSHARE Response, Version: 4";
         }
     }
     
     // 22
-    accepts message Nlm4NmLockRequest
+    accepts message Nlm4NmLockRequest:IMessage
     {
         Nlm4Lockargs Lockargs;
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm NmLock Request (22)";
+            return "NLM4_NMLOCK Request, Version: 4";
         }
     }
     
-    issues message Nlm4NmLockResponse
+    issues message Nlm4NmLockResponse:IMessage
     {
         Nlm4Res Res;
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm NmLock Response (22)";
+            return "NLM4_NMLOCK Response, Version: 4";
         }
     }
     
     // 23
-    accepts message Nlm4FreeAllRequest
+    accepts message Nlm4FreeAllRequest:IMessage
     {
         Nlm4Notify Notify;
         
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm Free All Request (23)";
+            return "NLM4_FREE_ALL Request, Version: 4";
         }
     }
     
-    issues message Nlm4FreeAllResponse
+    issues message Nlm4FreeAllResponse:IMessage
     {        
         override string ToString()
         {
-            return "Nlm: Version 4, Nlm Free All Response (23)";
+            return "NLM4_FREE_ALL Response, Version: 4";
         }
     }
 }

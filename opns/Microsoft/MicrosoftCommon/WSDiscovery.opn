@@ -1,4 +1,4 @@
-﻿protocol WSDiscovery with 
+protocol WSDiscovery with 
 XmlEncodingDefaults{Namespace = WSDiscoveryNamespace},
 Documentation
 {
@@ -15,46 +15,31 @@ OPNAuthoring
         ],
     RevisionSummary = 
         [
-            new Revision{Class=RevisionClass.Major, Version="1.0.0", Date="09/02/2011"}
+            new Revision{Class=RevisionClass.Major, Version="366681", Date="07/24/2014"}
         ]
 };
 
-using IANA;
 using Standard;
 using Utility;
 using SOAP;
-using Technologies.WSDL;
-using Technologies.SOAP;
 using WSA2004;
 using XSD;
 
 endpoint Server 
     over SOAP.Server
-    accepts ProbeMessage issues ProbeMessage
-    accepts ResolveMessage issues ResolveMessage
-    accepts HelloMessage issues HelloMessage
-    accepts ByeMessage issues ByeMessage
-    accepts ProbeMatchesMessage issues ProbeMatchesMessage
-    accepts ResolveMatchesMessage issues ResolveMatchesMessage;
+    accepts ProbeMessage
+    accepts ResolveMessage
+    issues HelloMessage
+    issues ByeMessage
+    issues mutable ProbeMatchesMessage
+    issues ResolveMatchesMessage;
     
 client endpoint Client connected to Server;
 
 autostart actor WSDiscoveryOverSOAP(SOAP.Server node)
 {
-    //Hello message
-    process node accepts soap:SOAP.SoapMessage where soap.Action == WSDiscoveryActionHello && soap.Body != null
-    {
-        switch (soap.Body)
-        {
-            case m:HelloMessage from XmlDecoder<HelloMessage> =>
-                var enu = endpoint Server over node;
-                dispatch enu accepts m;
-            default =>
-                ThrowDecodingException("WSDiscovery", "HelloMessage");
-        }
-    }
-    
-    process node issues soap:SOAP.SoapMessage where soap.Action == WSDiscoveryActionHello && soap.Body != null
+    // Hello message
+    process node issues soap:SOAP.SoapMessage where soap.WsaAction == WSDiscoveryActionHello && soap.Body != null
     {
         switch (soap.Body)
         {
@@ -66,20 +51,20 @@ autostart actor WSDiscoveryOverSOAP(SOAP.Server node)
         }
     }
     
-    //Bye message
-    process node accepts soap:SOAP.SoapMessage where soap.Action == WSDiscoveryActionBye && soap.Body != null
+    process node accepts soap:SOAP.SoapMessage where soap.WsaAction == WSDiscoveryActionHello && soap.Body != null
     {
         switch (soap.Body)
         {
-            case m:ByeMessage from XmlDecoder<ByeMessage> =>
+            case m:HelloMessage from XmlDecoder<HelloMessage> =>
                 var enu = endpoint Server over node;
-                dispatch enu accepts m;
+                dispatch enu issues m;
             default =>
-                ThrowDecodingException("WSDiscovery", "ByeMessage");
+                ThrowDecodingException("WSDiscovery", "HelloMessage");
         }
     }
     
-    process node issues soap:SOAP.SoapMessage where soap.Action == WSDiscoveryActionBye && soap.Body != null
+    // Bye message
+    process node issues soap:SOAP.SoapMessage where soap.WsaAction == WSDiscoveryActionBye && soap.Body != null
     {
         switch (soap.Body)
         {
@@ -91,20 +76,19 @@ autostart actor WSDiscoveryOverSOAP(SOAP.Server node)
         }
     }
     
-    //ProbeMatches message
-    process node accepts soap:SOAP.SoapMessage where soap.Action == WSDiscoveryActionProbeMatches && soap.Body != null
+    process node accepts soap:SOAP.SoapMessage where soap.WsaAction == WSDiscoveryActionBye && soap.Body != null
     {
         switch (soap.Body)
         {
-            case m:ProbeMatchesMessage from XmlDecoder<ProbeMatchesMessage> =>
+            case m:ByeMessage from XmlDecoder<ByeMessage> =>
                 var enu = endpoint Server over node;
-                dispatch enu accepts m;
+                dispatch enu issues m;
             default =>
-                ThrowDecodingException("WSDiscovery", "ProbeMatchesMessage");
+                ThrowDecodingException("WSDiscovery", "ByeMessage");
         }
     }
-    
-    process node issues soap:SOAP.SoapMessage where soap.Action == WSDiscoveryActionProbeMatches && soap.Body != null
+    // ProbeMatches message
+    process node issues soap:SOAP.SoapMessage where soap.WsaAction == WSDiscoveryActionProbeMatches && soap.Body != null
     {
         switch (soap.Body)
         {
@@ -116,8 +100,20 @@ autostart actor WSDiscoveryOverSOAP(SOAP.Server node)
         }
     }
     
-    //Probe message
-    process node accepts soap:SOAP.SoapMessage where soap.Action == WSDiscoveryActionProbe && soap.Body != null
+    process node accepts soap:SOAP.SoapMessage where soap.WsaAction == WSDiscoveryActionProbeMatches && soap.Body != null
+    {
+        switch (soap.Body)
+        {
+            case m:ProbeMatchesMessage from XmlDecoder<ProbeMatchesMessage> =>
+                var enu = endpoint Server over node;
+                dispatch enu issues m;
+            default =>
+                ThrowDecodingException("WSDiscovery", "ProbeMatchesMessage");
+        }
+    }
+    
+    // Probe message
+    process node accepts soap:SOAP.SoapMessage where soap.WsaAction == WSDiscoveryActionProbe && soap.Body != null
     {
         switch (soap.Body)
         {
@@ -128,21 +124,19 @@ autostart actor WSDiscoveryOverSOAP(SOAP.Server node)
                 ThrowDecodingException("WSDiscovery", "ProbeMessage");
         }
     }
-    
-    process node issues soap:SOAP.SoapMessage where soap.Action == WSDiscoveryActionProbe && soap.Body != null
+    process node issues soap:SOAP.SoapMessage where soap.WsaAction == WSDiscoveryActionProbe && soap.Body != null
     {
         switch (soap.Body)
         {
             case m:ProbeMessage from XmlDecoder<ProbeMessage> =>
                 var enu = endpoint Server over node;
-                dispatch enu issues m;
+                dispatch enu accepts m;
             default =>
                 ThrowDecodingException("WSDiscovery", "ProbeMessage");
         }
     }
-    
-    //Resolve message
-    process node accepts soap:SOAP.SoapMessage where soap.Action == WSDiscoveryActionResolve && soap.Body != null
+    // Resolve message
+    process node accepts soap:SOAP.SoapMessage where soap.WsaAction == WSDiscoveryActionResolve && soap.Body != null
     {
         switch (soap.Body)
         {
@@ -154,32 +148,31 @@ autostart actor WSDiscoveryOverSOAP(SOAP.Server node)
         }
     }
     
-    process node issues soap:SOAP.SoapMessage where soap.Action == WSDiscoveryActionResolve && soap.Body != null
+    process node issues soap:SOAP.SoapMessage where soap.WsaAction == WSDiscoveryActionResolve && soap.Body != null
     {
         switch (soap.Body)
         {
             case m:ResolveMessage from XmlDecoder<ResolveMessage> =>
                 var enu = endpoint Server over node;
-                dispatch enu issues m;
+                dispatch enu accepts m;
             default =>
                 ThrowDecodingException("WSDiscovery", "ResolveMessage");
         }
     }
-    
-    //ResolveMatches message
-    process node accepts soap:SOAP.SoapMessage where soap.Action == WSDiscoveryActionResolveMatches && soap.Body != null
+    // ResolveMatches message
+    process node issues soap:SOAP.SoapMessage where soap.WsaAction == WSDiscoveryActionResolveMatches && soap.Body != null
     {
         switch (soap.Body)
         {
             case m:ResolveMatchesMessage from XmlDecoder<ResolveMatchesMessage> =>
                 var enu = endpoint Server over node;
-                dispatch enu accepts m;
+                dispatch enu issues m;
             default =>
                 ThrowDecodingException("WSDiscovery", "ResolveMatchesMessage");
         }
     }
     
-    process node issues soap:SOAP.SoapMessage where soap.Action == WSDiscoveryActionResolveMatches && soap.Body != null
+    process node accepts soap:SOAP.SoapMessage where soap.WsaAction == WSDiscoveryActionResolveMatches && soap.Body != null
     {
         switch (soap.Body)
         {
@@ -191,7 +184,6 @@ autostart actor WSDiscoveryOverSOAP(SOAP.Server node)
         }
     }
 }
-
 
 message HelloMessage
 {
@@ -253,85 +245,79 @@ message ResolveMatchesMessage
     }
 }
 
-//Complex types
+// Complex types
 type HelloType
 {
     EndpointReferenceType EndpointReference with XmlEncoding{Name = "EndpointReference", Namespace = WSAddressing2004Namespace};
-    optional QNameListType Types with XmlEncoding{Name = "Types",Namespace = WSDiscoveryNamespace};
-    optional ScopesType Scopes with XmlEncoding{Name = "Scopes",Namespace = WSDiscoveryNamespace};
-    optional XAddrsType XAddrs with XmlEncoding{Name = "XAddrs",Namespace = WSDiscoveryNamespace};
-    MetadataVersionType MetadataVersion with XmlEncoding{Name = "MetadataVersion",Namespace = WSDiscoveryNamespace};
-    optional array<xml> AnyElement with XmlEncoding{IsAny = true, Namespace = XmlNamespaceIndicator.Other};
+    optional XSQName Types with XmlEncoding{Name = "Types", Namespace = WSDiscoveryNamespace};
+    optional ScopesType Scopes with XmlEncoding{Name = "Scopes", Namespace = WSDiscoveryNamespace};
+    optional XSAnyURI XAddrs with XmlEncoding{Name = "XAddrs", Namespace = WSDiscoveryNamespace};
+    uint MetadataVersion with XmlEncoding{Name = "MetadataVersion", Namespace = WSDiscoveryNamespace};
+    optional array<xml> AnyElements with XmlEncoding{IsAny = true, Namespace = XmlNamespaceIndicator.Other};
     optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
 }
 
 type ByeType
 {
     EndpointReferenceType EndpointReference with XmlEncoding{Name = "EndpointReference", Namespace = WSAddressing2004Namespace};
-    optional QNameListType Types with XmlEncoding{Name = "Types",Namespace = WSDiscoveryNamespace};
-    optional ScopesType Scopes with XmlEncoding{Name = "Scopes",Namespace = WSDiscoveryNamespace};
-    optional XAddrsType XAddrs with XmlEncoding{Name = "XAddrs",Namespace = WSDiscoveryNamespace};
-    optional MetadataVersionType MetadataVersion with XmlEncoding{Name = "MetadataVersion",Namespace = WSDiscoveryNamespace};
-    optional array<xml> AnyElement with XmlEncoding{IsAny = true, Namespace = XmlNamespaceIndicator.Other};
+    optional XSQName Types with XmlEncoding{Name = "Types", Namespace = WSDiscoveryNamespace};
+    optional ScopesType Scopes with XmlEncoding{Name = "Scopes", Namespace = WSDiscoveryNamespace};
+    optional XSAnyURI XAddrs with XmlEncoding{Name = "XAddrs", Namespace = WSDiscoveryNamespace};
+    optional uint MetadataVersion with XmlEncoding{Name = "MetadataVersion", Namespace = WSDiscoveryNamespace};
+    optional array<xml> AnyElements with XmlEncoding{IsAny = true, Namespace = XmlNamespaceIndicator.Other};
     optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
 }
 
 type ProbeType
 {
-    optional QNameListType Types with XmlEncoding{Name = "Types",Namespace = WSDiscoveryNamespace};
-    optional ScopesType Scopes with XmlEncoding{Name = "Scopes",Namespace = WSDiscoveryNamespace};
-    optional array<xml> AnyElement with XmlEncoding{IsAny = true, Namespace = XmlNamespaceIndicator.Other};
+    optional XSQName Types with XmlEncoding{Name = "Types", Namespace = WSDiscoveryNamespace};
+    optional ScopesType Scopes with XmlEncoding{Name = "Scopes", Namespace = WSDiscoveryNamespace};
+    optional array<xml> AnyElements with XmlEncoding{IsAny = true, Namespace = XmlNamespaceIndicator.Other};
     optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
 }
 
 type ProbeMatchesType
 {
     array<ProbeMatchType> ProbeMatches with XmlEncoding{Name = "ProbeMatch", Namespace = WSDiscoveryNamespace};
-    optional array<xml> AnyElement with XmlEncoding{IsAny = true, Namespace = XmlNamespaceIndicator.Other};
+    optional array<xml> AnyElements with XmlEncoding{IsAny = true, Namespace = XmlNamespaceIndicator.Other};
     optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
 }
 
 type ProbeMatchType
 {
     EndpointReferenceType EndpointReference with XmlEncoding{Name = "EndpointReference", Namespace = WSAddressing2004Namespace};
-    optional QNameListType Types with XmlEncoding{Name = "Types",Namespace = WSDiscoveryNamespace};
-    optional ScopesType Scopes with XmlEncoding{Name = "Scopes",Namespace = WSDiscoveryNamespace};
-    optional XAddrsType XAddrs with XmlEncoding{Name = "XAddrs",Namespace = WSDiscoveryNamespace};
-    MetadataVersionType MetadataVersion with XmlEncoding{Name = "MetadataVersion",Namespace = WSDiscoveryNamespace};
-    optional array<xml> AnyElement with XmlEncoding{IsAny = true, Namespace = XmlNamespaceIndicator.Other};
+    optional XSQName Types with XmlEncoding{Name = "Types", Namespace = WSDiscoveryNamespace};
+    optional ScopesType Scopes with XmlEncoding{Name = "Scopes", Namespace = WSDiscoveryNamespace};
+    optional XSAnyURI XAddrs with XmlEncoding{Name = "XAddrs", Namespace = WSDiscoveryNamespace};
+    uint MetadataVersion with XmlEncoding{Name = "MetadataVersion", Namespace = WSDiscoveryNamespace};
+    optional array<xml> AnyElements with XmlEncoding{IsAny = true, Namespace = XmlNamespaceIndicator.Other};
     optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
 }with XmlEncoding{AnonymousType = true};
 
 type ResolveType
 {
     EndpointReferenceType EndpointReference with XmlEncoding{Name = "EndpointReference", Namespace = WSAddressing2004Namespace};
-    optional array<xml> AnyElement with XmlEncoding{IsAny = true, Namespace = XmlNamespaceIndicator.Other};
+    optional array<xml> AnyElements with XmlEncoding{IsAny = true, Namespace = XmlNamespaceIndicator.Other};
     optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
 }
 
 type ResolveMatchesType
 {
     optional ResolveMatchType ResolveMatch with XmlEncoding{Name = "ResolveMatch", Namespace = WSDiscoveryNamespace};
-    optional array<xml> AnyElement with XmlEncoding{IsAny = true, Namespace = XmlNamespaceIndicator.Other};
+    optional array<xml> AnyElements with XmlEncoding{IsAny = true, Namespace = XmlNamespaceIndicator.Other};
     optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
 }
 
 type ResolveMatchType
 {
     EndpointReferenceType EndpointReference with XmlEncoding{Name = "EndpointReference", Namespace = WSAddressing2004Namespace};
-    optional QNameListType Types with XmlEncoding{Name = "Types",Namespace = WSDiscoveryNamespace};
-    optional ScopesType Scopes with XmlEncoding{Name = "Scopes",Namespace = WSDiscoveryNamespace};
-    XAddrsType XAddrs with XmlEncoding{Name = "XAddrs",Namespace = WSDiscoveryNamespace};
-    MetadataVersionType MetadataVersion with XmlEncoding{Name = "MetadataVersion",Namespace = WSDiscoveryNamespace};
-    optional array<xml> AnyElement with XmlEncoding{IsAny = true, Namespace = XmlNamespaceIndicator.Other};
+    optional XSQName Types with XmlEncoding{Name = "Types", Namespace = WSDiscoveryNamespace};
+    optional ScopesType Scopes with XmlEncoding{Name = "Scopes", Namespace = WSDiscoveryNamespace};
+    XSAnyURI XAddrs with XmlEncoding{Name = "XAddrs", Namespace = WSDiscoveryNamespace};
+    uint MetadataVersion with XmlEncoding{Name = "MetadataVersion", Namespace = WSDiscoveryNamespace};
+    optional array<xml> AnyElements with XmlEncoding{IsAny = true, Namespace = XmlNamespaceIndicator.Other};
     optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
 }with XmlEncoding{AnonymousType = true};
-
-//Simple types
-type QNameListType
-{
-    XSQName QName with XmlEncoding{Kind = XmlKind.Text};
-}
 
 type ScopesType
 {
@@ -339,17 +325,6 @@ type ScopesType
     XSAnyURI UriList with XmlEncoding{Kind = XmlKind.Text};
     optional array<xml> AnyAttribute with XmlEncoding{IsAny = true, Kind = XmlKind.Attribute, Namespace = XmlNamespaceIndicator.Other};
 };
-
-type XAddrsType
-{
-    XSAnyURI AnyURL with XmlEncoding{Kind = XmlKind.Text};
-}
-
-type MetadataVersionType
-{
-    uint Version with XmlEncoding{Kind = XmlKind.Text};
-}
-
 
 const string WSDiscoveryNamespace = "http://schemas.xmlsoap.org/ws/2005/04/discovery";
 const string WSDiscoveryActionHello = WSDiscoveryNamespace + "/Hello";

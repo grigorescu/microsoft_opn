@@ -4,6 +4,7 @@ Documentation
 {
     ProtocolName = "Remote Desktop Protocol: Graphics Pipeline Extension",
     DocumentName = "MS-RDPEGFX",
+    ShortName = "RDPEGFX",
     Description = ""
 },
 OPNAuthoring
@@ -11,11 +12,11 @@ OPNAuthoring
     Copyright = "(c) Microsoft Corporation",
     References = 
         [
-            new Reference{Name = "MS-RDPEGFX", Version = "4.0", ProgramName = ProgramName.MCPP},
+            new Reference{Name = "MS-RDPEGFX", Version = "8.0", Date = "08/19/2015", ProgramName = ProgramName.MCPP},
         ],
     RevisionSummary =
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "01/18/2013"}
+            new Revision{Class = RevisionClass.Major, Version = "383234", Date = "12/23/2015"}
         ]
 };
 
@@ -24,6 +25,8 @@ using Utility;
 using RDPBCGR;
 using RDPEDYC;
 using RDPRFX;
+using RDPNSC;
+using InfrastructureResources;
 
 endpoint Server 
     over RDPEDYC.Server | over SegmentDataServer
@@ -47,9 +50,9 @@ endpoint Server
                     {
                         var data = subcodec.bitmapData as CLEARCODEC_SUBCODEC_RLEX;
                         var stopIndexBitCount = CalcBitNum((data.paletteCount - 1) as uint);
-                        foreach(var seg in data.segments)
+                        foreach (var seg in data.segments)
                         {
-                            byte byteValue = seg.suiteDepth; 
+                            byte byteValue = seg.suiteDepth;
                             seg.suiteDepth = ((byteValue >> (stopIndexBitCount as int)) & 0xFF) as byte;     // most (8 - stopIndexBitCount) significant bits
                             seg.stopIndex = (byteValue & (0xFF >> ((8 - stopIndexBitCount) as int))) as byte;      // least stopIndexBitCount significant bits
                         }
@@ -72,9 +75,9 @@ autostart actor RDPEGFXOverRDPEDYC(RDPEDYC.Server edycServer)
 {
     process edycServer accepts m:DVCDataPDU where m#EDYCChannelName != nothing && m#EDYCChannelName.ToString() == "Microsoft::Windows::RDS::Graphics"
     {
-        if (m.Data[0] is descriptorEnum)
+        if (InRange<descriptorEnum>(m.Data[0]))
         {
-            switch(m.Data)
+            switch (m.Data)
             {
                 case segment:RDP_SEGMENTED_DATA from BinaryDecoder =>
                     dispatch endpoint SegmentDataServer over edycServer accepts segment;
@@ -89,9 +92,9 @@ autostart actor RDPEGFXOverRDPEDYC(RDPEDYC.Server edycServer)
     }
     process edycServer issues m:DVCDataPDU where m#EDYCChannelName != nothing && m#EDYCChannelName.ToString() == "Microsoft::Windows::RDS::Graphics"
     {
-        if (m.Data[0] is descriptorEnum)
+        if (InRange<descriptorEnum>(m.Data[0]))
         {
-            switch(m.Data)
+            switch (m.Data)
             {
                 case segment:RDP_SEGMENTED_DATA from BinaryDecoder =>
                     dispatch endpoint SegmentDataServer over edycServer issues segment;
@@ -131,7 +134,6 @@ autostart actor RDPEFGXOverSegmentDataServer(SegmentDataServer segServer)
             payload = AccumulateData(segment);
         }
         DecodeSegmentDataToGraphicMessages(payload, AcceptsDispatcher);
-        
     }
     
     process segServer issues segment:RDP_SEGMENTED_DATA where !segment.IsCompressed()
@@ -152,7 +154,7 @@ autostart actor RDPEFGXOverSegmentDataServer(SegmentDataServer segServer)
     void DecodeSegmentDataToGraphicMessages(binary payload, void(RDPGFX_HEADER) dispatcher)
     {
         int offset = 0;
-        while(offset + 8 < payload.Count)
+        while (offset + 8 < payload.Count)
         {
             uint pduLength = ((payload[offset + 7] as uint) << 24) + ((payload[offset + 6] as uint) << 16) + 
                 ((payload[offset + 5] as uint) << 8) + (payload[offset + 4] as uint);
@@ -173,7 +175,7 @@ autostart actor RDPEFGXOverSegmentDataServer(SegmentDataServer segServer)
     {
         binary bin = $[];
         var segArray = segments.segmentArray as array<RDP_DATA_SEGMENT>;
-        foreach(var seg in segArray)
+        foreach (var seg in segArray)
         {
             if (!((seg.bulkData.header & CompressedSegmentHeader.PACKET_COMPRESSED) == CompressedSegmentHeader.PACKET_COMPRESSED))
             {
@@ -237,6 +239,10 @@ void DecodeGraphicMessageAndDispatch(stream s, void(RDPGFX_HEADER) dispatcher)
             DecodeSingleGraphicMessageAndDispatch<RDPGFX_CAPS_ADVERTISE_PDU>(s, dispatcher, "RDPGFX_CAPS_ADVERTISE_PDU");
         case cmdIdEnum.RDPGFX_CMDID_CAPSCONFIRM =>
             DecodeSingleGraphicMessageAndDispatch<RDPGFX_CAPS_CONFIRM_PDU>(s, dispatcher, "RDPGFX_CAPS_CONFIRM_PDU");
+        case cmdIdEnum.RDPGFX_CMDID_MAPSURFACETOWINDOW =>
+            DecodeSingleGraphicMessageAndDispatch<RDPGFX_MAP_SURFACE_TO_WINDOW_PDU>(s, dispatcher, "RDPGFX_MAP_SURFACE_TO_WINDOW_PDU");
+        case cmdIdEnum.RDPGFX_CMDID_QOEFRAMEACKNOWLEDGE =>
+            DecodeSingleGraphicMessageAndDispatch<RDPGFX_QOE_FRAME_ACKNOWLEDGE_PDU>(s, dispatcher, "RDPGFX_QOE_FRAME_ACKNOWLEDGE_PDU");
         default =>
             throw "RDPEGFX: Undefined message cmdId: " + Utility.DecToHexFormat(4, commandId) + ".";
     }
@@ -258,6 +264,11 @@ type RDPGFX_POINT16
 {
     short x;
     short y;
+
+    override string ToString()
+    {
+        return "RDPGFX_POINT16, x: " + x.ToString() + ", y: " + y.ToString();
+    }
 }
         
 type RDPGFX_RECT16
@@ -266,6 +277,11 @@ type RDPGFX_RECT16
     ushort top;
     ushort right;
     ushort bottom;
+
+    override string ToString()
+    {
+        return "RDPGFX_RECT16, left: " + left.ToString() + ", top: " + top.ToString() + ", right: " + right.ToString() + ", bottom" + bottom.ToString();
+    }
 }
 
 type RDPGFX_COLOR32
@@ -274,6 +290,11 @@ type RDPGFX_COLOR32
     byte G;
     byte R;
     byte XA;
+
+    override string ToString()
+    {
+        return "RDPGFX_COLOR32, RGBA: (" + R.ToString() + ", " + G.ToString() + ", " + B.ToString() + ", " + XA.ToString() + ")";
+    }
 }
 
 type RDPGFX_PIXELFORMAT
@@ -284,7 +305,8 @@ type RDPGFX_PIXELFORMAT
 pattern format = enum byte
 {
     PIXEL_FORMAT_XRGB_8888 = 0x20,
-    PIXEL_FORMAT_ARGB_8888 = 0x21
+    PIXEL_FORMAT_ARGB_8888 = 0x21,
+    ...
 };
 
 message RDPGFX_HEADER
@@ -315,48 +337,60 @@ pattern cmdIdEnum = enum ushort
     RDPGFX_CMDID_CACHEIMPORTREPLY       = 0x0011,
     RDPGFX_CMDID_CAPSADVERTISE          = 0x0012,
     RDPGFX_CMDID_CAPSCONFIRM            = 0x0013,
+    RDPGFX_CMDID_MAPSURFACETOWINDOW     = 0x0015,
+    RDPGFX_CMDID_QOEFRAMEACKNOWLEDGE    = 0x0016,
+    ...
 } with Documentation{NameInDocumentation = "cmdId"};
 
 type RDPGFX_CAPSET
 {
-    version version;
+    version version where ValidationCheckEnumValue(InRange<RDPEGFX.version>(value), null, 
+        true, ReferenceType.Type, "RDPEGFX", "version", "RDPGFX_CAPSET", "0x00080004, 0x00080105, 0x000A0002", value);
     uint capsDataLength;
-    binary capsData with BinaryEncoding{Length = capsDataLength};
+    ([|version == RDPEGFX.version.RDPGFX_CAPVERSION_8|] RDPGFX_CAPSET_VERSION8 | 
+    [|version == RDPEGFX.version.RDPGFX_CAPVERSION_81|] RDPGFX_CAPSET_VERSION81 | 
+    [|version == RDPEGFX.version.RDPGFX_CAPVERSION_10|] RDPGFX_CAPSET_VERSION10 | binary) capsData;
 }
 
 pattern version = enum uint
 {
-    RDPGFX_CAPVERSION_8 = 0x00080004,
+    RDPGFX_CAPVERSION_8  = 0x00080004,
+    RDPGFX_CAPVERSION_81 = 0x00080105,
+    RDPGFX_CAPVERSION_10 = 0x000A0002,
+    ...
 };
 
 // 2.2.3   Graphics Messages
 message RDPGFX_WIRE_TO_SURFACE_PDU_1 : RDPGFX_HEADER
 {
     ushort surfaceId;
-    RDPGFX_WIRE_TO_SURFACE_PDU_1_CodecId codecId where ValidationCheck(InRange<RDPGFX_WIRE_TO_SURFACE_PDU_1_CodecId>(value), this, "RDPEGFX: The codecId in message RDPGFX_WIRE_TO_SURFACE_PDU_1 must be one of 0x0000, 0x0001, 0x0003, 0x0008, 0x000A.");
+    RDPGFX_WIRE_TO_SURFACE_PDU_1_CodecId codecId where ValidationCheckEnumValueTooManyItems(InRange<RDPGFX_WIRE_TO_SURFACE_PDU_1_CodecId>(value), 
+        this, true, ReferenceType.Message, "RDPEGFX", "codecId", "RDPGFX_WIRE_TO_SURFACE_PDU_1", "RDPGFX_WIRE_TO_SURFACE_PDU_1", "[MS-RDPEGFX]");
     RDPGFX_PIXELFORMAT pixelFormat;
     RDPGFX_RECT16 destRect;
     uint bitmapDataLength;
     ([|codecId == RDPGFX_WIRE_TO_SURFACE_PDU_1_CodecId.RDPGFX_CODECID_CLEARCODEC|] CLEARCODEC_BITMAP_STREAM | 
      [|codecId == RDPGFX_WIRE_TO_SURFACE_PDU_1_CodecId.RDPGFX_CODECID_CAVIDEO|] RFX_REMOTEFXCODEC_BITMAP_STREAM | 
+     [|codecId == RDPGFX_WIRE_TO_SURFACE_PDU_1_CodecId.RDPGFX_CODECID_AVC420|] RFX_AVC420_BITMAP_STREAM[bitmapDataLength] | 
+     [|codecId == RDPGFX_WIRE_TO_SURFACE_PDU_1_CodecId.RDPGFX_CODECID_ALPHA|] ALPHACODEC_BITMAP_STREAM | 
+     [|codecId == RDPGFX_WIRE_TO_SURFACE_PDU_1_CodecId.RDPGFX_CODECID_AVC444|] RFX_AVC444_BITMAP_STREAM[bitmapDataLength] | 
         binary) bitmapData with BinaryEncoding{WidthForComposedType = bitmapDataLength * 8 as int, Length = bitmapDataLength};
             
     invariant cmdId == cmdIdEnum.RDPGFX_CMDID_WIRETOSURFACE_1;     // 0x0001
         
     override string ToString()
     {
-        string summary = "RDPGFX_WIRE_TO_SURFACE_PDU_1 message";
-        summary += ", pduLength: " + pduLength.ToString();
-        summary += ", surfaceId: " + surfaceId.ToString();
-        summary += ", codecId: " + EnumToString(codecId, "RDPEGFX.RDPGFX_WIRE_TO_SURFACE_PDU_1_CodecId") + ".";
-        return summary;
+        return "RDPGFX_WIRE_TO_SURFACE_PDU_1, pduLength: " + pduLength.ToString() + 
+            ", surfaceId: " + surfaceId.ToString() + 
+            ", codecId: " + EnumToStringInSummary<RDPGFX_WIRE_TO_SURFACE_PDU_1_CodecId>(codecId);
     }
 }
 
 message RDPGFX_WIRE_TO_SURFACE_PDU_2 : RDPGFX_HEADER
 {
     ushort surfaceId;
-    RDPGFX_WIRE_TO_SURFACE_PDU_2_CodecId codecId where ValidationCheck(InRange<RDPGFX_WIRE_TO_SURFACE_PDU_2_CodecId>(value), this, "RDPEGFX: The codecId in message RDPGFX_WIRE_TO_SURFACE_PDU_2 must be 0x0009 (RDPGFX_CODECID_CAPROGRESSIVE).");
+    RDPGFX_WIRE_TO_SURFACE_PDU_2_CodecId codecId where ValidationCheckEnumValue(InRange<RDPGFX_WIRE_TO_SURFACE_PDU_2_CodecId>(value), 
+        this, true, ReferenceType.Message, "RDPEGFX", "codecId", "RDPGFX_WIRE_TO_SURFACE_PDU_2", "0x0009", value);
     uint codecContextId;
     RDPGFX_PIXELFORMAT pixelFormat;
     uint bitmapDataLength;
@@ -367,11 +401,9 @@ message RDPGFX_WIRE_TO_SURFACE_PDU_2 : RDPGFX_HEADER
         
     override string ToString()
     {
-        string summary = "RDPGFX_WIRE_TO_SURFACE_PDU_2 message";
-        summary += ", pduLength: " + pduLength.ToString();
-        summary += ", surfaceId: " + surfaceId.ToString();
-        summary += ", codecId: " + EnumToString(codecId, "RDPEGFX.RDPGFX_WIRE_TO_SURFACE_PDU_2_CodecId") + ".";
-        return summary;
+        return "RDPGFX_WIRE_TO_SURFACE_PDU_2, pduLength: " + pduLength.ToString() + 
+            ", surfaceId: " + surfaceId.ToString() + 
+            ", codecId: " + EnumToStringInSummary<RDPGFX_WIRE_TO_SURFACE_PDU_2_CodecId>(codecId);
     }
 }
 
@@ -384,10 +416,8 @@ message RDPGFX_DELETE_ENCODING_CONTEXT_PDU : RDPGFX_HEADER
         
     override string ToString()
     {
-        string summary = "RDPGFX_DELETE_ENCODING_CONTEXT_PDU message";
-        summary += ", pduLength: " + pduLength.ToString();
-        summary += ", surfaceId: " + surfaceId.ToString() + ".";
-        return summary;
+        return "RDPGFX_DELETE_ENCODING_CONTEXT_PDU, pduLength: " + pduLength.ToString() + 
+            ", surfaceId: " + surfaceId.ToString();
     }
 }
 
@@ -402,10 +432,8 @@ message RDPGFX_SOLIDFILL_PDU : RDPGFX_HEADER
         
     override string ToString()
     {
-        string summary = "RDPEGFX RDPGFX_SOLIDFILL_PDU message";
-        summary += ", pduLength: " + pduLength.ToString();
-        summary += ", surfaceId: " + surfaceId.ToString() + ".";
-        return summary;
+        return "RDPGFX_SOLIDFILL_PDU, pduLength: " + pduLength.ToString() + 
+            ", surfaceId: " + surfaceId.ToString();
     }
 }
 
@@ -421,11 +449,9 @@ message RDPGFX_SURFACE_TO_SURFACE_PDU : RDPGFX_HEADER
         
     override string ToString()
     {
-        string summary = " RDPGFX_SURFACE_TO_SURFACE_PDU message";
-        summary += ", pduLength: " + pduLength.ToString();
-        summary += ", surfaceIdSrc: " + surfaceIdSrc.ToString();
-        summary += ", surfaceIdDest: " + surfaceIdDest.ToString() + ".";
-        return summary;
+        return "RDPGFX_SURFACE_TO_SURFACE_PDU, pduLength: " + pduLength.ToString() + 
+            ", surfaceIdSrc: " + surfaceIdSrc.ToString() + 
+            ", surfaceIdDest: " + surfaceIdDest.ToString();
     }
 }
 
@@ -440,12 +466,10 @@ message RDPGFX_SURFACE_TO_CACHE_PDU : RDPGFX_HEADER
         
     override string ToString()
     {
-        string summary = "RDPGFX_SURFACE_TO_CACHE_PDU message";
-        summary += ", pduLength: " + pduLength.ToString();
-        summary += ", surfaceId: " + surfaceId.ToString();
-        summary += ", cacheKey: " + cacheKey.ToString();
-        summary += ", cacheSlot: " + cacheSlot.ToString() + ".";
-        return summary;
+        return "RDPGFX_SURFACE_TO_CACHE_PDU, pduLength: " + pduLength.ToString() + 
+            ", surfaceId: " + surfaceId.ToString() + 
+            ", cacheKey: " + cacheKey.ToString() + 
+            ", cacheSlot: " + cacheSlot.ToString();
     }
 }
 
@@ -460,11 +484,9 @@ message RDPGFX_CACHE_TO_SURFACE_PDU : RDPGFX_HEADER
         
     override string ToString()
     {
-        string summary = "RDPGFX_CACHE_TO_SURFACE_PDU message";
-        summary += ", pduLength: " + pduLength.ToString();
-        summary += ", cacheSlot: " + cacheSlot.ToString();
-        summary += ", surfaceId: " + surfaceId.ToString() + ".";
-        return summary;
+        return "RDPGFX_CACHE_TO_SURFACE_PDU, pduLength: " + pduLength.ToString() + 
+            ", cacheSlot: " + cacheSlot.ToString() + 
+            ", surfaceId: " + surfaceId.ToString();
     }
 }
 
@@ -476,10 +498,8 @@ message RDPGFX_EVICT_CACHE_ENTRY_PDU : RDPGFX_HEADER
         
     override string ToString()
     {
-        string summary = "RDPGFX_EVICT_CACHE_ENTRY_PDU message";
-        summary += ", pubLength: " + pduLength.ToString();
-        summary += ", cacheSlot: " + cacheSlot.ToString() + ".";
-        return summary;
+        return "RDPGFX_EVICT_CACHE_ENTRY_PDU, pduLength: " + pduLength.ToString() + 
+            ", cacheSlot: " + cacheSlot.ToString();
     }
 }
 
@@ -494,10 +514,8 @@ message RDPGFX_CREATE_SURFACE_PDU : RDPGFX_HEADER
         
     override string ToString()
     {
-        string summary = "RDPGFX_CREATE_SURFACE_PDU message";
-        summary += ", pduLength: " + pduLength.ToString();
-        summary += ", surfaceId: " + surfaceId.ToString() + ".";
-        return summary;
+        return "RDPGFX_CREATE_SURFACE_PDU, pduLength: " + pduLength.ToString() + 
+            ", surfaceId: " + surfaceId.ToString();
     }
 }
 
@@ -509,10 +527,8 @@ message RDPGFX_DELETE_SURFACE_PDU : RDPGFX_HEADER
         
     override string ToString()
     {
-        string summary = "RDPGFX_DELETE_SURFACE_PDU message";
-        summary += ", pduLength: " + pduLength.ToString();
-        summary += ", surfaceId: " + surfaceId.ToString() + ".";
-        return summary;
+        return "RDPGFX_DELETE_SURFACE_PDU, pduLength: " + pduLength.ToString() + 
+            ", surfaceId: " + surfaceId.ToString();
     }
 }
 
@@ -525,20 +541,18 @@ message RDPGFX_START_FRAME_PDU : RDPGFX_HEADER
         
     override string ToString()
     {
-        string summary = "RDPGFX_START_FRAME_PDU message";
-        summary += ", pduLength: " + pduLength.ToString();
-        summary += ", frameId: " + frameId.ToString() + ".";
-        return summary;
+        return "RDPGFX_START_FRAME_PDU, pduLength: " + pduLength.ToString() + 
+            ", frameId: " + frameId.ToString();
     }
 }
 
 type TimeStamp
 {
-    ushort milliseconds with BinaryEncoding{Width = 10, Endian = Endian.Big};
-    byte second with BinaryEncoding{Width = 6};
-    byte minute with BinaryEncoding{Width = 6};
     ushort hour with BinaryEncoding{Width = 10, Endian = Endian.Big};
-} with BinaryEncoding{WidthForComposedType = 32, DecodeAsUnit = true};
+    byte minute with BinaryEncoding{Width = 6};
+    byte second with BinaryEncoding{Width = 6};
+    ushort milliseconds with BinaryEncoding{Width = 10, Endian = Endian.Big};
+}with BinaryEncoding{WidthForComposedType = 32, DecodeAsUnit = true};
 
 message RDPGFX_END_FRAME_PDU : RDPGFX_HEADER
 {
@@ -548,10 +562,8 @@ message RDPGFX_END_FRAME_PDU : RDPGFX_HEADER
         
     override string ToString()
     {
-        string summary = "RDPGFX_END_FRAME_PDU message";
-        summary += ", pduLength: " + pduLength.ToString();
-        summary += ", frameId: " + frameId.ToString() + ".";
-        return summary;
+        return "RDPGFX_END_FRAME_PDU, pduLength: " + pduLength.ToString() + 
+            ", frameId: " + frameId.ToString();
     }
 }
 
@@ -565,11 +577,9 @@ message RDPGFX_FRAME_ACKNOWLEDGE_PDU : RDPGFX_HEADER
         
     override string ToString()
     {
-        string summary = "RDPGFX_FRAME_ACKNOWLEDGE_PDU message";
-        summary += ", pduLength: " + pduLength.ToString();
-        summary += ", frameId: " + frameId.ToString();
-        summary += ", totalFramesDecoded: " + totalFramesDecoded.ToString() + ".";
-        return summary;
+        return "RDPGFX_FRAME_ACKNOWLEDGE_PDU, pduLength: " + pduLength.ToString() + 
+            ", frameId: " + frameId.ToString() + 
+            ", totalFramesDecoded: " + totalFramesDecoded.ToString();
     }
 }
 
@@ -577,20 +587,19 @@ message RDPGFX_RESET_GRAPHICS_PDU : RDPGFX_HEADER
 {
     uint width;
     uint height;
-    uint monitorCount;
-    array<TSMonitorDef> monitorDefArray with BinaryEncoding{Length = monitorCount};
+    uint monitorCount where ValidationCheckLessThanOrEqualTo(value <= 16, this, true, ReferenceType.Message,
+        "RDPEGFX", "monitorCount", "RDPGFX_RESET_GRAPHICS_PDU", 16, value);
+    array<TS_MONITOR_DEF> monitorDefArray with BinaryEncoding{Length = monitorCount};
     binary pad with BinaryEncoding{Length = pduLength - 20 - 20 * monitorCount};
 
-    invariant cmdId == cmdIdEnum.RDPGFX_CMDID_RESETGRAPHICS ;   // 0x000E
+    invariant cmdId == cmdIdEnum.RDPGFX_CMDID_RESETGRAPHICS; // 0x000E
         
     override string ToString()
     {
-        string summary = "RDPGFX_RESET_GRAPHICS_PDU message";
-        summary += ", pduLength: " + pduLength.ToString();
-        summary += ", width: " + width.ToString();
-        summary += ", height: " + height.ToString();
-        summary += ", monitorCount: " + monitorCount.ToString() + ".";
-        return summary;
+        return "RDPGFX_RESET_GRAPHICS_PDU, pduLength: " + pduLength.ToString() + 
+            ", width: " + width.ToString() + 
+            ", height: " + height.ToString() + 
+            ", monitorCount: " + monitorCount.ToString();
     }
 }
 
@@ -605,12 +614,10 @@ message RDPGFX_MAP_SURFACE_TO_OUTPUT_PDU : RDPGFX_HEADER
         
     override string ToString()
     {
-        string summary = "RDPGFX_MAP_SURFACE_TO_OUTPUT_PDU message";
-        summary += ", pduLength: " + pduLength.ToString();
-        summary += ", surfaceId: " + surfaceId.ToString();
-        summary += ", outputOriginX: " + outputOriginX.ToString();
-        summary += ", outputOriginY: " + outputOriginY.ToString() + ".";
-        return summary;
+        return "RDPGFX_MAP_SURFACE_TO_OUTPUT_PDU, pduLength: " + pduLength.ToString() + 
+            ", surfaceId: " + surfaceId.ToString() + 
+            ", outputOriginX: " + outputOriginX.ToString() + 
+            ", outputOriginY: " + outputOriginY.ToString();
     }
 }
 
@@ -623,10 +630,8 @@ message RDPGFX_CACHE_IMPORT_OFFER_PDU : RDPGFX_HEADER
         
     override string ToString()
     {
-        string summary = "RDPGFX_CACHE_IMPORT_OFFER_PDU message";
-        summary += ", pduLength: " + pduLength.ToString();
-        summary += ", cacheEntriesCount: " + cacheEntriesCount.ToString() + ".";
-        return summary;
+        return "RDPGFX_CACHE_IMPORT_OFFER_PDU, pduLength: " + pduLength.ToString() + 
+            ", cacheEntriesCount: " + cacheEntriesCount.ToString();
     }
 }
 
@@ -639,50 +644,78 @@ message RDPGFX_CACHE_IMPORT_REPLY_PDU : RDPGFX_HEADER
         
     override string ToString()
     {
-        string summary = "RDPGFX_CACHE_IMPORT_REPLY_PDU message";
-        summary += ", pduLength: " + pduLength.ToString();
-        summary += ", importedEntriesCount: " + importedEntriesCount.ToString() + ".";
-        return summary;
+        return "RDPGFX_CACHE_IMPORT_REPLY_PDU, pduLength: " + pduLength.ToString() + 
+            ", importedEntriesCount: " + importedEntriesCount.ToString();
     }
 }
 
 message RDPGFX_CAPS_ADVERTISE_PDU : RDPGFX_HEADER
 {
     ushort capsSetCount;
-    array<RDPGFX_CAPSET_VERSION8> capsSets with BinaryEncoding{Length = capsSetCount};
+    array<RDPGFX_CAPSET> capsSets with BinaryEncoding{Length = capsSetCount};
 
     invariant cmdId == cmdIdEnum.RDPGFX_CMDID_CAPSADVERTISE;          // 0x0012
         
     override string ToString()
     {
-        string summary = "RDPGFX_CAPS_ADVERTISE_PDU message";
-        summary += ", pduLength: " + pduLength.ToString();
-        summary += ", capsSetCount: " + capsSetCount.ToString() + ".";
-        return summary;
+        return "RDPGFX_CAPS_ADVERTISE_PDU, pduLength: " + pduLength.ToString() + 
+            ", capsSetCount: " + capsSetCount.ToString();
     }
 }
 
 message RDPGFX_CAPS_CONFIRM_PDU : RDPGFX_HEADER
 {
-    array<RDPGFX_CAPSET_VERSION8> capsSet;
+    array<RDPGFX_CAPSET> capsSet;
         
     invariant cmdId == cmdIdEnum.RDPGFX_CMDID_CAPSCONFIRM;          // 0x0013
         
     override string ToString()
     {
-        string summary = "RDPGFX_CAPS_CONFIRM_PDU message";
-        summary += ", pduLength: " + pduLength.ToString() + ".";
-        return summary;
+        return "RDPGFX_CAPS_CONFIRM_PDU, pduLength: " + pduLength.ToString();
+    }
+}
+
+message RDPGFX_MAP_SURFACE_TO_WINDOW_PDU : RDPGFX_HEADER
+{
+    ushort surfaceId;
+    long windowId;
+    uint mappedWidth;
+    uint mappedHeight;
+        
+    invariant cmdId == cmdIdEnum.RDPGFX_CMDID_MAPSURFACETOWINDOW;          // 0x0015
+        
+    override string ToString()
+    {
+        return "RDPGFX_MAP_SURFACE_TO_WINDOW_PDU, pduLength: " + pduLength.ToString() + 
+            ", surfaceId: " + surfaceId.ToString();
+    }
+}
+
+message RDPGFX_QOE_FRAME_ACKNOWLEDGE_PDU : RDPGFX_HEADER
+{
+    uint frameId;
+    uint timestamp;
+    ushort timeDiffSE;
+    ushort timeDiffEDR;
+        
+    invariant cmdId == cmdIdEnum.RDPGFX_CMDID_QOEFRAMEACKNOWLEDGE;          // 0x0016
+        
+    override string ToString()
+    {
+        return "RDPGFX_QOE_FRAME_ACKNOWLEDGE_PDU, pduLength: " + pduLength.ToString() + 
+            ", frameId: " + frameId.ToString();
     }
 }
 
 pattern RDPGFX_WIRE_TO_SURFACE_PDU_1_CodecId = enum ushort
 {
     RDPGFX_CODECID_UNCOMPRESSED = 0x0000,
-    RDPGFX_CODECID_NSCODEC      = 0x0001,
     RDPGFX_CODECID_CAVIDEO      = 0x0003,
     RDPGFX_CODECID_CLEARCODEC   = 0x0008,
     RDPGFX_CODECID_PLANAR       = 0x000A,
+    RDPGFX_CODECID_AVC420       = 0x000B,
+    RDPGFX_CODECID_ALPHA        = 0x000C,
+    RDPGFX_CODECID_AVC444       = 0x000E,
     ...
 } with Documentation{NameInDocumentation = "codecId"};
 
@@ -696,44 +729,61 @@ type RDPGFX_CACHE_ENTRY_METADATA
 {
     ulong cacheKey;
     uint bitmapLength;
+
+    override string ToString()
+    {
+        return "RDPGFX_CACHE_ENTRY_METADATA, cacheKey: " + cacheKey.ToString() + ", bitmapLength: " + bitmapLength.ToString();
+    }
 }
 
 type RDPGFX_CAPSET_VERSION8
 {
-    RDPGFX_CAPSET_VERSION8_version version;
-    uint capsDataLength where ValidationCheck(value == 0x00000004, null, "RDPEGFX: The capsDataLength in type RDPGFX_CAPSET_VERSION8 must be set to 0x00000004.");
     RDPGFX_CAPSET_VERSION8_FLAGS $"flags";
 }
 
-pattern RDPGFX_CAPSET_VERSION8_version = enum uint 
-{
-    RDPGFX_CAPVERSION_8 = 0x00080004,
-};
-
 pattern RDPGFX_CAPSET_VERSION8_FLAGS = flags uint
 {
-    RDPGFX_CAPS_FLAG_THINCLIENT = 0x00000001,
+    RDPGFX_CAPS_FLAG_THINCLIENT = 0x00000001
+        with Documentation
+            {Description = "The bitmap cache MUST be constrained to 16 MB in size (if it is used) and that the RemoteFX Codec MUST be used in place of the RemoteFX Progressive Codec."},
     RDPGFX_CAPS_FLAG_SMALL_CACHE = 0x00000002
+        with Documentation
+            {Description = "The bitmap cache MUST be constrained to 16 MB in size (if it is used)."},
 } with Documentation{NameInDocumentation = "flags"};
 
 type RDPGFX_CAPSET_VERSION81
 {
-    RDPGFX_CAPSET_VERSION81_version version;
-    uint capsDataLength where ValidationCheck(value == 0x00000004, null, "RDPEGFX: The capsDataLength in type RDPGFX_CAPSET_VERSION8 must be set to 0x00000004.");
-    RDPGFX_CAPSET_VERSION8_FLAGS $"flags";
+    RDPGFX_CAPSET_VERSION81_FLAGS $"flags";
 }
-
-pattern RDPGFX_CAPSET_VERSION81_version = enum uint 
-{
-    RDPGFX_CAPVERSION_81 = 0x0009003,
-};
 
 pattern RDPGFX_CAPSET_VERSION81_FLAGS = flags uint
 {
-    RDPGFX_CAPS_FLAG_THINCLIENT = 0x00000001,
-    RDPGFX_CAPS_FLAG_SMALL_CACHE = 0x00000002,
-    RDPGFX_CAPS_FLAG_H264ENABLED = 0x00000010
+    RDPGFX_CAPS_FLAG_THINCLIENT = 0x00000001
+        with Documentation
+            {Description = "The bitmap cache MUST be constrained to 16 MB (if it is used) in size and that the RemoteFX Codec MUST be used in place of the RemoteFX Progressive Codec."},
+    RDPGFX_CAPS_FLAG_SMALL_CACHE = 0x00000002
+        with Documentation
+            {Description = "The bitmap cache MUST be constrained to 16 MB in size (if it is used)."},
+    RDPGFX_CAPS_FLAG_AVC420_ENABLED = 0x00000010
+        with Documentation
+            {Description = "The usage of the MPEG-4 AVC/H.264 Codec in YUV420p mode is supported in the RDPGFX_WIRE_TO_SURFACE_PDU_1 message."},
 } with Documentation{NameInDocumentation = "flags"};
+
+type RDPGFX_CAPSET_VERSION10
+{
+    RDPGFX_CAPSET_VERSION10_FLAGS $"flags";
+}
+
+pattern RDPGFX_CAPSET_VERSION10_FLAGS = flags uint
+{
+    RDPGFX_CAPS_FLAG_SMALL_CACHE = 0x00000002
+        with Documentation
+            {Description = "The bitmap cache MUST be constrained to 16 MB in size (if it is used)."},
+    RDPGFX_CAPS_FLAG_AVC_DISABLED = 0x00000020
+        with Documentation
+            {Description = "Usage of the MPEG-4 AVC/H.264 Codec in either YUV420p or YUV444 modes is not supported in the RDPGFX_WIRE_TO_SURFACE_PDU_1 message."},
+    ...
+};
 
 // 2.2.5  Bitmap Compression
 type CLEARCODEC_BITMAP_STREAM
@@ -747,9 +797,15 @@ type CLEARCODEC_BITMAP_STREAM
 
 pattern CLEARCODEC_BITMAP_STREAM_FLAGS = flags byte
 {
-    CLEARCODEC_FLAG_GLYPH_INDEX     = 0x01,
-    CLEARCODEC_FLAG_GLYPH_HIT       = 0x02,
-    CLEARCODEC_FLAG_CACHE_RESET     = 0x04,
+    CLEARCODEC_FLAG_GLYPH_INDEX     = 0x01
+        with Documentation
+            {Description = "The glyphIndex field is present."},
+    CLEARCODEC_FLAG_GLYPH_HIT       = 0x02
+        with Documentation
+            {Description = "Indicates the source of the glyph data."},
+    CLEARCODEC_FLAG_CACHE_RESET     = 0x04
+        with Documentation
+            {Description = "Both the V-Bar Storage Cursor ADM element and Short V-Bar Storage Cursor ADM element MUST be reset to 0 before decoding the stream."},
 } with Documentation{NameInDocumentation = "flags"};
 
 type CLEARCODEC_COMPOSITE_PAYLOAD
@@ -775,9 +831,20 @@ type CLEARCODEC_RGB_RUN_SEGMENT
     byte blueValue;
     byte greenValue;
     byte redValue;
-    byte runLengthFactor1;
-    optional [|runLengthFactor1 == 0xFF|] ushort runLengthFactor2;
-    optional [|runLengthFactor2 == 0xFFFF|] uint runLengthFactor3;
+    byte runLengthFactor1 where ValidationCheckGreaterThanOrEqualTo(value >= 0, null, 
+        true, ReferenceType.Type, "RDPEGFX", "runLengthFactor1", "CLEARCODEC_RGB_RUN_SEGMENT", INFRASTRUCTURE_STR_ZERO, value);
+    optional [|runLengthFactor1 == 0xFF|] ushort runLengthFactor2 where ValidationCheckGreaterThanOrEqualTo(value == nothing || value >= 0, null, 
+        true, ReferenceType.Type, "RDPEGFX", "runLengthFactor2", "CLEARCODEC_RGB_RUN_SEGMENT", INFRASTRUCTURE_STR_ZERO, value);
+    optional [|runLengthFactor2 == 0xFFFF|] uint runLengthFactor3 where ValidationCheckGreaterThanOrEqualTo(value == nothing || value >= 0, null, 
+        true, ReferenceType.Type, "RDPEGFX", "runLengthFactor3", "CLEARCODEC_RGB_RUN_SEGMENT", INFRASTRUCTURE_STR_ZERO, value);
+
+    override string ToString()
+    {
+        return "CLEARCODEC_RGB_RUN_SEGMENT, RGB: (" + redValue.ToString() + ", " + greenValue.ToString() + ", " + blueValue.ToString() + ")" +
+            (runLengthFactor3 != nothing ? runLengthFactor3.ToString() : 
+                (runLengthFactor2 != nothing ? runLengthFactor2.ToString() :
+                    (runLengthFactor1 != nothing ? runLengthFactor1.ToString() : "")));
+    }
 }
 
 type CLEARCODEC_BANDS_DATA
@@ -794,14 +861,28 @@ type CLEARCODEC_BAND
     byte blueBkg;
     byte greenBkg;
     byte redBkg;
-    array<CLEARCODEC_VBAR> vBars with BinaryEncoding{Length = (xEnd - xStart + 1) as uint};
+    array<CLEARCODEC_VBAR> vBars with BinaryEncoding{Length = (xEnd - xStart + 1)};
+
+    override string ToString()
+    {
+        return "CLEARCODEC_BAND, xStart: " + xStart.ToString() + ", xEnd:" + xEnd.ToString() +
+            "yStart: " + yStart.ToString() + ", yEnd:" + yEnd.ToString() +
+            ", RGB: (" + redBkg.ToString() + ", " + greenBkg.ToString() + ", " + blueBkg.ToString() + ")";
+    }
 }
 
 type CLEARCODEC_VBAR
 {
-    (VBAR_CACHE_HIT | SHORT_VBAR_CACHE_HIT | SHORT_VBAR_CACHE_MISS) vBarHeader;
+    ([|stream.RemainingByteLength() >= 2 && (PeekByte(stream, stream.BitPosition + 8) >> 7) == 1|]VBAR_CACHE_HIT | 
+    [|stream.RemainingByteLength() >= 3 && (PeekByte(stream, stream.BitPosition + 8) >> 6) == 1|]SHORT_VBAR_CACHE_HIT | 
+    [|stream.RemainingByteLength() >= 2 && (PeekByte(stream, stream.BitPosition) >> 6) == 0|]SHORT_VBAR_CACHE_MISS) vBarHeader;
     optional [|vBarHeader is SHORT_VBAR_CACHE_MISS|] array<COLOR_RGB> shortVBarPixels 
-        with BinaryEncoding{Length = ((vBarHeader as SHORT_VBAR_CACHE_MISS).shortVBarYOff - (vBarHeader as SHORT_VBAR_CACHE_MISS).shortVBarYOn) as uint};
+        with BinaryEncoding{Length = ((vBarHeader as SHORT_VBAR_CACHE_MISS).shortVBarYOff - (vBarHeader as SHORT_VBAR_CACHE_MISS).shortVBarYOn)};
+
+    override string ToString()
+    {
+        return "CLEARCODEC_VBAR, vBarHeader: " + vBarHeader.ToString();
+    }
 }
 
 // 0b1xxx
@@ -809,6 +890,11 @@ type VBAR_CACHE_HIT
 {    
     byte x where value == 0x1 with BinaryEncoding{Width = 1};
     ushort vBarIndex with BinaryEncoding{Width = 15, Endian=Endian.Big};
+
+    override string ToString()
+    {
+        return "VBAR_CACHE_HIT, vBarIndex: " + vBarIndex.ToString();
+    }
 } with BinaryEncoding{WidthForComposedType = 16, DecodeAsUnit = true};
 
 // 0b01xx 
@@ -817,6 +903,11 @@ type SHORT_VBAR_CACHE_HIT
     byte shortVBarYOn;
     byte x where value == 0x1 with BinaryEncoding{Width = 2};
     ushort shortVBarIndex with BinaryEncoding{Width = 14, Endian=Endian.Big};
+
+    override string ToString()
+    {
+        return "SHORT_VBAR_CACHE_HIT, shortVBarIndex: " + shortVBarIndex.ToString();
+    }
 } with BinaryEncoding{WidthForComposedType = 24, DecodeAsUnit = true};
 
 // 0b00xx
@@ -825,6 +916,11 @@ type SHORT_VBAR_CACHE_MISS
     byte shortVBarYOn;
     byte x where value == 0x0 with BinaryEncoding{Width = 2};
     byte shortVBarYOff with BinaryEncoding{Width = 6};
+
+    override string ToString()
+    {
+        return "SHORT_VBAR_CACHE_MISS, shortVBarYOff: " + shortVBarYOff.ToString();
+    }
 }
 
 type COLOR_RGB
@@ -851,8 +947,15 @@ type CLEARCODEC_SUBCODEC
     byte subCodecId where ValidationCheck(value in {0x00, 0x01, 0x02}, null, "RDPEGFX: The subCodecId in type CLEARCODEC_SUBCODEC should be one of 0x00, 0x01, 0x02, not " + value.ToString() + ".");
 
     ([|subCodecId == 0x00|] RLEX_RGB_TRIPLETs |
+     [|subCodecId == 0x01|] RDPNSC.NSCODEC_BITMAP_STREAM[width, height] |
      [|subCodecId == 0x02|] CLEARCODEC_SUBCODEC_RLEX | binary) bitmapData 
-        with BinaryEncoding{WidthForComposedType = bitmapDataByteCount * 8 as int, Length = bitmapDataByteCount}; 
+        with BinaryEncoding{WidthForComposedType = bitmapDataByteCount * 8 as int, Length = bitmapDataByteCount};
+
+    override string ToString()
+    {
+        return "CLEARCODEC_SUBCODEC, xStart: " + xStart.ToString() + "yStart: " + yStart.ToString() +
+            ", width:" + width.ToString() + ", height:" + height.ToString() + ", subCodecId: " + subCodecId.ToString();
+    }
 }
 
 type CLEARCODEC_SUBCODEC_RLEX
@@ -872,6 +975,11 @@ type RLEX_RGB_TRIPLET
     byte blue;
     byte green;
     byte red;
+
+    override string ToString()
+    {
+        return "RLEX_RGB_TRIPLET, RGB: (" + red.ToString() + ", " + green.ToString() + ", " + blue.ToString() + ")";
+    }
 }
 
 type CLEARCODEC_SUBCODEC_RLEX_SEGMENT
@@ -879,11 +987,16 @@ type CLEARCODEC_SUBCODEC_RLEX_SEGMENT
     /* Bits count of suiteDepth field depends on value of paletteCount. (8 - log2(paletteCount - 1))
      * Will further decode both field in rule defined in Server endpoint.
     */ 
-    byte suiteDepth; 
-    byte stopIndex with Encoding{Ignore = true}; 
+    byte suiteDepth;
+    byte stopIndex with Encoding{Ignore = true};
     byte runLengthFactor1;
     optional [|runLengthFactor1 == 0xFF|] ushort runLengthFactor2;
     optional [|runLengthFactor2 == 0xFFFF|] uint runLengthFactor3;
+
+    override string ToString()
+    {
+        return "CLEARCODEC_SUBCODEC_RLEX_SEGMENT, suiteDepth: " + suiteDepth.ToString() + ", stopIndex: " + stopIndex.ToString();
+    }
 }
 
 type RFX_REMOTEFXCODEC_BITMAP_STREAM
@@ -891,29 +1004,33 @@ type RFX_REMOTEFXCODEC_BITMAP_STREAM
     array<RFX_REMOTEFXCODEC_DATABLOCK> remoteFXDataBlocks;
 }
 
-pattern RFX_REMOTEFXCODEC_DATABLOCK = TS_RFX_SYNC |
-                                    TS_RFX_CODEC_VERSIONS |
-                                    TS_RFX_CHANNELS |
-                                    TS_RFX_CONTEXT |
-                                    TS_RFX_FRAME_BEGIN |
-                                    TS_RFX_FRAME_END |
-                                    TS_RFX_REGION |
-                                    TS_RFX_TILESET |
-                                    TS_RFX_TILE;
+pattern RFX_REMOTEFXCODEC_DATABLOCK = [|stream.RemainingByteLength() >= 2|]
+    ([|stream.PeekUShort(stream.BitPosition, Endian.Little) == RDPRFX.TS_RFX_BLOCKT_blockType.WBT_SYNC|] TS_RFX_SYNC |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Little) == RDPRFX.TS_RFX_BLOCKT_blockType.WBT_CODEC_VERSIONS|] TS_RFX_CODEC_VERSIONS |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Little) == RDPRFX.TS_RFX_BLOCKT_blockType.WBT_CHANNELS|] TS_RFX_CHANNELS |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Little) == RDPRFX.TS_RFX_CODEC_CHANNELT_blockType.WBT_CONTEXT|] TS_RFX_CONTEXT |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Little) == RDPRFX.TS_RFX_CODEC_CHANNELT_blockType.WBT_FRAME_BEGIN|] TS_RFX_FRAME_BEGIN |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Little) == RDPRFX.TS_RFX_CODEC_CHANNELT_blockType.WBT_FRAME_END|] TS_RFX_FRAME_END |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Little) == RDPRFX.TS_RFX_CODEC_CHANNELT_blockType.WBT_REGION|] TS_RFX_REGION |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Little) == RDPRFX.TS_RFX_CODEC_CHANNELT_blockType.WBT_EXTENSION|] TS_RFX_TILESET |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Little) == RDPRFX.TS_RFX_BLOCKT_blockType.CBT_TILE|] TS_RFX_TILE |
+    binary);
 
 type RFX_PROGRESSIVE_BITMAP_STREAM
 {
     array<RFX_PROGRESSIVE_DATABLOCK> progressiveDataBlocks;
 }
 
-pattern RFX_PROGRESSIVE_DATABLOCK = RFX_PROGRESSIVE_SYNC | 
-                                RFX_PROGRESSIVE_FRAME_BEGIN | 
-                                RFX_PROGRESSIVE_FRAME_END |
-                                RFX_PROGRESSIVE_CONTEXT |
-                                RFX_PROGRESSIVE_REGION |
-                                RFX_PROGRESSIVE_TILE_SIMPLE |
-                                RFX_PROGRESSIVE_TILE_FIRST |
-                                RFX_PROGRESSIVE_TILE_UPGRADE;
+pattern RFX_PROGRESSIVE_DATABLOCK = [|stream.RemainingByteLength() >= 2|]
+    ([|stream.PeekUShort(stream.BitPosition, Endian.Little) == blockTypeEnum.WBT_SYNC|] RFX_PROGRESSIVE_SYNC |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Little) == blockTypeEnum.WBT_FRAME_BEGIN|] RFX_PROGRESSIVE_FRAME_BEGIN |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Little) == blockTypeEnum.WBT_FRAME_END|] RFX_PROGRESSIVE_FRAME_END |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Little) == blockTypeEnum.WBT_CONTEXT|] RFX_PROGRESSIVE_CONTEXT |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Little) == blockTypeEnum.WBT_REGION|] RFX_PROGRESSIVE_REGION |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Little) == blockTypeEnum.WBT_TILE_SIMPLE|] RFX_PROGRESSIVE_TILE_SIMPLE |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Little) == blockTypeEnum.WBT_TILE_PROGRESSIVE_FIRST|] RFX_PROGRESSIVE_TILE_FIRST |
+    [|stream.PeekUShort(stream.BitPosition, Endian.Little) == blockTypeEnum.WBT_TILE_PROGRESSIVE_UPGRADE|] RFX_PROGRESSIVE_TILE_UPGRADE |
+    binary);
 
 pattern blockTypeEnum = enum ushort
 {
@@ -924,44 +1041,69 @@ pattern blockTypeEnum = enum ushort
     WBT_REGION                      = 0xCCC4,
     WBT_TILE_SIMPLE                 = 0xCCC5,
     WBT_TILE_PROGRESSIVE_FIRST      = 0xCCC6,
-    WBT_TILE_PROGRESSIVE_UPGRADE    = 0xCCC7
+    WBT_TILE_PROGRESSIVE_UPGRADE    = 0xCCC7,
+    ...
 };
  
 type RFX_PROGRESSIVE_SYNC
 {
     blockTypeEnum blockType where value == blockTypeEnum.WBT_SYNC;
-    uint blockLen where ValidationCheck(value == 12, null, "RDPEGFX: The blockLen in type RFX_PROGRESSIVE_SYNC must be set to 12 (0x0000000C).");
-    uint magic where ValidationCheck(value == 0xCACCACCA, null, "RDPEGFX: The magic in type RFX_PROGRESSIVE_SYNC must be set to 0xCACCACCA.");
+    uint blockLen where ValidationCheckValue(value == 12, null, true, ReferenceType.Type, 
+        "RDPEGFX", "blockLen", "RFX_PROGRESSIVE_SYNC", "12", value);
+    uint magic where ValidationCheckValue(value == 0xCACCACCA, null, false, ReferenceType.Type, 
+        "RDPEGFX", "magic", "RFX_PROGRESSIVE_SYNC", "0xCACCACCA", value);
     ushort version;
+
+    override string ToString()
+    {
+        return "RFX_PROGRESSIVE_SYNC, version: " + version.ToString();
+    }
 }
 
 type RFX_PROGRESSIVE_FRAME_BEGIN
 {
     blockTypeEnum blockType where value == blockTypeEnum.WBT_FRAME_BEGIN;
-    uint blockLen where ValidationCheck(value == 12, null, "RDPEGFX: The blockLen in type RFX_PROGRESSIVE_FRAME_BEGIN must be set to 12 (0x0000000C)."); 
+    uint blockLen where ValidationCheck(value == 12, null, "RDPEGFX: The blockLen in type RFX_PROGRESSIVE_FRAME_BEGIN must be set to 12 (0x0000000C).");
     uint frameIndex;
     ushort regionCount;
     array<RFX_PROGRESSIVE_REGION> regions with BinaryEncoding{Length = regionCount};
+
+    override string ToString()
+    {
+        return "RFX_PROGRESSIVE_FRAME_BEGIN, frameIndex: " + frameIndex.ToString() + ", regionCount: " + regionCount.ToString();
+    }
 }
 
 type RFX_PROGRESSIVE_FRAME_END
 {
     blockTypeEnum blockType where value == blockTypeEnum.WBT_FRAME_END;
-    uint blockLen where ValidationCheck(value == 6, null, "RDPEGFX: The blockLen in type RFX_PROGRESSIVE_FRAME_END must be set to 6 (0x00000006)."); 
+    uint blockLen where ValidationCheck(value == 6, null, "RDPEGFX: The blockLen in type RFX_PROGRESSIVE_FRAME_END must be set to 6 (0x00000006).");
+
+    override string ToString()
+    {
+        return "RFX_PROGRESSIVE_FRAME_END";
+    }
 }
 
 type RFX_PROGRESSIVE_CONTEXT
 {
     blockTypeEnum blockType where value == blockTypeEnum.WBT_CONTEXT;
-    uint blockLen where ValidationCheck(value == 10, null, "RDPEGFX: The blockLen in type RFX_PROGRESSIVE_CONTEXT must be set to 10 (0x0000000A)."); 
-    byte ctxId where ValidationCheck(value == 0, null, "RDPEGFX: The ctxId in type RFX_PROGRESSIVE_CONTEXT must be set to zero."); 
+    uint blockLen where ValidationCheck(value == 10, null, "RDPEGFX: The blockLen in type RFX_PROGRESSIVE_CONTEXT must be set to 10 (0x0000000A).");
+    byte ctxId where ValidationCheckZero(value == 0, null, false, ReferenceType.Type, "RDPEGFX", "ctxId", "RFX_PROGRESSIVE_CONTEXT", value);
     ushort tileSize where ValidationCheck(value == 0x0040, null, "RDPEGFX: The tileSize in type RFX_PROGRESSIVE_CONTEXT must be set to 0x0040.");
     RFX_PROGRESSIVE_CONTEXT_FLAGS $"flags";
+
+    override string ToString()
+    {
+        return "RFX_PROGRESSIVE_CONTEXT, ctxId: " + ctxId.ToString() + ", tileSize" + tileSize.ToString();
+    }
 }
 
 pattern RFX_PROGRESSIVE_CONTEXT_FLAGS = flags byte
 {
-    RFX_SUBBAND_DIFFING = 0x01,
+    RFX_SUBBAND_DIFFING = 0x01
+        with Documentation
+            {Description = "Sub-band diffing is enabled."},
 };
 
 type RFX_PROGRESSIVE_REGION
@@ -970,30 +1112,59 @@ type RFX_PROGRESSIVE_REGION
     uint blockLen;
     byte tileSize where ValidationCheck(value == 0x40, null, "RDPEGFX: The tileSize in type RFX_PROGRESSIVE_REGION must be set to 0x40.");
     ushort numRects where ValidationCheck(value > 0, null, "RDPEGFX: The numRects in type RFX_PROGRESSIVE_REGION must be greater than zero.");
-    byte numQuant where ValidationCheck(value > 0, null, "RDPEGFX: The numQuant in type RFX_PROGRESSIVE_REGION must be greater than zero.");
+    byte numQuant where ValidationCheckValueInRange(value >= 0 && value <= 7, null, true, 
+        ReferenceType.Type, "RDPEGFX", "numQuant", "RFX_PROGRESSIVE_REGION", 0, 7, value);
     byte numProgQuant;
     RFX_PROGRESSIVE_REGION_FLAGS $"flags";
     ushort numTiles;
     uint tileDataSize;
     array<TS_RFX_RECT> rects with BinaryEncoding{Length = numRects};
-    array<TS_RFX_CODEC_QUANT> quantVals with BinaryEncoding{Length = numQuant};
+    array<RFX_COMPONENT_CODEC_QUANT> quantVals with BinaryEncoding{Length = numQuant};
     array<RFX_PROGRESSIVE_CODEC_QUANT> quantProgVals with BinaryEncoding{Length = numProgQuant};
     array<RFX_PROGRESSIVE_TILE_SIMPLE | RFX_PROGRESSIVE_TILE_FIRST | RFX_PROGRESSIVE_TILE_UPGRADE> tiles 
         with BinaryEncoding{Length = numTiles};
+
+    override string ToString()
+    {
+        return "RFX_PROGRESSIVE_REGION, numRects: " + numRects.ToString() + ", numQuant" + numQuant.ToString();
+    }
 }
 
 pattern RFX_PROGRESSIVE_REGION_FLAGS = flags byte
 {
-    RFX_DWT_REDUCE_EXTRAPOLATE = 0x01,
+    RFX_DWT_REDUCE_EXTRAPOLATE = 0x01
+        with Documentation
+            {Description = "The discrete wavelet transform (DWT) uses the \"Reduce-Extrapolate\" method."},
 } with Documentation{NameInDocumentation = "flags"};
 
 type RFX_PROGRESSIVE_CODEC_QUANT
 {
     byte quality where ValidationCheck(value >= 0 && value <= 100, null, "RDPEGFX: The quality in type RFX_PROGRESSIVE_CODEC_QUANT should be in the range of 0 to 100.");
-    TS_RFX_CODEC_QUANT yBitPos;
-    TS_RFX_CODEC_QUANT cbBitPos;
-    TS_RFX_CODEC_QUANT crBitPos;
+    RFX_COMPONENT_CODEC_QUANT yQuantValues;
+    RFX_COMPONENT_CODEC_QUANT cbQuantValues;
+    RFX_COMPONENT_CODEC_QUANT crQuantValues;
+
+    override string ToString()
+    {
+        return "RFX_PROGRESSIVE_CODEC_QUANT, yQuantValues: " + yQuantValues.ToString() + 
+            ", cbQuantValues" + cbQuantValues.ToString() +
+            ", crQuantValues" + crQuantValues.ToString();
+    }
 }
+
+type RFX_COMPONENT_CODEC_QUANT
+{
+    byte HH1 with BinaryEncoding{Width = 4};
+    byte LH1 with BinaryEncoding{Width = 4};
+    byte HL1 with BinaryEncoding{Width = 4};
+    byte HH2 with BinaryEncoding{Width = 4};
+    byte LH2 with BinaryEncoding{Width = 4};
+    byte HL2 with BinaryEncoding{Width = 4};
+    byte HH3 with BinaryEncoding{Width = 4};
+    byte LH3 with BinaryEncoding{Width = 4};
+    byte HL3 with BinaryEncoding{Width = 4};
+    byte LL3 with BinaryEncoding{Width = 4};
+}with BinaryEncoding{WidthForComposedType = 40, DecodeAsUnit = true};
 
 type RFX_PROGRESSIVE_TILE_SIMPLE
 {
@@ -1013,11 +1184,18 @@ type RFX_PROGRESSIVE_TILE_SIMPLE
     array<byte> cbData with BinaryEncoding{Length = cbLen};
     array<byte> crData with BinaryEncoding{Length = crLen};
     array<byte> tailData  with BinaryEncoding{Length = tailLen};
+
+    override string ToString()
+    {
+        return "RFX_PROGRESSIVE_TILE_SIMPLE";
+    }
 }
 
 pattern RFX_PROGRESSIVE_TILE_SIMPLE_FLAGS = flags byte
 {
-    RFX_TILE_DIFFERENCE = 0x01,
+    RFX_TILE_DIFFERENCE = 0x01
+        with Documentation
+            {Description = "The tile contains the compressed difference of the DWT coefficients for the same tile between the current frame and the previous frame."},
 } with Documentation{NameInDocumentation = "flags"};
 
 type RFX_PROGRESSIVE_TILE_FIRST
@@ -1039,11 +1217,18 @@ type RFX_PROGRESSIVE_TILE_FIRST
     array<byte> cbData with BinaryEncoding{Length = cbLen};
     array<byte> crData with BinaryEncoding{Length = crLen};
     array<byte> tailData  with BinaryEncoding{Length = tailLen};
+
+    override string ToString()
+    {
+        return "RFX_PROGRESSIVE_TILE_FIRST";
+    }
 }
 
 pattern RFX_PROGRESSIVE_TILE_FIRST_FLAGS = flags byte
 {
-    RFX_TILE_DIFFERENCE = 0x01,
+    RFX_TILE_DIFFERENCE = 0x01
+        with Documentation
+            {Description = "The tile contains the compressed difference of the DWT coefficients for the same tile between the current frame and the previous frame."},
 } with Documentation{NameInDocumentation = "flags"};
 
 type RFX_PROGRESSIVE_TILE_UPGRADE
@@ -1068,7 +1253,73 @@ type RFX_PROGRESSIVE_TILE_UPGRADE
     array<byte> cbRawData with BinaryEncoding{Length = cbRawLen};
     array<byte> crSrlData with BinaryEncoding{Length = crSrlLen};
     array<byte> crRawData with BinaryEncoding{Length = crRawLen};
+
+    override string ToString()
+    {
+        return "RFX_PROGRESSIVE_TILE_UPGRADE";
+    }
 }
+
+// 2.2.4.3    ALPHACODEC_BITMAP_STREAM
+type ALPHACODEC_BITMAP_STREAM
+{
+    ushort alphaSig where ValidationCheckValue(value == 0x414C, null, true, 
+        ReferenceType.Type, "RDPEGFX", "alphaSig", "ALPHACODEC_BITMAP_STREAM", 0x414C, value);
+    ushort compressed;
+    optional ([|compressed == 0x0000|] binary |
+            [|compressed != 0x0000|] array<CLEARCODEC_ALPHA_RLE_SEGMENT>
+            ) segments;
+}
+
+type CLEARCODEC_ALPHA_RLE_SEGMENT
+{
+    byte runValue;
+    byte runLengthFactor1;
+    optional [|runLengthFactor1 == 0xFF|] ushort runLengthFactor2;
+    optional [|runLengthFactor2 == 0xFFFF|] uint runLengthFactor3;
+}
+
+// 2.2.4.4 RFX_AVC420_BITMAP_STREAM
+type RFX_AVC420_BITMAP_STREAM[uint Length]
+{
+    RFX_AVC420_METABLOC avc420MetaData;
+    binary avc420EncodedBitstream with BinaryEncoding{Length = Length - 4 - avc420MetaData.numRegionRects * 10};
+}
+
+type RFX_AVC420_METABLOC
+{
+    uint numRegionRects;
+    array<RDPGFX_RECT16> regionRects with BinaryEncoding{Length = numRegionRects};
+    array<RDPGFX_AVC420_QUANT_QUALITY> quantQualityVals with BinaryEncoding{Length = numRegionRects};
+}
+
+type RDPGFX_AVC420_QUANT_QUALITY
+{
+    RDPGFX_AVC420_QUANT_QUALITY_qpVal qpVal;
+    byte qualityVal where ValidationCheckValueInRange(value <= 100 && value >= 0, null, 
+        true, ReferenceType.Type, "RDPEGFX", "qualityVal", "RDPGFX_AVC420_QUANT_QUALITY", 0, 100, value);
+}
+
+type RDPGFX_AVC420_QUANT_QUALITY_qpVal
+{
+    byte p with BinaryEncoding{Width = 1};
+    byte r with BinaryEncoding{Width = 1};
+    byte qp with BinaryEncoding{Width = 6};
+}
+
+type RFX_AVC444_BITMAP_STREAM[uint Length]
+{
+    avc420EncodedBitstreamInfoType avc420EncodedBitstreamInfo;
+    RFX_AVC420_BITMAP_STREAM[avc420EncodedBitstreamInfo.cbAvc420EncodedBitstream1] avc420EncodedBitstream1;
+    optional [|Length - 4 - avc420EncodedBitstreamInfo.cbAvc420EncodedBitstream1 > 0|] 
+        RFX_AVC420_BITMAP_STREAM[Length - 4 - avc420EncodedBitstreamInfo.cbAvc420EncodedBitstream1] avc420EncodedBitstream2;
+}
+
+type avc420EncodedBitstreamInfoType
+{
+    byte LC with BinaryEncoding{Width = 2};
+    uint cbAvc420EncodedBitstream1 with BinaryEncoding{Width = 30, Endian = Endian.Big};
+} with BinaryEncoding{WidthForComposedType = 32, DecodeAsUnit = true};
 
 // 2.2.6 Data Packaging
 message RDP_SEGMENTED_DATA
@@ -1077,7 +1328,7 @@ message RDP_SEGMENTED_DATA
     optional [|descriptor == descriptorEnum.MULTIPART|] ushort segmentCount;
     optional [|descriptor == descriptorEnum.MULTIPART|] uint uncompressedSize;
     optional [|descriptor == descriptorEnum.SINGLE|] RDP8_BULK_ENCODED_DATA bulkData;
-    optional [|descriptor == descriptorEnum.MULTIPART|] array<RDP_DATA_SEGMENT> segmentArray with BinaryEncoding{Length = segmentCount as uint};
+    optional [|descriptor == descriptorEnum.MULTIPART|] array<RDP_DATA_SEGMENT> segmentArray with BinaryEncoding{Length = segmentCount as ushort};
     
     bool IsCompressed()
     {
@@ -1089,7 +1340,7 @@ message RDP_SEGMENTED_DATA
         else
         {
             var segArray = segmentArray as array<RDP_DATA_SEGMENT>; // segmentArray != nothing when MULTIPART descriptor.
-            foreach(var seg in segArray)
+            foreach (var seg in segArray)
             {
                 if (!((seg.bulkData.header & CompressedSegmentHeader.PACKET_COMPRESSED) == CompressedSegmentHeader.PACKET_COMPRESSED))
                 {
@@ -1115,7 +1366,8 @@ message RDP_SEGMENTED_DATA
 pattern descriptorEnum = enum byte
 {
     SINGLE      = 0xE0,
-    MULTIPART   = 0xE1
+    MULTIPART   = 0xE1,
+    ...
 };
 
 type RDP_DATA_SEGMENT
@@ -1127,8 +1379,12 @@ type RDP_DATA_SEGMENT
 // 3.1.9.1.2.2   Compressed Segment Header
 pattern CompressedSegmentHeader = flags byte
 {
-    PACKET_COMPRESSED = 0x20,
-    PACKET_COMPR_TYPE_RDP8 = 0x04,
+    PACKET_COMPRESSED = 0x20
+        with Documentation
+            {Description = "The payload data in the data field is compressed."},
+    PACKET_COMPR_TYPE_RDP8 = 0x04
+        with Documentation
+            {Description = "RDP 8.0 bulk compression."},
     ...
 };
 

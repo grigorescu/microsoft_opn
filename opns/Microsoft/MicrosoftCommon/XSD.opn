@@ -13,7 +13,7 @@ OPNAuthoring
         ],
     RevisionSummary = 
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "09/02/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "365265", Date = "07/08/2014"}
         ]
 };
 
@@ -33,21 +33,35 @@ pattern XSDatatime = string;
 
 pattern XSInt = int;
 
-pattern XSpositiveInteger = int where value > 0;
+pattern XSPositiveInteger = int where value > 0;
+
+pattern XSUnsignedLong = ulong;
 
 pattern XSNonNegativeInteger = int where value >=0;
 
 pattern XSBoolean = bool;
 
+pattern NMTOKEN = Token;
+
 pattern Token = NormalizedString;
 
 pattern NormalizedString = string;
 
-pattern Base64Binary = AnySimpleType;
+pattern Base64Binary = binary;
 
 pattern AnySimpleType = any;
 
 pattern Boolean = AnySimpleType;
+
+pattern XSDId = string;
+
+pattern XSDDateTime = string;
+
+pattern XSDIpAddress = string;
+
+pattern XSDDnsAddress = string;
+
+pattern CryptoBinary = Base64Binary;
 
 type CommandStateType
 {

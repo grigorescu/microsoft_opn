@@ -12,587 +12,351 @@ OPNAuthoring
     References = 
         [
             new Reference{Name = "RFC 3501"},
+            new Reference{Name = "RFC 2177"},
         ],
     RevisionSummary = 
         [
-            new Revision{Class=RevisionClass.Major, Version="1.0.0", Date="03/16/2011"}
+            new Revision{Class=RevisionClass.Major, Version="380827", Date="09/22/2015"}
         ]
 };
 
 using Standard;
 using IANA;
-using TCP;
 using Utility;
-using VirtualTransport;
-using Reassembly;
+using TCP;
+using DecodingUtility; // WORKAROUND: compiler bug#3131164, When type A inherit from type B, module C use tye A, and A, B, C is in different module file, compiler will give a compilation error
 
-endpoint Server over SetOriginsServer accepts RequestMsg issues ResponseMsg;
-client endpoint Client connected to Server;
+endpoint Server over TCP.Server accepts RequestMsg issues ResponseMsg;
 
-// RFC 3501 section 2.2.1. Client Protocol Sender and Server Protocol Receiver
-// There are two cases in which a line from the client does not represent a complete command.
-// In one case, a command argument is quoted with an octet count (see the description of literal in String under Data Formats); 
-// In the other case, the command arguments require server feedback (see the AUTHENTICATE command).
-// Server sends a command continuation request response if it is ready for the octets (if appropriate) and the remainder of the command.
-// This response is prefixed with the token "+".
-endpoint SetOriginsServer over VirtualTransport.Server accepts RequestMsg issues ResponseMsg
+autostart actor IMAPOverTCP(TCP.Server server)
 {
-    // If server sent continue before received compelete request, do not dispatch continue response, only remember it in buffer.
-    array<any message> continueResponses = [];
+    ImapDecodingHelper helper = null;
     
-    // If server received complete request before sending continue, dispatch request and remember request message in buffer.
-    RequestMsg requestExpectingContinue = null;
-    
-    process this accepts request:RequestMsg
+    process server accepts s:Segment where s.DestinationPort == Port.IMAP
     {
-        if (request.Body is AppendType || request.Body is AuthenticateType)
+        if (helper == null)
         {
-            // continue expected request is prior to the continue
-            if (continueResponses.Count > 0)
-            {
-                request.Origins += continueResponses;
-                continueResponses = [];
-            }
-            // continue expected request is later than the contine
-            else
-            {
-                requestExpectingContinue = request;
-            }
+            helper = new ImapDecodingHelper().InitializeImap(endpoint Server over server);
         }
-        dispatch (endpoint IMAP.Server over this) accepts request;
+        helper.TryDecode(s, MessageDirection.Accepts);
     }
     
-    process this issues response:ResponseMsg
+    process server issues s:Segment where s.SourcePort == Port.IMAP
     {
-        if((response.Responses.Count > 0) && (response.Responses[0].Token == "+"))
+        if (helper == null)
         {
-            if (requestExpectingContinue != null)
-            {
-                // If continue expected request is in buffer, update Origins
-                requestExpectingContinue.Origins += [response];
-            }
-            else
-            {
-                 // If continue expected request is not in buffer, keep response to buffer
-                continueResponses += [response];
-            }
+            helper = new ImapDecodingHelper().InitializeImap(endpoint Server over server);
         }
-        else
+        helper.TryDecode(s, MessageDirection.Issues);
+    }
+    
+    ~endpoint(TCP.Server e)
+    {
+        if (helper != null)
         {
-            if (continueResponses.Count > 0)
-            {
-                foreach (var m in continueResponses)
-                {
-                    DisplayTopLevelMessage(m);
-                }
-                continueResponses = [];
-            }
-            requestExpectingContinue = null;
-            dispatch (endpoint IMAP.Server over this) issues response;
+            helper.ClearInDestructor();
+            helper = null;
         }
     }
 }
 
-autostart actor IMAPOverTCP(VirtualTransport.Server server)
+type SessionContext 
 {
-    RequestDecodingCache requestCache = null;
-    ResponseDecodingCache responseCache = null;
-    
-    process server accepts s:VirtualDataSegment where s.DestinationPort == Port.IMAP && s.Payload.Count > 0
+    // Save the Tag of request message to determine the end of Response message.
+    // Future Reference: Declare it as List, since the client could send new request without waiting for response of previous request.
+    // RFC3501, section 2.2.1 the client MUST send a complete command (including receiving all command continuation request responses and command
+    //    continuations for the command) before initiating a new command.
+    // RFC3601, section 5.5 
+    string ReqTagBin = null;
+    // Indicate IMAP is in connection startup phase, 3 possible greetings may be send by Server: OK(7.1.1), BYTE(7.1.4), PREAUTH(7.1.5)
+    // When parsing, Greeting message will try to parsed as first priority. If greeting parses failed, try to parser normal response message.
+    // it will be set to false when the first message(regardless of request or response) is parsed.
+    bool ConnectionStartupPhase = true;
+}
+
+type ImapDecodingHelper : TCPDecodingHelper
+{
+    SessionContext Context = new SessionContext();
+    ImapDecodingHelper InitializeImap(any endpoint ept)
     {
-        if (requestCache == null)
-        {
-            requestCache = new RequestDecodingCache{ Dispatcher = AcceptDispatcher };
-        }
-        requestCache.Add(s);
-        requestCache.TryDecodeAndDispatchRequest();
-    }
-    
-    process server issues s:VirtualDataSegment where s.SourcePort == Port.IMAP && s.Payload.Count > 0
-    {
-        if (responseCache == null)
-        {
-            responseCache = new ResponseDecodingCache{ Dispatcher = IssueDispatcher };
-        }
-        responseCache.Add(s);
-        responseCache.TryDecodeAndDispatchResponse();
-    }
-    
-    void AcceptDispatcher(RequestMsg req)
-    {
-        dispatch (endpoint IMAP.SetOriginsServer over server) accepts req;
-    }
-    
-    void IssueDispatcher(ResponseMsg res)
-    {
-        dispatch (endpoint IMAP.SetOriginsServer over server) issues res;
-    }
-    
-    ~endpoint(VirtualTransport.Server e)
-    {
-        if (requestCache != null)
-        {
-            requestCache.Clear();
-        }
-        if (responseCache != null)
-        {
-            responseCache.Clear();
-        }
+        RequestDecodingCache ac = new RequestDecodingCache().InitializeImapReqDC(ept, Context);
+        ResponseDecodingCache ic = new ResponseDecodingCache().InitializeImapResDC(ept, Context);
+        ic.ContinuationResHandler = ac.AddContinuationResToOrigins;
+        AcceptsCache = ac;
+        IssuesCache = ic;
+        return this;
     }
 }
 
-type RequestDecodingCache : DecodingCacheBase
+type RequestDecodingCache : TCPTextDecodingCache
 {
-    void(RequestMsg) Dispatcher;
-    
-    void TryDecodeAndDispatchRequest()
+    SessionContext Contxt;
+    RequestMsg AppendMsg = null; // Append request use 'Length' to limit Payload's length
+    int AppendParsedPosition;
+
+    RequestDecodingCache InitializeImapReqDC(any endpoint ept, SessionContext ctx)
     {
-        optional string done = Done(Buffer);
-            
-        if (done != nothing)
+        base.InitializeTextDecodingCache("IMAP", ept, MessageDirection.Accepts, (binary b) => true, () => CRLFBin/*GetEndMarkBinary*/, 
+                    DecodingSingleRequestMsg, DecodeIncompleteReq);
+        Contxt = ctx;
+        return this;
+    }
+
+    override uint? IsSufficientSingleTextMessage(binary bin)
+    {
+        if (GetCommand(bin) is c:string && c == "APPEND")
         {
-            RequestMsg request = new RequestMsg{Tag = done as string, Body = done};
-            request.SourceData = Buffer;
-            request.Origins = Origins;
-            Buffer = $[];
-            Origins = [];
-            Dispatcher(request);         
+            // Decode Appen header part to get the 'Length' field. 
+            stream s = Buffer;
+            if (AppendRequstSyntax(s) is append:RequestMsg)
+            {
+                AppendMsg = append; // Save decode result
+                AppendParsedPosition = s.BytePosition;
+                uint requiredLen = (append.Arguments as AppendArgType).LiteralLength + 2; // data + ending CRLF
+                return requiredLen <= s.RemainingByteLength ? 0 : (requiredLen + AppendParsedPosition as uint); // expected total message length.
+            }
+            return null;
         }
         else
         {
-            stream ss = Buffer;
-            optional RequestMsg request1 = Request(ss);
-            if (request1 != nothing)
-            {
-                bool isSufficient = true;
-                RequestMsg request = request1 as RequestMsg;
-                if (request.Body is AppendType)
-                {
-                    isSufficient = false;
-                    AppendType append = request.Body as AppendType;
-                    if (append.LiteralLength + 2 <= ss.ByteLength - ss.BytePosition)
-                    {
-                        append.AssignFieldEncodingInfo("LiteralData", ss.BitPosition, (append.LiteralLength as int) * 8);
-                        request.AssignFieldEncodingInfo("Payload", ss.BitPosition, (append.LiteralLength as int) * 8);
-                        append.LiteralData = (BinaryDecoder<Blob[append.LiteralLength as uint]>(ss) as Blob).Data;
-                        request.Payload = append.LiteralData;
-                        isSufficient = true;
-                    }
-                    else if (HasIncompleteSegments)
-                    {
-                        append.AssignFieldEncodingInfo("LiteralData", ss.BitPosition, (ss.ByteLength - ss.BytePosition) * 8);
-                        request.AssignFieldEncodingInfo("Payload", ss.BitPosition, (ss.ByteLength - ss.BytePosition) * 8);
-                        append.LiteralData = BinaryDecoder<binary>(ss);
-                        request.Payload = append.LiteralData;
-                        ReportInsufficientData(request, DiagnosisLevel.Error, "IMAP: Insufficient data due to incomplete TCP segment.");
-                        isSufficient = true;
-                    }
-                }
-                else
-                {
-                    request.Payload = nothing;
-                }
-                if (isSufficient)
-                {
-                    request.SourceData = Buffer;
-                    request.Origins = Origins;
-                    Buffer = $[];
-                    Origins = [];
-                    if (HasIncompleteSegments)
-                    {
-                        DisplayTopLevelMessage(request);
-                    }
-                    else
-                    {
-                        Dispatcher(request);
-                    }
-                }
-            }
-            else if (HasSegmentLost || HasIncompleteSegments)
-            {
-                Clear();
-                ValidationCheck(false, null, DiagnosisLevel.Warning, "IMAP: Parsing failure due to TCP segment lost.");
-            }
-            else
-            {
-                bool notStart = true;
-                var text1 = Text(Buffer);
-                if (text1 != nothing)
-                {
-                    string text = text1 as string;
-                    if (text.IndexOf("AUTHENTICATE") > 0)
-                    {
-                        notStart = false;
-                    }
-                    else if (text.IndexOf("NAMESPACE") > 0 || text.IndexOf("Namespace") > 0)
-                    {
-                        notStart = false;
-                        Clear();
-                        ValidationCheck(false, null, DiagnosisLevel.Warning, "IMAP: Command \"Namespace\" is not defined in the RFC.");
-                    }
-                }
-                if (notStart)
-                {
-                    Clear();
-                    ValidationCheck(false, null, DiagnosisLevel.Warning, "IMAP: Parsing failure due to not being the starting part of IMAP or invalid data.");
-                }
-            }
+            return base.IsSufficientSingleTextMessage(bin);
         }
     }
-    
-    override optional any message DecodePartialMessage()
+
+    optional any message DecodingSingleRequestMsg(stream s)
     {
-        optional string done = Done(Buffer);
-            
-        if (done != nothing)
+        if (AppendMsg == null)
         {
-            RequestMsg request = new RequestMsg{Tag = done as string, Body = done};
-            request.SourceData = Buffer;
-            request.Origins = Origins;
-            var partial = request as RequestMsg;
-            return partial;
+            if (Contxt.ConnectionStartupPhase) Contxt.ConnectionStartupPhase = false;
+            if (Done(s) is done:RequestMsg)
+            {
+                return done;
+            }
+            if (RequestSyntax(s) is req:RequestMsg)
+            {
+                Contxt.ReqTagBin = req.Tag;
+                return req;
+            }
+            return nothing;
         }
         else
         {
-            stream ss = Buffer;
-            optional RequestMsg orequest = Request(ss);
-            if (orequest != nothing)
-            {
-                RequestMsg request = orequest as RequestMsg;
-                if (request.Body is AppendType)
-                {
-                    AppendType append = request.Body as AppendType;
-                    if (append.LiteralLength + 2 >= ss.ByteLength - ss.BytePosition)
-                    {
-                        ReportInsufficientData(request, DiagnosisLevel.Warning, "IMAP: Incomplete RequestMsg Body.");   
-                    }
-                }
-                request.SourceData = Buffer;
-                return request;
-            }
+            BinaryDecoder<Blob[AppendParsedPosition as uint]>(s); // Move s.BytePosition
+            AppendArgType appendArg = AppendMsg.Arguments as AppendArgType;
+            uint len = appendArg.LiteralLength;
+            appendArg.LiteralData = (BinaryDecoder<Blob[len]>(s) as Blob).Data;
+            AppendMsg#Payload = appendArg.LiteralData;
+            CRLF(s); // consume ending CRLF
+
+            Contxt.ReqTagBin = AppendMsg.Tag;
+            AppendParsedPosition = 0;
+
+            return AppendMsg;
+        }
+    }
+
+    optional any message DecodeIncompleteReq(binary bin)
+    {
+        if (AppendMsg != null)
+        {
+            AppendArgType appendArg = AppendMsg.Arguments as AppendArgType;
+            appendArg.LiteralData = bin;
+            return AppendMsg;
         }
         return nothing;
     }
+
+    override void ClearExceptionally()
+    {
+        base.ClearExceptionally();
+        AppendParsedPosition = 0;
+        AppendMsg = null;
+    }
+
+    override void ResetAfterSucceed(stream s)
+    {
+        base.ResetAfterSucceed(s);
+        AppendMsg = null;
+    }
+
+    bool AddContinuationResToOrigins(ResponseMsg res)
+    {
+        if (Origins.Count > 0)
+        {
+            // Indicate if 'res' is a Continuation Request Response message.
+            Origins += [res];
+            return true;
+        }
+        else
+        {
+            return false;
+        }
+    }
 }
 
-type ResponseDecodingCache : DecodingCacheBase
+type ResponseDecodingCache : TCPTextDecodingCache
 {
-    void(ResponseMsg) Dispatcher;
-    
-    void TryDecodeAndDispatchResponse()
+    SessionContext Contxt;
+    bool(ResponseMsg) ContinuationResHandler = null;
+
+    ResponseDecodingCache InitializeImapResDC(any endpoint ept, SessionContext ctx)
     {
-        optional SingleResponse singleResponse = Greeting(Buffer);
-        array<binary> payloads = [];
-            
-        // Check whether the binary data is compelete for Response or not
-        stream sss = Buffer;
-        bool isSufficient = true;
-        while (true)
+        base.InitializeTextDecodingCache("IMAP", ept, MessageDirection.Issues, (binary b) => true, () => CRLFBin/*GetEndMarkBinary*/, 
+                    DecodingSingleResponseMsg, (binary bin) => DecodingSingleResponseMsg(bin));
+        Contxt = ctx;
+        return this;
+    }
+
+    override uint? IsSufficientSingleTextMessage(binary bin)
+    {
+        if (Contxt.ConnectionStartupPhase && GetCommand(bin) is command:string && GreetingCommand[command])
         {
-            var len1 = GetLength(sss); // Check whether there are LiteralTypes
-            if (len1 == nothing)
-            {
-                break;
-            }
-                
-            uint len = len1 as uint;
-            // The binary data is insufficent
-            if (len > sss.ByteLength - sss.BytePosition)
-            {
-                isSufficient = false;
-                break;
-            }
-                
-            payloads += [sss.PeekBytes(sss.BitPosition, len as int)];
-            if (sss.BytePosition + len == sss.ByteLength)
-            {
-                break;
-            }
-                
-            // Update the stream
-            sss = sss.PeekBytes(sss.BitPosition + len * 8 as int);
+            // Greeting message is one-line message which ends with CRLF.
+            return base.IsSufficientSingleTextMessage(bin);
         }
-            
-        // The binary data is compelete for the Response that has LiteralTypes
-        if (isSufficient)
+        else if (Buffer.Count > 0 && Buffer[0] == 0x2B) 
         {
-            var response1 = Response(Buffer);
-            ResponseMsg response = null;
-            if (response1 != nothing)
+            // "+", Continue Request Response start with "+" Tag, and it's a one-line message which ends with CRLF.
+            return base.IsSufficientSingleTextMessage(bin);
+        }
+        else
+        {
+            // normal case:
+            //          <untagged response>*
+            //          <tagged result>
+            // Checking <tagged result>'s Tag and Command.
+            // Assume IMAP ending CRLF is at the end boundary of TCP Segment.
+            if (Buffer.Segment(Buffer.Count - 2) != CRLFBin)
             {
-                response = response1 as ResponseMsg;
-                response.Payload = payloads == []? nothing: payloads;
+                return null;
             }
-            else if (singleResponse != nothing)
+            int SecondLastCRLFPos = Buffer.LastIndexOf(CRLFBin, Buffer.Count - 2);
+            // It may be a single line response(Tagged result).
+            binary lastLine = SecondLastCRLFPos < 0 ? Buffer : Buffer.Segment(SecondLastCRLFPos + 2);
+            if (GetTagAndCommand(lastLine) is ss:array<string> && ss.Count == 2)
             {
-                response = new ResponseMsg{Responses = [singleResponse as SingleResponse]};
-            }
-            else if (Buffer[0] == 0x2B) //"+"
-            {
-                var continueReq = ContinueReq(Buffer);
-                if (continueReq != nothing)
+                string tag = ss[0];
+                string com = ss[1];
+                if (ResultCommand[com]) // command is valid result command.
                 {
-                    response = new ResponseMsg{Responses = [continueReq as SingleResponse]};
-                }
-                else
-                {
-                    Clear();
-                    ValidationCheck(false, null, DiagnosisLevel.Warning, "IMAP: Data does not match the ContinueReq definition.");
-                }
-            }
-            else if (HasIncompleteSegments)
-            {
-                Clear();
-                ValidationCheck(false, null, DiagnosisLevel.Warning, "IMAP: Parsing failure due to incomplete TCP segment.");
-            }
-            else if (HasSegmentLost && Buffer[0] != 0x2A) //*
-            {
-                Clear();
-                ValidationCheck(false, null, DiagnosisLevel.Warning, "IMAP: Parsing failure due to TCP segment lost.");
-            }
-            else
-            {
-                var text1 = Text(Buffer);
-                if (text1 != nothing)
-                {
-                    string text = text1 as string;
-                    if (text.IndexOf("NAMESPACE") > 0 || text.IndexOf("Namespace") > 0)
+                    if (Contxt.ReqTagBin == null && tag != "*" ||  // Req tag is not set, possible due to Request has segment lost or decoding failure.
+                        Contxt.ReqTagBin != null && tag == Contxt.ReqTagBin) // Req tag is set, then response tag must be equal to Req's tag.
                     {
-                        Clear();
-                        ValidationCheck(false, null, DiagnosisLevel.Warning, "IMAP: Command \"Namespace\" is not defined in the RFC.");
+                        return 0;
                     }
                 }
             }
-            if (response != null)
-            {
-                response.SourceData = Buffer;
-                response.Origins = Origins;
-                Buffer = $[];
-                Origins = [];
-                Dispatcher(response);
-            }
-            // If both response1 and singleResponse are nothing, consider that the data is insufficent and waiting the data from the following segments. 
+            return null;
         }
     }
-    
-    override optional any message DecodePartialMessage()
+
+    optional any message DecodingSingleResponseMsg(stream s)
     {
-        optional SingleResponse singleResponse = Greeting(Buffer);
-        array<binary> payloads = [];
-            
-        // Check whether the binary data is compelete for Response or not
-        stream sss = Buffer;
-        bool isSufficient = true;
-        while (true)
+        // Reset 'Contxt.ReqTagBin' no matter if response parses successfully.
+        Contxt.ReqTagBin = null;
+        // Try decode greeting message first.
+        if (Contxt.ConnectionStartupPhase && Greeting(s) is greeting:ResponseMsg) 
+        {   
+            Contxt.ConnectionStartupPhase = false;
+            return greeting;
+        }
+        if (Contxt.ConnectionStartupPhase) Contxt.ConnectionStartupPhase = false;
+        // Then try decode Continue request Response.
+        if (Buffer[0] == 0x2B) // "+"
         {
-            var len1 = GetLength(sss); // Check whether there are LiteralTypes
-            if (len1 == nothing)
+            return ContinueReq(s);
+        }
+        else
+        {
+            if(ResponseSyntax(s) is res:ResponseMsg)
             {
-                break;
+                var dummyEp = endpoint DummyEndpoint;
+                if (dummyEp.Payloads.Count > 0)
+                {
+                    res#Payloads = dummyEp.Payloads;
+                    dummyEp.Payloads = [];
+                }
+                return res;
             }
-                
-            uint len = len1 as uint;
-            // The binary data is insufficent
-            if (len > sss.ByteLength - sss.BytePosition)
+            else
             {
-                isSufficient = false;
-                break;
-            }
-                
-            payloads += [sss.PeekBytes(sss.BitPosition, len as int)];
-            if (sss.BytePosition + len == sss.ByteLength)
-            {
-                break;
-            }
-                
-            // Update the stream
-            sss = sss.PeekBytes(sss.BitPosition + len * 8 as int);
-        }        
-        // The binary data is compelete for the Response that has LiteralTypes
-        if (!isSufficient)
-        {      
-            optional ResponseMsg response1 = Response(Buffer);
-            if (response1 != nothing)
-            {
-                ResponseMsg response = response1 as ResponseMsg;
-                response.Payload = payloads == []? nothing: payloads;
-                ReportInsufficientData(response, DiagnosisLevel.Warning, "IMAP: Incomplete ResponseMsg Payload.");  
-                var partial = response1 as ResponseMsg;
-                partial.SourceData = Buffer;
-                return partial;
+                return nothing;
             }
         }
-        return nothing;
+    }
+
+    override void DispatchMessage(any message m)
+    {
+        if (m is res:ResponseMsg && res.Result is result:RespCondType && result.Tag == "+" && ContinuationResHandler != null)
+        {
+            // RFC 3501 section 2.2.1. Client Protocol Sender and Server Protocol Receiver
+            // There are two cases in which a line from the client does not represent a complete command.
+            // In one case, a command argument is quoted with an octet count (see the description of literal in String under Data Formats); 
+            // In the other case, the command arguments require server feedback (see the AUTHENTICATE command).
+            // Server sends a command continuation request response if it is ready for the octets (if appropriate) and the remainder of the command.
+            // This response is prefixed with the Tag "+".
+            // Try add continuation request response as Origins of request message.
+            if (ContinuationResHandler(res))
+            {
+                return;
+            }
+        }
+        base.DispatchMessage(m);
+    }
+
+    override void ClearExceptionally()
+    {
+        base.ClearExceptionally();
+        Contxt.ReqTagBin = null;
     }
 }
+
+annotation binary RequestMsg#Payload;
+annotation array<binary> ResponseMsg#Payloads;
+
+endpoint DummyEndpoint accepts any message
+{
+    array<binary> Payloads = [];
+};
 
 message RequestMsg
 {
     string Tag;
-    RequestBody Body;
-    optional binary Payload with Encoding{Ignore = true};
+    string Command;
+    optional RequstArg Arguments;
     
     override string ToString()
     {
-        string summary = "Request, Tag: " + Tag + ", Command: ";
-        if (Body is string)
-        {
-            summary += Body as string;
-        }
-        else if (Body is LoginType)
-        {
-            summary += (Body as LoginType).Command;
-        }
-        else if (Body is AppendType)
-        {
-            summary += (Body as AppendType).Command;
-        }
-        else if (Body is AuthenticateType)
-        {
-            summary += (Body as AuthenticateType).Command;
-        }
-        else if (Body is CopyType)
-        {
-            summary += (Body as CopyType).Command;
-        }
-        else if (Body is SelectType)
-        {
-            summary += (Body as SelectType).Command;
-        }
-        else if (Body is ListType)
-        {
-            summary += (Body as ListType).Command;
-        }
-        else if (Body is FetchType)
-        {
-            summary += (Body as FetchType).Command;
-        }
-        else if (Body is RenameType)
-        {
-            summary += (Body as RenameType).Command;
-        }
-        else if (Body is SearchType)
-        {
-            summary += (Body as SearchType).Command;
-        }
-        else if (Body is StatusType)
-        {
-            summary += (Body as StatusType).Command;
-        }
-        else if (Body is StoreType)
-        {
-            summary += (Body as StoreType).Command;
-        }
-        return summary;
+        return "Request, Tag: " + Tag + ", Command: " + Command;
     }
 }
 
 message ResponseMsg
 {
-    array<SingleResponse> Responses;
-    optional array<binary> Payload with Encoding{Ignore = true};
+    optional array<ResponseBody> Responses;
+    RespCondType Result;
     
     override string ToString()
     {
-        string summary = "Response";
-        
-        if (Responses.Count == 0)
-            return summary;
-            
-        int last = Responses.Count - 1;
-        SingleResponse lastResponse = Responses[last];
-            
-        // The command continuation request response is indicated by a "+" token instead of a tag. 
-        if (lastResponse.Token == "+")
+        string ret = Result.ToString();
+        if (Responses is resps:array<ResponseBody>)
         {
-            if ((Responses[last].Body as RespTextType).Text != nothing)
-            {               
-                summary += ", " + (((Responses[last].Body as RespTextType).Text) as string);
-            }
-            else
+            string coms = "";
+            foreach (var res in resps)
             {
-                summary += ", Ready for addtional data/command";
-            }
-                
-            summary += " (+)";
-            return summary;
-        }
-            
-        if (lastResponse.Token != "+" && lastResponse.Token != "*" && lastResponse.Body is RespCondType)           
-        {
-            summary += ", Result: " + (lastResponse.Body as RespCondType).Command + ", Tag: " + lastResponse.Token;
-        }
-            
-        summary += ", Command: ";
-        if (Responses.Count > 1)
-        {
-            summary += "[";
-        }
-            
-        int i = 0;
-        foreach (SingleResponse s in Responses)
-        {
-            if (s.Body is RespTextType)
-            {
-                summary += s.Token;
-            }
-            else if (s.Body is CapabilityType)
-            {
-                summary += (s.Body as CapabilityType).Command;
-            }
-            else if (s.Body is RespCondType)
-            {                    
-                summary += (s.Body as RespCondType).Command;
-            }
-            else if (s.Body is FlagsRespType)
-            {
-                summary += (s.Body as FlagsRespType).Command;
-            }
-            else if (s.Body is ListRespType)
-            {
-                summary += (s.Body as ListRespType).Command;
-            }
-            else if (s.Body is SearchRespType)
-            {
-                summary += (s.Body as SearchRespType).Command;
-            }
-            else if (s.Body is StatusRespType)
-            {
-                summary += (s.Body as StatusRespType).Command;
-            }
-            else if (s.Body is FetchRespType)
-            {
-                any temp = (s.Body as FetchRespType).FetchData;
-                if (temp is string)
+                if (res is t:RespType)
                 {
-                    summary += temp as string;
-                }
-                else
-                {
-                    summary += "FETCH";
+                    coms += ", " + t.Command;
                 }
             }
-                
-            if (i != Responses.Count - 1)
+            if (coms.Count > 2)
             {
-                summary += ", ";
+                coms = "Response: [" + coms.Segment(2) + "]";
+                ret += ", " + coms;
             }
-                
-            i++;
         }
-            
-        if (Responses.Count > 1)
-        {
-            summary += "]";
-        }
-        return summary;
+        return ret;
     }
-}
-
-type SingleResponse
-{
-    string Token;
-    ResponseBody Body;
 }
 
 syntax UpAlpha        = regex{[A-Z]};
@@ -613,13 +377,13 @@ syntax Hexes          = regex{[0-9A-Fa-f]+};
 
 syntax AtomChar       = regex{[0-9a-zA-Z~`!@#$^&_=|;:'<>,.?/[+-]};
 syntax Atom           = regex{[0-9a-zA-Z~`!@#$^&_=|;:'<>,.?/[+-]+}; // missing "}"
-syntax RespSpecials   = regex{[\x5d]}; //]
-syntax ListWildcards  = regex{[\x25\x2a]};  //% *
-syntax QuotedSpecials = regex{[\x22\x5c]};  //" \
-syntax AtomSpecials   = regex{[\x28\x29\x7b]} | SP | CTL | ListWildcards | QuotedSpecials | RespSpecials; //(){
+syntax RespSpecials   = regex{[\x5d]}; // ]
+syntax ListWildcards  = regex{[\x25\x2a]};  // % *
+syntax QuotedSpecials = regex{[\x22\x5c]};  // " \
+syntax AtomSpecials   = regex{[\x28\x29\x7b]} | SP | CTL | ListWildcards | QuotedSpecials | RespSpecials; // (){
 syntax AstringChar    = AtomChar | RespSpecials;
 syntax Astring        = String | regex{[0-9a-zA-Z~`!@#$&_=|;:'<>,.?/[+-\x7d\x5c\x5d^]*};
-syntax String         = Quoted | Literal;
+syntax String         = Literal | Quoted;
 syntax QuotedString   = regex{[\x01-\x09\x0b\x0c\x0e-\x21\x23-\xff]*};
 syntax Number         = Digits;
 syntax NzNumber       = s:regex{[1-9][0-9]*} => s;
@@ -630,24 +394,27 @@ syntax TextChar       = regex{[^\r\n]};
 syntax Text           = regex{[^\r\n]+};
 syntax Quoted         = Dquote s:QuotedString Dquote => s;
 
-syntax Done           = s:"DONE" CRLF => s;
+syntax Done           = s:"DONE" CRLF => new RequestMsg{Command = s};
 syntax Tag            = regex{[0-9a-zA-Z~`!@#$&_=|;:'<>,.?/[-\x7d\x5c\x5d^]+};
 syntax NoParamCommand = s:("CAPABILITY" | "LOGOUT" | "NOOP" | "STARTTLS" | "CHECK" | "CLOSE" | "EXPUNGE" | "IDLE") CRLF => s;
-syntax Login          = c:"LOGIN" SP user:UserId SP pwd:Password CRLF => new LoginType{Command = c, UserId = user, Password = pwd};
+
+// 6.2.3.  LOGIN Command
+syntax LoginArg          =  user:UserId SP pwd:Password CRLF => new LoginArgType{UserId = user, Password = pwd};
 syntax UserId         = Astring;
 syntax Password       = Astring;
-type LoginType
+type LoginArgType
 {
-    string Command;
     (string | LiteralType) UserId;
     (string | LiteralType) Password;
 }
+
 syntax Mailbox        = Astring | "INBOX";
-syntax Append         = c:"APPEND" SP mail:Mailbox SP flag:(f:FlagList SP => f)? date:(dt:DateTime SP => dt)? len:LiteralLength
-                       => new AppendType{Command =c, Mailbox = mail, Flags = flag.Count == 0 ? nothing : flag[0], DateTime = date.Count == 0 ? nothing : date[0], LiteralLength = len as uint};
-type AppendType
+
+// 6.3.11. APPEND Command
+syntax AppendArg        = mail:Mailbox SP flag:(f:FlagList SP => f)? date:(dt:DateTime SP => dt)? len:LiteralLength
+                       => new AppendArgType{Mailbox = mail, Flags = flag.Count == 0 ? nothing : flag[0], DateTime = date.Count == 0 ? nothing : date[0], LiteralLength = len as uint};
+type AppendArgType
 {
-    string Command;
     (string | LiteralType) Mailbox;
     optional array<string> Flags;
     optional string DateTime;
@@ -672,25 +439,28 @@ syntax DateMonth      = "Jan" | "Feb" | "Mar" | "Apr" | "May" | "Jun"
 syntax DateText       = d:DateDay "-" m:DateMonth "-" y:DateYear => (d + "-" + m + "-" + y);
 syntax DateYear       = Digit4;
 syntax LiteralLength  = "{" num:Number "}" CRLF => (num.ToUInt(false) as uint);
-syntax LiteralData[uint len] = LiteralDataType[len] from BinaryDecoder;
-syntax Literal        = num:LiteralLength literal:LiteralData[num]
-                        => new LiteralType{Length = num, Payload = literal};
-type LiteralType
+syntax LiteralData[uint len] = LiteralType[len] from BinaryDecoder;
+syntax Literal        = len:LiteralLength literal:LiteralData[len] => literal;
+type LiteralType[uint Len]
 {
-    uint Length;
-    optional LiteralDataType[Length] Payload;
+    uint Length with Encoding{Ignore = true} = Len;
+    binary Data with Encoding{Decoder = LiteralDecoder, SourcePattern = TypeOf<binary>()},
+                        BinaryEncoding{MaxLength = Len};
 }
 
-type LiteralDataType[uint Len]
+// Utilize MixEncoding to save Literal data which should continue parsing upper layer protocols(e.g. MIME)
+optional binary LiteralDecoder(binary bin)
 {
-    binary Data with BinaryEncoding{Length = Len};
+    var ep = endpoint DummyEndpoint;
+    ep.Payloads += [bin];
+    return bin;
 }
 
-syntax Authenticate   = c:"AUTHENTICATE" SP auth:AuthType CRLF d:(s:Text CRLF => s)*
-                        => new AuthenticateType{Command = c, AuthType = auth, Base64Data = d};
-type AuthenticateType
+// 6.2.2.  AUTHENTICATE Command
+syntax AuthenticateArg   = auth:AuthType CRLF d:(s:Text CRLF => s)*
+                        => new AuthenticateArgType{AuthType = auth, Base64Data = d};
+type AuthenticateArgType
 {
-    string Command;
     string AuthType;
     optional array<string> Base64Data;
 }
@@ -699,40 +469,41 @@ syntax Base64         = s1:(regex{[a-zA-Z0-9/+]{4}})* s2:Base64Terminal? => Conv
 syntax Base4Char      = regex{[a-zA-Z0-9/+]};
 syntax Base64Terminal = (s3:regex{[a-zA-Z0-9/+]{3}} s4:"=" => (s3 + s4)) | (s1:regex{[a-zA-Z0-9/+]{2}} s2:"==" => (s1 + s2));
 
-syntax Copy           = c:"COPY" SP seq:SequenceSet SP mail:Mailbox CRLF
-                        => new CopyType{Command = c, SequenceSet = seq, Mailbox = mail};
-type CopyType
+// 6.4.7.  COPY Command
+syntax CopyArg           = seq:SequenceSet SP mail:Mailbox CRLF
+                        => new CopyArgType{SequenceSet = seq, Mailbox = mail};
+type CopyArgType
 {
-    string Command;
     array<string> SequenceSet;
     (string | LiteralType) Mailbox;
 }
 syntax SequenceSet    = s:(SeqRange | SeqNumber) ss:("," ss1:(SeqRange | SeqNumber) => ss1)* => ([s] + ss);
 syntax SeqNumber      = s:(NzNumber | "*") => s;
 syntax SeqRange       = s1:SeqNumber ":" s2:SeqNumber => (s1 + ":" + s2);
-syntax Select         = c:("SELECT" | "CREATE" | "DELETE" | "EXAMINE" | "SUBSCRIBE" | "UNSUBSCRIBE")
-                     SP mailbox:Mailbox CRLF => new SelectType{Command = c, Mailbox = mailbox};
-type SelectType
+
+// 6.3.1.  SELECT Command
+syntax SelectArg        = mailbox:Mailbox CRLF => new SelectArgType{Mailbox = mailbox};
+type SelectArgType
 {
-    string Command;
     (string | LiteralType) Mailbox;
 }
-syntax List           = c:("LIST" | "LSUB") SP s1:Mailbox SP s2:ListMailbox CRLF
-                        => new ListType{Command = c, Mailbox = s1, ListMailbox = s2};
-type ListType
+
+// 6.3.8.  LIST Command
+syntax ListArg           = s1:Mailbox SP s2:ListMailbox CRLF
+                        => new ListArgType{Mailbox = s1, ListMailbox = s2};
+type ListArgType
 {
-    string Command;
     (string | LiteralType) Mailbox;
     (string | LiteralType) ListMailbox;
 }
 syntax ListMailbox    = String | regex{[0-9a-zA-Z~`!@#$^&_=|;:'<>,.?/%*-\x5c\x5d\x5c\x7d]*};
 
-syntax Fetch          = c:"FETCH" SP seqSet:SequenceSet SP att:("ALL" | "FULL" | "FAST" | fet:FetchAtt => fet
+// 6.4.5.  FETCH Command
+syntax FetchArg          = seqSet:SequenceSet SP att:("ALL" | "FULL" | "FAST" | fet:FetchAtt => fet
                         | ("(" f1:FetchAtt ff:(SP f:FetchAtt => f)* ")" => ([f1] + ff))) CRLF
-                        => new FetchType{Command = c, SequenceSet = seqSet, Attribute = att};
-type FetchType
+                        => new FetchArgType{SequenceSet = seqSet, Attribute = att};
+type FetchArgType
 {
-    string Command;
     array<string> SequenceSet;
     (string | array<string> | any) Attribute;
 }
@@ -752,18 +523,19 @@ type HeaderListType
     array<(string | LiteralType)> HeaderLists;
 }
 
-syntax Rename         = c:"RENAME" SP s1:Mailbox SP s2:Mailbox CRLF => new RenameType{Command = c, OldName = s1, NewName = s2};
-type RenameType
+// 6.3.5.  RENAME Command
+syntax RenameArg         = s1:Mailbox SP s2:Mailbox CRLF => new RenameArgType{OldName = s1, NewName = s2};
+type RenameArgType
 {
-    string Command;
     (string | LiteralType) OldName;
     (string | LiteralType) NewName;
 }
-syntax Search         = c:"SEARCH" s2:(SP "CHARSET" SP s1:Astring => s1)? ss:(SP+ s:SearchKey => s)+ CRLF
-                        => new SearchType{Command = c, Charset = s2.Count == 0 ? nothing : s2[0], SearchKey = ss};
-type SearchType
+
+// 6.4.4.  SEARCH Command
+syntax SearchArg         = s2:(SP "CHARSET" SP s1:Astring => s1)? ss:(SP+ s:SearchKey => s)+ CRLF
+                        => new SearchArgType{Charset = s2.Count == 0 ? nothing : s2[0], SearchKey = ss};
+type SearchArgType
 {
-    string Command;
     optional (string | LiteralType) Charset;
     (string | array<string> | any) SearchKey;
 }
@@ -777,11 +549,12 @@ syntax SearchKey      = "ALL" | "ANSWERED" | ("BCC" SP Astring) | ("BEFORE" SP D
                          | ("SENTON" SP Date) |("SENTSINCE" SP Date) | ("SMALLER" SP Number)
                          | ("UID" SP SequenceSet) | "UNDRAFT" | SequenceSet 
                          | ("(" s0:SearchKey ss:(SP SearchKey)* ")" => ([s0] + ss));
-syntax Status         = c:"STATUS" SP mail:Mailbox SP "(" s1:StatusAtt ss:(SP s:StatusAtt => s)* ")" CRLF
-                        => new StatusType{Command = c, Mailbox = mail, Attributes = [s1] + ss};
-type StatusType
+
+// 6.3.10. STATUS Command
+syntax StatusArg         = mail:Mailbox SP "(" s1:StatusAtt ss:(SP s:StatusAtt => s)* ")" CRLF
+                        => new StatusArgType{Mailbox = mail, Attributes = [s1] + ss};
+type StatusArgType
 {
-    string Command;
     (string | LiteralType) Mailbox;
     array<string> Attributes;
 }
@@ -793,24 +566,57 @@ type StatusAttType
     string StatusAtt;
     string Number;
 }
-syntax Store          = c:"STORE" SP seq:SequenceSet SP fs:StoreAttFlags CRLF
-                        => new StoreType{Command = c, SequenceSet = seq, Flags = fs};
+
+// 6.4.6.  STORE Command
+syntax StoreArg          = seq:SequenceSet SP fs:StoreAttFlags CRLF
+                        => new StoreArgType{SequenceSet = seq, Flags = fs};
 syntax StoreAttFlags  = ("+" | "-")? "FLAGS" ".SILENT"? SP f:(FlagList | (f0:Flag ff:(SP Flag)* => ([f0] + ff))) => f;
-type StoreType
+type StoreArgType
 {
-    string Command;
     array<string> SequenceSet;
     optional array<string> Flags;
 }
 syntax Time           = Digit2 ":" Digit2 ":" Digit2;
 syntax Zone           = ("+" | "-") Digit4;
-syntax Uid            = "UID" SP s:(Copy | Fetch | Store | Search) => s;
-syntax Request        = tag:Tag SP s:(NoParamCommand | Login | Append | Authenticate | Copy | Select | List | Fetch | Rename
-                        | Search | Status | Store | Uid) => new RequestMsg{Tag = tag, Body = s};
-pattern RequestBody   = string | LoginType | AppendType | AuthenticateType | CopyType | SelectType | ListType | FetchType
-                        | RenameType | SearchType | StatusType | StoreType;
-                        
-                        
+
+// 6.4.8.  UID Command
+syntax UidArg            =  (c5:"COPY" SP a5:CopyArg => new UidArgType{Command = c5, Arguments = a5}) |
+                            (c8:"FETCH" SP a8:FetchArg => new UidArgType{Command = c8, Arguments = a8}) |
+                            (c12:"STORE" SP a12:StoreArg => new UidArgType{Command = c12, Arguments = a12}) |
+                            (c10:"SEARCH" a10:SearchArg => new UidArgType{Command = c10, Arguments = a10});
+type UidArgType
+{
+    string Command;
+    (CopyArgType | FetchArgType | StoreArgType | SearchArgType) Arguments;
+}
+
+syntax RequestSyntax        = tag:Tag SP  // Tag
+                        c:(
+                            (c1:("CAPABILITY" | "LOGOUT" | "NOOP" | "STARTTLS" | "CHECK" | "CLOSE" | "EXPUNGE" | "IDLE") CRLF => new CommandWrapper{Command = c1}) |
+                            (c2:"LOGIN" SP a2:LoginArg => new CommandWrapper{Command = c2, Arguments = a2}) | 
+                            (c3:"APPEND" SP a3:AppendArg => new CommandWrapper{Command = c3, Arguments = a3}) | // Note: Data part of Append command doesn't get parsed in the syntax
+                            (c4:"AUTHENTICATE" SP a4:AuthenticateArg => new CommandWrapper{Command = c4, Arguments = a4}) | 
+                            (c5:"COPY" SP a5:CopyArg => new CommandWrapper{Command = c5, Arguments = a5}) | 
+                            (c6:("SELECT" | "CREATE" | "DELETE" | "EXAMINE" | "SUBSCRIBE" | "UNSUBSCRIBE") SP a6:SelectArg => new CommandWrapper{Command = c6, Arguments = a6}) | 
+                            (c7:("LIST" | "LSUB") SP a7:ListArg => new CommandWrapper{Command = c7, Arguments = a7}) | 
+                            (c8:"FETCH" SP a8:FetchArg => new CommandWrapper{Command = c8, Arguments = a8}) | 
+                            (c9:"RENAME" SP a9:RenameArg => new CommandWrapper{Command = c9, Arguments = a9}) | 
+                            (c10:"SEARCH" a10:SearchArg => new CommandWrapper{Command = c10, Arguments = a10}) | // 'Space after "SEARCH" command is consumed by 'SearchArg' syntax
+                            (c11:"STATUS" SP a11:StatusArg => new CommandWrapper{Command = c11, Arguments = a11}) |
+                            (c12:"STORE" SP a12:StoreArg => new CommandWrapper{Command = c12, Arguments = a12}) |
+                            (c13:"UID" SP a13:UidArg => new CommandWrapper{Command = c13, Arguments = a13}) 
+                        )
+                        => new RequestMsg{Tag = tag, Command = c.Command, Arguments = c.Arguments};
+
+pattern RequstArg   = LoginArgType | AppendArgType | AuthenticateArgType | CopyArgType | SelectArgType | ListArgType | FetchArgType
+                        | RenameArgType | SearchArgType | StatusArgType | StoreArgType | UidArgType;
+// Intermediate type 
+type CommandWrapper
+{
+    string Command;
+    optional RequstArg Arguments;
+}
+
 syntax MailboxList    = "(" s1:MbxListFlags ")" SP s2:((Dquote q:QuotedChar Dquote => q) | Nil) SP s3:Mailbox
                         => new MailboxListType{Flags = s1, QuotedChar = s2, Mailbox = s3};
 type MailboxListType
@@ -824,10 +630,12 @@ syntax MbxListOflag   = "\\Noinferiors" | FlagExtension;
 syntax MbxListSflag   = "\\Noselect" | "\\Marked" | "\\Unmarked";
 syntax MsgAtt         = "(" s0:(MsgAttDynamic | MsgAttStatic) ss:(SP (MsgAttDynamic | MsgAttStatic))* ")" => ([s0] + ss);
 syntax MsgAttDynamic  = "FLAGS" SP "(" s:(s1:FlagFetch ss:(SP FlagFetch)* => ([s1] + ss))? ")" => (s.Count == 0 ? [] : s[0]);
-syntax MsgAttStatic   = ("ENVELOPE" SP Envelope) | ("INTERNALDATE" SP DateTime) | ("RFC822.SIZE" SP Number)
-                        | ("RFC822" (".HEADER" | ".TEXT")? SP NString)
-                        | ("BODY" (Section? ("<" Number ">")? SP NString | "BODY" "STRUCTURE"? SP Body))
-                        | (u1:"UID" SP u2:UniqueId => (u1 + " " + u2));
+syntax MsgAttStatic   = ("ENVELOPE" SP Envelope) | 
+                        ("INTERNALDATE" SP DateTime) | 
+                        ("RFC822.SIZE" SP Number) |
+                        ("RFC822" (".HEADER" | ".TEXT")? SP NString) |
+                        ("BODY" (Section? ("<" Number ">")? SP NString | "BODY" "STRUCTURE"? SP Body)) |
+                        (u1:"UID" SP u2:UniqueId => (u1 + " " + u2));
 syntax NString        = String | Nil;
 syntax Nil            = "NIL";
 syntax UniqueId       = NzNumber;
@@ -926,81 +734,172 @@ syntax MediaMessage   = Dquote s1:"MESSAGE" Dquote SP Dquote s2:"RFC822" Dquote 
 syntax MediaSubtype   = String;
 syntax MediaText      = Dquote s0:"TEXT" Dquote SP s2:MediaSubtype => new MediaBasicType{Type = s0, SubType = s2};
 
-//syntax ContinueReq    = s1:"+" SP s2:(Base64 | RespText) CRLF => new SingleResponse{Token = s1, Body = s2};
-syntax ContinueReq    = s1:"+" SP s2:RespText CRLF => new SingleResponse{Token = s1, Body = s2};
-syntax ResponseData   = s1:"*" SP s2:(CapabilityData | RespCondBye | RespCondState | MailboxData) CRLF
-                        => new SingleResponse{Token = s1, Body = s2};
-syntax CapabilityData = s1:"CAPABILITY" ss:(SP Capability)* => new CapabilityType{Command = s1, Options = ss};// SP "IMAP4rev1" (SP Capability)*;
-type CapabilityType
-{
-    string Command;
+// 2.2.1.  Client Protocol Sender and Server Protocol Receiver
+syntax ContinueReq    = s1:"+" SP s2:RespText CRLF => new ResponseMsg{Result = new RespCondType{Tag = s1, TextCode = s2.TextCode, Text = s2.Text}};
+
+syntax ResponseData   = s:(CapabilityData | RespCondBye | RespCondState | FlagsResp | ListResp | SearchResp | StatusResp | FetchResp | ExistsResp | RecentResp | ExpungeResp) CRLF => s;
+
+// 7.2.1.  CAPABILITY Response
+syntax CapabilityData = "*" SP s1:"CAPABILITY" ss:(SP Capability)* => new CapabilityType{Tag = "*", Command = s1, Options = ss}; // SP "IMAP4rev1" (SP Capability)*;
+type CapabilityType : RespType
+{   
     array<string> Options;
 }
 syntax Capability     = s:((s1:"AUTH=" s2:AuthType => (s1 + s2)) | Atom) => s;
+
 syntax RespText       = s0:("[" s1:RespTextCode "]" SP? => s1)? s2:Text? => new RespTextType{TextCode = s0.Count == 0 ? nothing : s0[0], Text = s2.Count == 0 ? nothing : s2[0]};
 type RespTextType
 {
     (string | CapabilityType | array<string> | array<string | LiteralType> | any) TextCode;
     optional string Text;
 }
-syntax RespTextString = regex{[0-9a-zA-Z`~!@#$%^&*()_=|;:',.<>/?{[ }+-]+};//regex{[^\r\n\x5d]+};
+syntax RespTextString = regex{[0-9a-zA-Z`~!@#$%^&*()_=|;:',.<>/?{[ }+-]+}; // regex{[^\r\n\x5d]+};
 syntax RespTextCode   = ("ALERT" | "PARSE" | "READ-ONLY" | "READ-WRITE" | "TRYCREATE")
                         | ("BADCHARSET" s:(SP "(" s1:Astring ss:(SP Astring)* ")" => ([s1] + ss))? => (s.Count == 0 ? [] : s[0]))
                         | CapabilityData
                         | "PERMANENTFLAGS" SP "(" ps:(fs0:FlagPerm fss:(SP FlagPerm)* => ([fs0] + fss))? ")" => (ps.Count == 0 ? [] : ps[0])
                         | (ns0:("UIDNEXT" | "UIDVALIDITY" | "UNSEEN") SP ns:NzNumber => (ns0 + " " + ns))
                         | ts0:Atom ts1:(SP RespTextString)? => (ts1.Count == 0 ? ts0 : ts0 + " " + ts1[0]);
-syntax RespCondAuth   = s1:("OK" | "PREAUTH") SP s2:RespText => new RespCondType{Command = s1, RespText = s2};
-syntax RespCondBye    = s1:"BYE" SP s2:RespText => new RespCondType{Command = s1, RespText = s2};
-syntax RespCondState  = s1:("OK" | "NO" | "BAD") SP s2:RespText => new RespCondType{Command = s1, RespText = s2};
-type RespCondType
+
+syntax RespCondAuth   = "*" SP s1:("OK" | "PREAUTH") SP s2:RespText => new RespCondType{Tag = "*", Command = s1, TextCode = s2.TextCode, Text = s2.Text};
+
+// 7.1.5.  BYE Response
+syntax RespCondBye    = "*" SP s1:"BYE" SP s2:RespText => new RespCondType{Tag = "*", Command = s1, TextCode = s2.TextCode, Text = s2.Text};
+
+/*  S: * OK IMAP4rev1 server ready
+    C: A001 LOGIN freed blurdybloop
+    S: * OK [ALERT] System shutdown in 10 minutes
+    S: A001 OK LOGIN Completed
+*/
+syntax RespCondState  = "*" SP s1:("OK" | "NO" | "BAD") SP s2:RespText => new RespCondType{Tag = "*", Command = s1, TextCode = s2.TextCode, Text = s2.Text};
+type RespCondType : RespType
 {
-    string Command;
-    RespTextType RespText;
+    (string | CapabilityType | array<string> | array<string | LiteralType> | any) TextCode;
+    optional string Text;
+
+    override string ToString()
+    {
+        return "Result: " + Command + ", Tag: " + Tag;
+    }
 }
-syntax ResponseFatal  = s1:"*" SP s2:RespCondBye CRLF => new SingleResponse{Token = s1, Body = s2};
-syntax ResponseTagged = s1:Tag SP s2:RespCondState CRLF => new SingleResponse{Token = s1, Body = s2};
-syntax FlagsResp      = s0:"FLAGS" SP s1:FlagList => new FlagsRespType{Command = s0, FlagList = s1};
-type FlagsRespType
+syntax ResponseFatal  = s:RespCondBye CRLF => s;
+
+// 7.1.1.  OK Response 
+// 7.1.2.  NO Response 
+// 7.1.3.  BAD Response
+syntax ResonseTagged = s1:Tag SP s2:("OK" | "NO" | "BAD") SP s3:RespText CRLF 
+    => new RespCondType{Tag = s1, Command = s2, TextCode = s3.TextCode, Text = s3.Text};
+
+// 7.2.6.  FLAGS Response
+syntax FlagsResp      = "*" SP s0:"FLAGS" SP s1:FlagList => new FlagsRespType{Tag = "*", Command = s0, FlagList = s1};
+type FlagsRespType : RespType
 {
-    string Command;
     array<string> FlagList;
 }
-syntax ListResp      = s0:("LIST" | "LSUB") SP s1:MailboxList => new ListRespType{Command = s0, MailboxList = s1};
-type ListRespType
+
+// 7.2.2.  LIST Response
+syntax ListResp      = "*" SP s0:("LIST" | "LSUB") SP s1:MailboxList => new ListRespType{Tag = "*", Command = s0, MailboxList = s1};
+type ListRespType : RespType
 {
-    string Command;
     MailboxListType MailboxList;
 }
-syntax SearchResp     = s0:"SEARCH" ss:(SP NzNumber)* => new SearchRespType{Command = s0, Numbers = ss};
-type SearchRespType
+
+// 7.2.5.  SEARCH Response
+syntax SearchResp     = "*" SP s0:"SEARCH" ss:(SP NzNumber)* => new SearchRespType{Tag = "*", Command = s0, Numbers = ss};
+type SearchRespType : RespType
 {
-    string Command;
     array<string> Numbers;
 }
-syntax StatusResp     = s1:"STATUS" SP s2:Mailbox SP "(" s3:StatusAttList? ")" => new StatusRespType{Command = s1, Mailbox = s2, Attributes = s3.Count == 0 ? nothing : s3[0]};
-type StatusRespType
+// 7.2.4   STATUS Response
+syntax StatusResp     = "*" SP s1:"STATUS" SP s2:Mailbox SP "(" s3:StatusAttList? ")" => new StatusRespType{Tag = "*", Command = s1, Mailbox = s2, Attributes = s3.Count == 0 ? nothing : s3[0]};
+type StatusRespType : RespType
 {
-    string Command;
     (string | LiteralType) Mailbox;
     optional array<StatusAttType> Attributes;
 }
-syntax FetchResp      = s0:Number SP s1:(("EXISTS" | "RECENT" | "EXPUNGE") | ("FETCH" SP s2:MsgAtt => s2))
-                        => new FetchRespType{Number = s0, FetchData = s1};
-type FetchRespType
+
+// 7.4.2.  FETCH Response 
+syntax FetchResp      = "*" SP s0:Number SP s1:"FETCH" SP s2:MsgAtt
+                        => new FetchRespType{Tag = "*", Command = s1, Number = s0, FetchData = s2};
+type FetchRespType : RespType
 {
     string Number;
     (string | array<string> | any) FetchData;
 }
-syntax MailboxData    = FlagsResp | ListResp | SearchResp | StatusResp | FetchResp;
 
-syntax Greeting       = s1:"*" SP s2:(RespCondAuth | RespCondBye) CRLF => new SingleResponse{Token = s1, Body = s2};
+syntax ExistsResp   = "*" SP s0:Number SP s1:"EXISTS" => new ExistsRespType{Tag = "*", Command = s1, Number = s0};
+type ExistsRespType : RespType
+{
+    string Number;
+}
 
-syntax Response       = ss:(c:ContinueReq => c | d:ResponseData => d)* s:(f:ResponseFatal => f| t:ResponseTagged => t)
-                       => new ResponseMsg{Responses = ss + [s]};
-pattern ResponseBody  = RespTextType | CapabilityType | RespCondType | FlagsRespType | ListRespType | SearchRespType | StatusRespType | FetchRespType;
+syntax RecentResp   = "*" SP s0:Number SP s1:"RECENT" => new RecentRespType{Tag = "*", Command = s1, Number = s0};
+type RecentRespType : RespType
+{
+    string Number;
+}
 
-pattern OptionalAny   = optional any;
+syntax ExpungeResp   = "*" SP s0:Number SP s1:"EXPUNGE" => new ExpungeRespType{Tag = "*", Command = s1, Number = s0};
+type ExpungeRespType : RespType
+{
+    string Number;
+}
 
-syntax ExceptBracket  = regex{[\x00-\x7a|~]*};
-syntax GetLength      = ExceptBracket s:LiteralLength => s;
+syntax Greeting       = s:(RespCondAuth | RespCondBye) CRLF => new ResponseMsg{Result = s};
+
+syntax RespnseDone = ResponseFatal | ResonseTagged;
+
+syntax ResponseSyntax       = s0:(ContinueReq | ResponseData)* s1:RespnseDone
+                       => new ResponseMsg{Responses = s0.Count == 0 ? nothing : s0, Result = s1};
+
+pattern ResponseBody  = RespTextType | CapabilityType | RespCondType | FlagsRespType | ListRespType |
+     SearchRespType | StatusRespType | FetchRespType |ExistsRespType | RecentRespType | ExpungeRespType;
+
+// the base type of response type.
+type RespType
+{
+    string Tag;
+    string Command;
+
+    override string ToString()
+    {
+        return Command;
+    }
+}
+
+syntax GetCommand = regex{[^ ]* } s:regex{[^ ]*} => s;
+syntax GetTagAndCommand = s1:regex{[^ ]*} " " s2:regex{[^ ]*} => [s1, s2];
+syntax AppendRequstSyntax = tag:Tag SP c:"APPEND" SP a:AppendArg => new RequestMsg{Tag = tag, Command = c, Arguments = a};
+
+const binary SPBin = $[20];
+const binary CRLFBin = $[0D0A];
+const set<string> GreetingCommand ={"OK", "PREAUTH", "BYE"};
+const set<string> ResultCommand = {"OK", "NO", "BAD"};
+const set<string> IMAPCommands = 
+{
+    "CAPABILITY",
+    "NOOP",
+    "LOGOUT",
+    "STARTTLS",
+    "AUTHENTICATE",
+    "LOGIN",
+    "SELECT",
+    "EXAMINE",
+    "CREATE",
+    "DELETE",
+    "RENAME",
+    "SUBSCRIBE",
+    "UNSUBSCRIBE",
+    "LIST",
+    "LSUB",
+    "STATUS",
+    "APPEND",
+    "CHECK",
+    "CLOSE",
+    "EXPUNGE",
+    "SEARCH",
+    "FETCH",
+    "STORE",
+    "COPY",
+    "UID"
+};

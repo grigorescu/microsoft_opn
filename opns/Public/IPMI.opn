@@ -23,7 +23,7 @@ OPNAuthoring
 using Standard;
 using DTYP;
 using Utility;
-using CommonResources;
+using PublicResources;
 using RMCP;
 
 string IPMI_MODULE = "IPMI";
@@ -223,7 +223,7 @@ message IPMI15[bool request]
 
     override string ToString()
     {
-        return "SessionID:" + SessionID.ToString() + ", SessionSeq:" + SessionSequenceNumber.ToString() + ", " + (AuthType.AuthType != 0 ? COMMON_STR_ENCRYPTED : "");
+        return "SessionID:" + SessionID.ToString() + ", SessionSeq:" + SessionSequenceNumber.ToString() + ", " + (AuthType.AuthType != 0 ? IPMI_STR_ENCRYPTED : "");
     }
 };
 
@@ -246,7 +246,7 @@ message IPMI20[ConfidentialityAlgorithm alg, bool knownSession]
     
     override string ToString()
     {
-        return "IPMI 2.0, PayloadType:" + PayloadTypeEnumToString(PayloadType.PayloadType) + ", SessionID:" + SessionID.ToString() + ", SessionSeq:" + SessionSequenceNumber.ToString() + ", " + (PayloadType.Encryption == PayloadEncryption.Encrypted ? COMMON_STR_ENCRYPTED : "");
+        return "IPMI 2.0, PayloadType:" + PayloadTypeEnumToString(PayloadType.PayloadType) + ", SessionID:" + SessionID.ToString() + ", SessionSeq:" + SessionSequenceNumber.ToString() + ", " + (PayloadType.Encryption == PayloadEncryption.Encrypted ? IPMI_STR_ENCRYPTED : "");
     }
 };
 

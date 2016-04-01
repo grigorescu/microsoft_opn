@@ -7,7 +7,7 @@ OPNAuthoring
         ],
     RevisionSummary = 
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "09/02/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "382201", Date = "10/19/2015"}
         ]
 };
 
@@ -15,7 +15,6 @@ using Ethernet;
 using Etw;
 using EtwEvent;
 using Utility;
-using WiFi;
 using IPv6;
 
 const guid EtwProviderIdPefNdis = {9DE85B12-1202-467C-8047-ED308FB776C3};
@@ -32,7 +31,7 @@ endpoint PefNdisNode
         switch (m.FrameData)
         {
             case f:Ethernet.Frame from BinaryDecoder<Ethernet.Frame[false]> =>
-                dispatch (endpoint Ethernet.Node[f.DestinationAddress.FlatAddress]) accepts f;
+                dispatch (endpoint Ethernet.Node) accepts f;
             default => 
                 ThrowDecodingException("PefNdisProvider", "Ethernet.Frame");
         }
@@ -45,7 +44,7 @@ endpoint PefNdisNode
         switch (m.FrameData)
         {
             case f:IPv6.Datagram from IPv6Decoder =>
-                dispatch endpoint IPv6.ReassemblyNode[f.DestinationAddress.FlatAddress < f.SourceAddress.FlatAddress ? f.DestinationAddress.FlatAddress : f.SourceAddress.FlatAddress] accepts f;
+                DispatchIPv6DatagramToReassemblyNode(f);
             default => 
                 ThrowDecodingException("PefNdisProvider", "IPv6.Datagram");
         }
@@ -94,10 +93,15 @@ message PefNdisMsg
     
     override string ToString()
     {
-        return ( "MiniportIfIndex: " + (MiniportIfIndex as string)  +    
+        return ( "MiniportIfIndex: " + (MiniportIfIndex as string)  +
                  ", LowerIfIndex: " + (LowerIfIndex as string) + 
                  ", FrameSize: " + (FrameSize as string) );
     }
+}
+
+int get PayloadLength(this PefNdisProvider.PefNdisMsg msg)
+{
+    return msg.FrameData.Count;
 }
 
 message PefNdisWifiMetaMsg
@@ -111,4 +115,9 @@ message PefNdisWifiMetaMsg
         return "MiniportIfIndex: " + (MiniportIfIndex as string)
              + ", LowerIfIndex: " + (LowerIfIndex as string);
     }
+}
+
+int get PayloadLength(this PefNdisProvider.PefNdisWifiMetaMsg msg)
+{
+    return msg.MetaData.Count;
 }

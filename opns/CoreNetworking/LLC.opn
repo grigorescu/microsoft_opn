@@ -1,4 +1,4 @@
-﻿protocol LLC with 
+protocol LLC with 
 BinaryEncodingDefaults{Endian = Endian.Big},
 Documentation
 {
@@ -15,12 +15,11 @@ OPNAuthoring
         ],
     RevisionSummary =
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "09/02/2011"}
+            new Revision{Class = RevisionClass.Major, Version = "369414", Date = "10/22/2014"}
         ]
 };
     
 using Standard;
-using IANA;
 using Ethernet;
 using WiFi;
 using Utility;
@@ -38,7 +37,6 @@ autostart actor LLCOverEthernet(Ethernet.Node node)
 {
     process node accepts f:Ethernet.Frame where f.LengthOrType is ushort where value <= 0x05DC
     {
-
         // Check if the value of LengthOrType field is equal or less than the length of MacClientData field
         // And then assign the real payload of the Ethernet.Then LLC can consume correctly.
         int length = f.MacClientData.Count;
@@ -56,7 +54,7 @@ autostart actor LLCOverEthernet(Ethernet.Node node)
 autostart actor LLCOverWiFi(WiFi.Node wifi)
 {
     process wifi accepts m:WiFiMessage
-        where m.Type == MessageType.Data
+        where (m.MacHeader.FrameControl).Type == MessageType.Data
             && !(m#IsEncrypted as bool)
     {
         if (!DecodeAndDispatchLLCMessageFromWiFiFrame(m))
@@ -68,63 +66,19 @@ autostart actor LLCOverWiFi(WiFi.Node wifi)
 
 bool DecodeAndDispatchLLCMessageFromWiFiFrame(WiFiMessage frame)
 {
-    if (frame == null)
-    {
-        return false;
-    }
-    if (frame.Frame == null)
+    if (frame == null || frame.Body == nothing || frame.Body == null)
     {
         return false;
     }
     
-    optional binary data;
-    if (frame.Frame is AdHoc)
+    if (frame.Body is data:binary && BinaryDecoder<Segment>(data) is segment:Segment)
     {
-        data = (frame.Frame as AdHoc).Data;
+        dispatch (endpoint LLC.Node) accepts segment;
+        return true;
     }
-    if (frame.Frame is APToAP)
+    else
     {
-        data = (frame.Frame as APToAP).Data;
-    }
-    if (frame.Frame is ClientToApWithQoSControlWithQueueSize)
-    {
-        data = (frame.Frame as ClientToApWithQoSControlWithQueueSize).Data;
-    }
-    if (frame.Frame is ClientToApWithQoSControlWithTXOPDurationRequested)
-    {
-        data = (frame.Frame as ClientToApWithQoSControlWithTXOPDurationRequested).Data;
-    }
-    if (frame.Frame is ClientToAp)
-    {
-        data = (frame.Frame as ClientToAp).Data;
-    }
-    if (frame.Frame is APToClientWithQoSControlWithTXOPLimit)
-    {
-        data = (frame.Frame as APToClientWithQoSControlWithTXOPLimit).Data;
-    }
-    if (frame.Frame is APToClientWithQoSControlWithQAPPSBufferState)
-    {
-        data = (frame.Frame as APToClientWithQoSControlWithQAPPSBufferState).Data;
-    }
-    if (frame.Frame is APToClient)
-    {
-        data = (frame.Frame as APToClient).Data;
-    }
-    if (data == nothing) return false;
-    {
-        return DecodeAndDispatchLLCMessageFromBinary(data as binary);
-    }
-}
-
-bool DecodeAndDispatchLLCMessageFromBinary(binary data)
-{
-    switch (data)
-    {
-        case segment:Segment from BinaryDecoder<Segment> =>
-            dispatch (endpoint LLC.Node) accepts segment;
-            return true;
-        default =>
-            return false;
+        return false;
     }
 }
 
@@ -195,7 +149,7 @@ type Unnumbered[byte CR]
     byte PF                     with BinaryEncoding{Width = 1};
     byte MM                     with BinaryEncoding{Width = 2};
     byte Type where value == 3  with BinaryEncoding{Width = 2};
-    optional [|CR == 1 && MMM ==4 && MM == 1|] FRMR FRMR;
+    optional [|CR == 1 && MMM == 4 && MM == 1|] FRMR FRMR;
     optional [|CR == 1 && MMM in {6, 7} && MM == 1|] ACnResponse ACnResponse;
 }
 

@@ -1,4 +1,4 @@
-﻿protocol T125 with
+protocol T125 with
 BinaryEncodingDefaults{Endian = Endian.Big},
 Documentation
 {
@@ -15,19 +15,23 @@ OPNAuthoring
         ],
     RevisionSummary = 
         [
-            new Revision{Class = RevisionClass.Major, Version = "1.0.0", Date = "09/20/2012"}
+            new Revision{Class = RevisionClass.Major, Version = "376455", Date = "04/03/2015"}
         ]
 };
 
 using Standard;
 using IANA;
 using Utility;
-using ASN1;
+using Technologies.ASN1;
 using X224;
+using Configurations;
 
-annotation ulong T125SourcePort;
-annotation ulong T125DestinationPort;
-annotation int T125ClassOption;
+annotation ushort ConnectInitial#T125SourcePort;
+annotation ushort ConnectInitial#T125DestinationPort;
+annotation ushort ConnectResponse#T125SourcePort;
+annotation ushort ConnectResponse#T125DestinationPort;
+annotation ushort DomainMCSPDU#T125SourcePort;
+annotation ushort DomainMCSPDU#T125DestinationPort;
 
 endpoint Node over X224.Server
     accepts ConnectInitial issues ConnectResponse
@@ -35,13 +39,15 @@ endpoint Node over X224.Server
 
 autostart actor T125OverX224(X224.Server server)
 {
+    RDPConfiguration config = GetConfigurableValue<RDPConfiguration>();
+
     process server accepts tpdu:X224.TPDU
-        where (((tpdu#TpduDestinationPort != nothing) && (tpdu#TpduDestinationPort == Port.RDP))
-           || ((tpdu#TpduSourcePort != nothing) && (tpdu#TpduSourcePort == Port.RDP)))
+        where tpdu#TpduDestinationPort is desPort:ushort && tpdu#TpduSourcePort is srcPort:ushort && 
+            (desPort == Port.RDP || desPort in config.Ports || srcPort == Port.RDP || srcPort in config.Ports)
     {
-        if (tpdu is X224.Data)
+        if (tpdu is data:X224.Data &&
+            data.UserData is payload:binary)
         {
-            binary payload = ((tpdu as Data).UserData) as binary;
             int firstByte = payload[0];
             int perTagValue = firstByte >> 2;
             int secondByte = 0;
@@ -53,8 +59,8 @@ autostart actor T125OverX224(X224.Server server)
                     switch (payload)
                     {
                         case m:ConnectInitial from Asn1BerDecoder<ConnectInitial> =>
-                            m#T125DestinationPort = tpdu#TpduDestinationPort;
-                            m#T125SourcePort = tpdu#TpduSourcePort;
+                            m#T125DestinationPort = desPort;
+                            m#T125SourcePort = srcPort;
                             dispatch (endpoint Node over server) accepts m;
                         default => 
                             ThrowDecodingException("T125 Connect Initial");
@@ -63,8 +69,8 @@ autostart actor T125OverX224(X224.Server server)
                     switch (payload)
                     {
                         case m:DomainMCSPDU from Asn1PerDecoder<DomainMCSPDU> =>
-                            m#T125DestinationPort = tpdu#TpduDestinationPort;
-                            m#T125SourcePort = tpdu#TpduSourcePort;
+                            m#T125DestinationPort = desPort;
+                            m#T125SourcePort = srcPort;
                             dispatch (endpoint Node over server) accepts m;
                         default => 
                             ThrowDecodingException("T125 DomainMCSPDU");
@@ -78,12 +84,12 @@ autostart actor T125OverX224(X224.Server server)
     }
     
     process server issues tpdu:X224.TPDU
-        where (((tpdu#TpduDestinationPort != nothing) && (tpdu#TpduDestinationPort == Port.RDP))
-           || ((tpdu#TpduSourcePort != nothing) && (tpdu#TpduSourcePort == Port.RDP)))
+        where tpdu#TpduSourcePort is srcPort:ushort && tpdu#TpduDestinationPort is desPort:ushort &&
+            (srcPort == Port.RDP || srcPort in config.Ports || desPort == Port.RDP || desPort in config.Ports)
     {
-        if (tpdu is X224.Data)
+        if (tpdu is data:X224.Data &&
+            data.UserData is payload:binary)
         {
-			binary payload = ((tpdu as Data).UserData) as binary;
             int firstByte = payload[0];
             int perTagValue = firstByte >> 2;
             int secondByte = 0;
@@ -95,8 +101,8 @@ autostart actor T125OverX224(X224.Server server)
                     switch (payload)
                     {
                         case m:ConnectResponse from Asn1BerDecoder<ConnectResponse> =>
-                            m#T125DestinationPort = tpdu#TpduDestinationPort;
-                            m#T125SourcePort = tpdu#TpduSourcePort;
+                            m#T125DestinationPort = desPort;
+                            m#T125SourcePort = srcPort;
                             dispatch (endpoint Node over server) issues m;
                         default => 
                             ThrowDecodingException("T125 Connect Response");
@@ -105,8 +111,8 @@ autostart actor T125OverX224(X224.Server server)
                     switch (payload)
                     {
                         case m:DomainMCSPDU from Asn1PerDecoder<DomainMCSPDU> =>
-                            m#T125DestinationPort = tpdu#TpduDestinationPort;
-                            m#T125SourcePort = tpdu#TpduSourcePort;
+                            m#T125DestinationPort = desPort;
+                            m#T125SourcePort = srcPort;
                             dispatch (endpoint Node over server) issues m;
                         default => 
                             ThrowDecodingException("T125 DomainMCSPDU");
@@ -413,7 +419,7 @@ message ConnectResponse
         Tagging = Asn1Tagging.Implicit
     };
 
-pattern Result = enum Integer
+pattern Result = enum
 {
     RtSuccessful                = 0,
     RtDomainMerging             = 1,
@@ -431,7 +437,8 @@ pattern Result = enum Integer
     RtTooManyUsers              = 13,
     RtUnspecifiedFailure        = 14,
     RtUserRejected              = 15,
-};
+} with Asn1Encoding {LowerEndValue = 0,
+                     UpperEndValue = 15};
 
 type SendDataRequest
 {
@@ -448,9 +455,8 @@ pattern DataPriority = enum
     High    = 1,
     Medium  = 2,
     Low     = 3
-}
-    with Asn1Encoding {LowerEndValue = 0,
-                       UpperEndValue = 3};
+} with Asn1Encoding {LowerEndValue = 0,
+                     UpperEndValue = 3};
 
 pattern Segmentation = enum
 {
@@ -459,7 +465,7 @@ pattern Segmentation = enum
     End               = 2,
     BeginAndEnd       = 3
 } with Asn1Encoding {LowerEndValue = 0,
-                       UpperEndValue = 3};
+                     UpperEndValue = 3};
 
 type SendDataIndication
 {
@@ -472,8 +478,8 @@ type SendDataIndication
 
 type ErectDomainRequest
 {
-    Integer SubHeight with Asn1Encoding {LowerEndValue = 0, UpperEndValue = 65535};
-    Integer SubInterval with Asn1Encoding {LowerEndValue = 0, UpperEndValue = 65535};
+    Integer SubHeight with Asn1Encoding {LowerEndValue = 0};
+    Integer SubInterval with Asn1Encoding {LowerEndValue = 0};
 }
 
 type AttachUserRequest
